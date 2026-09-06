@@ -2,18 +2,24 @@
 
 Harbor Ledger Memory is local neural memory for AI agents that works with an existing Markdown vault. Obsidian is a compatible vault application, not a product requirement. It builds a rebuildable index with lexical search, optional semantic search, knowledge-graph context, and Model Context Protocol (MCP) tools. Your Markdown files remain authoritative: the service never rewrites vault content outside its policy-controlled proposal and approval workflow.
 
-## What it does
+<p align="center">
+  <img src="docs/assets/harbor-ledger-memory.png" alt="Harbor Ledger Memory map showing connected agent context routes across a local-first ledger." width="960" />
+</p>
 
-- **Indexes local Markdown**: builds a deterministic SQLite projection from an admitted vault scope
-- **Finds relevant notes**: combines lexical search, optional semantic similarity, and graph-based context
-- **Serves local agents**: exposes bounded MCP and REST operations behind explicit configuration and bearer-token rules
-- **Keeps vault ownership clear**: rebuilds derived data from Markdown and requires policy-controlled write approval
+## Contents
 
-## Use cases
-
-- **Search a local knowledge base**: retrieve notes from an Obsidian vault without uploading the vault to a hosted service
-- **Give an AI agent bounded context**: connect a local MCP client to retrieve and cite relevant Markdown notes
-- **Run an auditable memory service**: rebuild the catalog from Markdown, inspect its health, and control write access with folder rules
+- [Quickstart](#quickstart)
+- [What it does](#what-it-does)
+- [Use cases](#use-cases)
+- [Security and privacy](#security-and-privacy)
+- [Server configuration](#server-configuration)
+  - [API tokens](#api-tokens)
+  - [MCP clients](#mcp-clients)
+- [Development from a checkout](#development-from-a-checkout)
+- [CLI and API reference](#cli-and-api-reference)
+- [Limitations and troubleshooting](#limitations-and-troubleshooting)
+- [Verification](#verification)
+- [Project links](#project-links)
 
 ## Quickstart
 
@@ -92,6 +98,19 @@ serves lexical/graph retrieval; it logs a one-time notice and skips semantic
 similarity instead of failing on model load. Reinstall with the extra to
 re-enable semantic search.
 
+## What it does
+
+- **Indexes local Markdown**: builds a deterministic SQLite projection from an admitted vault scope
+- **Finds relevant notes**: combines lexical search, optional semantic similarity, and graph-based context
+- **Serves local agents**: exposes bounded MCP and REST operations behind explicit configuration and bearer-token rules
+- **Keeps vault ownership clear**: rebuilds derived data from Markdown and requires policy-controlled write approval
+
+## Use cases
+
+- **Search a local knowledge base**: retrieve notes from an Obsidian vault without uploading the vault to a hosted service
+- **Give an AI agent bounded context**: connect a local MCP client to retrieve and cite relevant Markdown notes
+- **Run an auditable memory service**: rebuild the catalog from Markdown, inspect its health, and control write access with folder rules
+
 ## Security and privacy
 
 - **Vault access is policy-controlled.** Read-only vault commands read Markdown
@@ -120,8 +139,8 @@ hlm config set --folder-rules '[{"path":"AI/Private","access":"none"}]'
 hlm config show
 ```
 
-Process settings variables override the TOML file. The global CLI reads the process
-process variables and does not load a `.env` file on its own; to use one, export it
+Process environment variables override the TOML file. The global CLI reads these
+variables and does not load a `.env` file on its own; to use one, export it
 first (`set -a; source .env; set +a`) or run `uv run --env-file .env hlm ...`
 from a checkout.
 
@@ -378,5 +397,8 @@ and defensive watcher are thin adapters over those services.
 ## Project links
 
 - [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security policy](SECURITY.md)
 - [Report a bug or request a feature](https://github.com/Idriz-hax/harbor-ledger-memory/issues)
 - [Released versions](https://github.com/Idriz-hax/harbor-ledger-memory/releases)
