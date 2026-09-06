@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Settings - Harbor Ledger Memory{% endblock %}
+{% block content %}
+<h2>Harbor Ledger Memory settings</h2>
+<p>Changes are saved to the application configuration and require a service restart.</p>
+<form id="settings-form">
+    <label>Vault path <input name="vault_path" value="{{ settings.vault_path }}" required></label>
+    <label>Index root <input name="index_root" value="{{ settings.index_root }}" required></label>
+    <label>Folder rules (JSON)
+        <textarea name="folder_rules" rows="6">{{ settings.folder_rules | tojson }}</textarea>
+    </label>
+    <label>Embedding model <input name="embedding_model" value="{{ settings.embedding_model or '' }}"></label>
+    <button type="submit">Save settings</button>
+</form>
+<p id="settings-result" role="status"></p>
+<script>
+    function readCookie(name) {
+        const prefix = name + "=";
+        const cookie = document.cookie.split("; ").find((entry) => entry.startsWith(prefix));
+        return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : "";
+    }
+
+    document.getElementById("settings-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = new FormData(event.target);
+        let folderRules;
+        try {
+            folderRules = JSON.parse(form.get("folder_rules"));
+        } catch {
+            document.getElementById("settings-result").textContent = "Folder rules must be valid JSON.";
+            return;
+        }
+        const response = await fetch("/api/v1/settings", {
+            method: "PUT",
+            headers: {
+                "Content-Type": "application/json",
+                "X-HLM-CSRF": readCookie("hlm_ui_csrf")
+            },
+            body: JSON.stringify({
+                vault_path: form.get("vault_path"),
+                index_root: form.get("index_root"),
+                folder_rules: folderRules,
+                embedding_model: form.get("embedding_model") || null
+            })
+        });
+        const data = await response.json();
+        document.getElementById("settings-result").textContent = data.message || "Settings saved.";
+    });
+</script>
+{% endblock %}

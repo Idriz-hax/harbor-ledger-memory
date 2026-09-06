@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "harbor-ledger-memory"
+version = "1.0.0"
+description = "Local neural memory for AI agents, built from an existing Markdown vault"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.13",
+    "argon2-cffi>=23.1",
+    "click>=8.1",
+    "fastapi>=0.115",
+    "httpx>=0.28",
+    "jinja2>=3.1",
+    "networkx>=3.3",
+    "python-multipart>=0.0.12",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6.0",
+    "sqlalchemy>=2.0",
+    "typer>=0.12",
+    "uvicorn>=0.52.1",
+    "watchdog>=5.0",
+    "mcp==2.1.1",
+]
+
+[project.scripts]
+hlm = "harbor_ledger_memory.cli:main"
+
+[project.optional-dependencies]
+embeddings = ["sentence-transformers>=2.2.0"]
+
+[dependency-groups]
+dev = [
+    "httpx2>=0.1",
+    "pyright>=1.1.390",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend/src/harbor_ledger_memory"]
+include = ["backend/src/harbor_ledger_memory/static/**"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"backend/alembic.ini" = "harbor_ledger_memory/migrations/alembic.ini"
+"backend/migrations" = "harbor_ledger_memory/migrations"
+"web/dist" = "harbor_ledger_memory/web_dist"
+"backend/src/harbor_ledger_memory/skills/harbor-ledger-memory/SKILL.md" = "harbor_ledger_memory/skills/harbor-ledger-memory/SKILL.md"
+
+[tool.hatch.build.targets.sdist.force-include]
+"web/dist" = "web/dist"
+
+[tool.hatch.build.targets.sdist]
+# The built UI is intentionally included above; its dependency tree is not a
+# release input and can contain third-party/generated payloads.
+exclude = ["/web/node_modules/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["backend/src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+src = ["backend/src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pyright]
+include = ["backend/src", "tests"]
+exclude = ["**/__pycache__"]
+extraPaths = ["backend/src"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+typeCheckingMode = "strict"

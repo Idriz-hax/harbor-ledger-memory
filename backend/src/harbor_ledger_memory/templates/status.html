@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Status - Harbor Ledger Memory{% endblock %}
+{% block content %}
+<h2>Memory service health</h2>
+<table>
+    <tr><td>vault_scope</td><td>{{ vault_scope }}</td></tr>
+    <tr><td>effective_read_scope</td><td>{{ effective_read_scope }}</td></tr>
+    <tr><td>indexed_notes</td><td>{{ status.indexed_notes }}</td></tr>
+    <tr><td>scan_runs</td><td>{{ status.scan_runs }}</td></tr>
+    <tr><td>diagnostics</td><td>{{ status.diagnostics }}</td></tr>
+    <tr><td>last_scan_status</td><td>{{ status.last_scan_status or 'None' }}</td></tr>
+    <tr><td>last_scan_completed_at</td><td>{{ status.last_scan_completed_at or 'Never' }}</td></tr>
+</table>
+
+<h2>Links</h2>
+<table>
+    <tr><td>broken_links</td><td>{{ status.broken_links }}</td></tr>
+    <tr><td>ambiguous_links</td><td>{{ status.ambiguous_links }}</td></tr>
+</table>
+
+<h2>Short-Term Cache</h2>
+<table>
+    <tr><td>entry_count</td><td>{{ cache_status.entry_count }}</td></tr>
+    <tr><td>capacity</td><td>{{ cache_status.capacity }}</td></tr>
+    <tr><td>ttl_days</td><td>{{ cache_status.ttl_days }} days</td></tr>
+    <tr><td>max_boost</td><td>{{ cache_status.max_boost }}</td></tr>
+</table>
+{% endblock %}

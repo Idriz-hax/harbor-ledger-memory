@@ -1,0 +1,57 @@
+name: Test and release source ZIP
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to test and release
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build web UI
+        working-directory: web
+        run: npm ci && npm run build
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Run tests
+        run: uv run pytest
+      - name: Build Python distributions
+        run: uv build
+      - name: Create source archive
+        run: |
+          uv run python scripts/create_source_archive.py \
+            "$TAG" "harbor-ledger-memory-$TAG.zip"
+      - name: Verify release artifacts
+        run: |
+          uv run python scripts/verify_release_artifacts.py \
+            --tag "$TAG" dist/*.whl dist/*.tar.gz "harbor-ledger-memory-$TAG.zip"
+      - name: Publish release with source archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              "harbor-ledger-memory-$TAG.zip" dist/*.whl dist/*.tar.gz --clobber
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes \
+              "harbor-ledger-memory-$TAG.zip" dist/*.whl dist/*.tar.gz
+          fi
