@@ -45,7 +45,7 @@ def _make_vault(root: Path) -> None:
 
 
 def test_root_help_describes_vault_scope_and_local_management() -> None:
-    result = CliRunner().invoke(app, ["--help"])
+    result = CliRunner().invoke(app, ["--help"], color=False)
 
     assert result.exit_code == 0
     assert "Usage: hlm" in result.output
