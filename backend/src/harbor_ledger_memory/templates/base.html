@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}Harbor Ledger Memory{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    {% block head %}{% endblock %}
+    <style>
+        #update-banner {
+            display: none;
+            padding: 10px 16px;
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 4px;
+            margin: 0;
+            font-size: 0.9em;
+            color: #664d03;
+        }
+        #update-banner.visible {
+            display: block;
+        }
+        #update-banner button {
+            background: #ffc107;
+            color: #664d03;
+            border: 1px solid #e0a800;
+            border-radius: 3px;
+            padding: 2px 8px;
+            cursor: pointer;
+            font-size: 0.9em;
+            margin-left: 8px;
+        }
+        #update-banner button:hover {
+            background: #e0a800;
+        }
+        #update-banner button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        #update-banner .update-status {
+            margin-left: 8px;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Harbor Ledger Memory</h1>
+        <p>Neural memory for AI agents</p>
+        <nav>
+            <a href="/query">Query</a>
+            <a href="/graph">Graph</a>
+            <a href="/status">Status</a>
+            <a href="/settings">Settings</a>
+        </nav>
+    </header>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+    <footer>
+        <p id="update-banner">
+            <span id="update-message">Update available!</span>
+            <button id="update-install-btn" onclick="installUpdate()">Install</button>
+            <span id="update-status-text" class="update-status"></span>
+        </p>
+    </footer>
+    <script>
+        function readCookie(name) {
+            const prefix = name + "=";
+            const cookie = document.cookie.split("; ").find((entry) => entry.startsWith(prefix));
+            return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : "";
+        }
+
+        (async () => {
+            try {
+                const resp = await fetch("/api/v1/update-status");
+                const data = await resp.json();
+                if (data.update_available) {
+                    document.getElementById("update-message").textContent =
+                        `Update available (current: ${data.current_version}, latest: ${data.latest_version})`;
+                    document.getElementById("update-banner").classList.add("visible");
+                }
+            } catch {
+                // Silently fail — banner stays hidden
+            }
+        })();
+
+        async function installUpdate() {
+            const btn = document.getElementById("update-install-btn");
+            const status = document.getElementById("update-status-text");
+            btn.disabled = true;
+            btn.textContent = "Installing...";
+            status.textContent = "";
+            try {
+                const resp = await fetch("/api/v1/update", {
+                    method: "POST",
+                    headers: {"X-HLM-CSRF": readCookie("hlm_ui_csrf")}
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    status.textContent = data.message + " Reload page to apply.";
+                } else {
+                    status.textContent = data.message;
+                }
+            } catch (e) {
+                status.textContent = "Network error.";
+            }
+        }
+    </script>
+</body>
+</html>

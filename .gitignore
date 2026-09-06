@@ -1,0 +1,40 @@
+# Local environment files; keep the safe template tracked.
+.env
+.env.*
+!.env.example
+
+# Python environments and build output.
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+# The wheel build hook copies web/dist into the package at build time.
+backend/src/harbor_ledger_memory/web_dist/
+
+# Python caches and bytecode.
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test, type-check, lint, and coverage artifacts.
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.pytype/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Generated application data.
+data/
+
+# Local task tooling state.
+.superpowers/
+token-optimizer/
+.worktrees/
+docs/

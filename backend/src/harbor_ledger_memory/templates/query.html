@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Query - Harbor Ledger Memory{% endblock %}
+{% block content %}
+<p>Search the local memory graph and retrieve context for your next agent task.</p>
+<form method="post" action="/query">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search vault..." required>
+    <input type="text" name="project" value="{{ project }}" placeholder="Project (optional)">
+    <input type="text" name="token" placeholder="API token" required>
+    <button type="submit">Query</button>
+</form>
+
+{% if results %}
+<h2>Results ({{ results.total_estimated_tokens }} tokens)</h2>
+<p><a href="/api/v1/traces/{{ results.trace_id }}">Trace Replay ({{ results.trace_id }})</a></p>
+<table>
+    <thead>
+        <tr>
+            <th>Path</th>
+            <th>Retrieval</th>
+            <th>Activation</th>
+            <th>Reasons</th>
+            <th>Excerpt</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for memory in results.selected_memories %}
+        <tr>
+            <td><a href="/query?q={{ memory.path }}">{{ memory.path }}</a></td>
+            <td>{{ memory.retrieval_score }}</td>
+            <td>{{ memory.activation_score }}</td>
+            <td>{{ memory.reasons | join(", ") }}</td>
+            <td>{{ memory.excerpt }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}
