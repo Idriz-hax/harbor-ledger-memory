@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
+import click
 import pytest
 from typer.testing import CliRunner
 
@@ -48,7 +49,7 @@ def test_root_help_describes_vault_scope_and_local_management() -> None:
     result = CliRunner().invoke(app, ["--help"], color=False)
 
     assert result.exit_code == 0
-    assert "Usage: hlm" in result.output
+    assert "Usage: hlm" in click.unstyle(result.output)
     assert (
         "Read-only commands for the configured Obsidian vault scope"
         not in result.output
