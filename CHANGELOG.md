@@ -2,12 +2,10 @@
 
 ## Unreleased
 
-## 2.0.1 - 2026-09-05
+## 1.0.0 - 2026-09-05
 
 - CI mock-encoder tests now explicitly select the available runtime branch.
 - Synthetic user-home test fixture paths are neutralized.
-
-## 2.0.0 - 2026-09-05
 
 ### Config-gated server
 - All server surfaces are disabled by default: `frontend`, `api`, `mcp`, and

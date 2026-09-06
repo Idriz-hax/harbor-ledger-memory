@@ -38,3 +38,8 @@ data/
 token-optimizer/
 .worktrees/
 docs/
+!docs/
+docs/*
+!docs/assets/
+docs/assets/*
+!docs/assets/harbor-ledger-memory.png
