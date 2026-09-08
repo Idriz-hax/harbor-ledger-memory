@@ -28,6 +28,7 @@ from harbor_ledger_memory.services.vault_mutations import (
     VaultMutationService,
     VaultWriteDenied,
 )
+from harbor_ledger_memory.vault.boundary import DirectoryCreationError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -132,6 +133,23 @@ class TestReturnObjects:
 
 
 class TestDenyReject:
+    def test_missing_parent_is_checked_with_longest_prefix_policy(
+        self, tmp_path: Path
+    ) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+                FolderRule(path=PurePosixPath("AI/private"), access=FolderAccess.DENY),
+            ),
+        )
+        service, _, _ = _make_service(settings)
+        with pytest.raises(
+            VaultWriteDenied,
+            match=r"write denied: AI/private/new/deep\.md is denied by folder rule",
+        ):
+            service.request("AI/private/new/deep.md", "# denied")
+
     def test_deny_raises_vault_write_denied(self, tmp_path: Path) -> None:
         settings = _build_settings(
             tmp_path,
@@ -417,6 +435,79 @@ class TestAutoWriteUnmanaged:
 
 
 class TestApprovalWorkflow:
+    def test_approval_policy_change_audits_revalidated_affected_paths(
+        self, tmp_path: Path
+    ) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            ),
+        )
+        service, _, _ = _make_service(settings)
+        proposal = service.request("AI/new/deep.md", "# New")
+        service.boundary._rules = (  # noqa: SLF001
+            FolderRule(path=PurePosixPath("AI/new"), access=FolderAccess.DENY),
+        )
+        with pytest.raises(VaultWriteDenied):
+            service.approve(proposal.id)
+
+        event = next(
+            event
+            for event in reversed(service.activity_service.history())
+            if event.event_type == "vault.mutation.failed"
+        )
+        assert event.payload["affected_paths"] == [
+            "AI/new",
+            "AI/new/deep.md",
+        ]
+
+    def test_mkdir_is_pending_then_applies_and_records_created_paths(
+        self, tmp_path: Path
+    ) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            ),
+        )
+        service, vault, _ = _make_service(settings)
+        proposal = service.request("AI/new/deep", "", operation="mkdir")
+        assert proposal.status == "pending"
+        result = service.approve(proposal.id)
+        assert result.status == "applied"
+        assert result.created_paths == ["AI/new", "AI/new/deep"]
+        assert (vault / "AI/new/deep").is_dir()
+
+    def test_partial_mkdir_is_reconciled_with_created_paths_and_audit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            ),
+        )
+        service, _, _ = _make_service(settings)
+        proposal = service.request("AI/partial/deep", "", operation="mkdir")
+        monkeypatch.setattr(
+            service.boundary,
+            "atomic_mkdir",
+            lambda _identity: (_ for _ in ()).throw(
+                DirectoryCreationError(
+                    "injected mkdir failure", (PurePosixPath("AI/partial"),)
+                )
+            ),
+        )
+        result = service.approve(proposal.id)
+        assert result.status == "reconciliation_required"
+        assert result.created_paths == ["AI/partial"]
+        event = next(
+            event
+            for event in reversed(service.activity_service.history())
+            if event.event_type == "vault.mutation.failed"
+        )
+        assert event.payload["created_paths"] == ["AI/partial"]
     def test_approve_writes_and_marks_applied(self, tmp_path: Path) -> None:
         settings = _build_settings(
             tmp_path,

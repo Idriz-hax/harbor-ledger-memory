@@ -20,14 +20,17 @@ from mcp.server.mcpserver.exceptions import ToolError
 from harbor_ledger_memory.api.app import create_app
 from harbor_ledger_memory.api.auth import hlm_mcp_token
 from harbor_ledger_memory.api.mcp_server import build_mcp_server
+from harbor_ledger_memory.catalog.database import CatalogSession, create_database
 from harbor_ledger_memory.config import (
     ApiSettings,
     FolderAccess,
     FolderRule,
     Settings,
 )
+from harbor_ledger_memory.services.access import AccessPolicy
 from harbor_ledger_memory.services.activity import ActivityService
 from harbor_ledger_memory.services.tokens import TokenService
+from harbor_ledger_memory.services.vault_mutations import VaultMutationService, VaultWriteDenied
 
 _MANAGED = "---\nmanaged_by: harbor-ledger-memory\n---\n# Note\nv1\n"
 
@@ -151,6 +154,87 @@ def test_approver_policy_blocks_approval(tmp_path: Path) -> None:
         assert approved.status_code == 200
         assert approved.json()["status"] == "applied"
     assert (tmp_path / "AI" / "note.md").is_file()
+
+
+def test_token_policy_rejects_writable_target_when_missing_parent_is_denied(
+    tmp_path: Path,
+) -> None:
+    """A token's denied missing parent cannot be bypassed by a writable target rule."""
+    settings = _settings(
+        tmp_path,
+        draft=(FolderRule(path=PurePosixPath("AI"), access=FolderAccess.AUTO_WRITE),),
+    )
+    app = create_app(settings)
+    _, plaintext = app.state.token_service.create(
+        "writer",
+        rules=[
+            FolderRule(path=PurePosixPath("AI/new"), access=FolderAccess.NONE),
+            FolderRule(
+                path=PurePosixPath("AI/new/deep.md"),
+                access=FolderAccess.PROPOSE_WRITE,
+            ),
+        ],
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/writes",
+            json={"path": "AI/new/deep.md", "content": "# denied"},
+            headers=_headers(plaintext),
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "detail": "write denied: AI/new/deep.md is denied by folder rule"
+    }
+    assert not (tmp_path / "AI" / "new" / "deep.md").exists()
+
+
+def test_token_policy_revalidates_pending_approval_after_parent_denied(
+    tmp_path: Path,
+) -> None:
+    """Approval rejects a pending token proposal after its parent grant is removed."""
+    settings = _settings(
+        tmp_path,
+        draft=(FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),),
+    )
+    engine = create_database(settings.database_url)
+    with CatalogSession(bind=engine) as session:
+        service = VaultMutationService.from_settings(session, settings)
+        initial_policy = AccessPolicy(
+            (
+                FolderRule(path=PurePosixPath("AI/new"), access=FolderAccess.PROPOSE_WRITE),
+                FolderRule(
+                    path=PurePosixPath("AI/new/deep.md"),
+                    access=FolderAccess.PROPOSE_WRITE,
+                ),
+            )
+        )
+        proposal = service.request("AI/new/deep.md", "# pending", policy=initial_policy)
+
+        changed_policy = AccessPolicy(
+            (
+                FolderRule(path=PurePosixPath("AI/new"), access=FolderAccess.NONE),
+                FolderRule(
+                    path=PurePosixPath("AI/new/deep.md"),
+                    access=FolderAccess.PROPOSE_WRITE,
+                ),
+            )
+        )
+        with pytest.raises(VaultWriteDenied):
+            service.approve(proposal.id, policy=changed_policy)
+
+        assert proposal.status == "failed"
+        event = next(
+            event
+            for event in reversed(service.activity_service.history())
+            if event.event_type == "vault.mutation.failed"
+        )
+        assert event.payload["affected_paths"] == [
+            "AI/new",
+            "AI/new/deep.md",
+        ]
+    engine.dispose()
 
 
 def test_mcp_propose_write_follows_token_policy(tmp_path: Path) -> None:

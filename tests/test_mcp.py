@@ -34,7 +34,12 @@ def test_mcp_exposes_status_and_write_lifecycle_tools(tmp_path: Path) -> None:
         transport, manager = build_mcp_server(settings, activity)
         server = transport.state.mcp_server
         names = {tool.name for tool in asyncio.run(server.list_tools())}
-        assert {"propose_write", "approve_proposal", "reject_proposal"} <= names
+        assert {
+            "propose_write",
+            "propose_folder",
+            "approve_proposal",
+            "reject_proposal",
+        } <= names
         proposed = asyncio.run(
             server.call_tool(
                 "propose_write", {"path": "Public/new.md", "content": "# New"}
@@ -48,6 +53,20 @@ def test_mcp_exposes_status_and_write_lifecycle_tools(tmp_path: Path) -> None:
         )
         assert json.loads(approved.content[0].text)["status"] == "applied"
         assert (tmp_path / "Public" / "new.md").exists()
+        folder = asyncio.run(
+            server.call_tool("propose_folder", {"path": "Public/Inbox"})
+        )
+        folder_proposal = json.loads(folder.content[0].text)
+        assert folder_proposal["operation"] == "mkdir"
+        folder_approved = asyncio.run(
+            server.call_tool(
+                "approve_proposal", {"proposal_id": folder_proposal["id"]}
+            )
+        )
+        assert json.loads(folder_approved.content[0].text)["created_paths"] == [
+            "Public/Inbox"
+        ]
+        assert (tmp_path / "Public" / "Inbox").is_dir()
         rejected = asyncio.run(
             server.call_tool(
                 "propose_write", {"path": "Public/other.md", "content": "# Other"}

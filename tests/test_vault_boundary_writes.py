@@ -13,6 +13,8 @@ import pytest
 from harbor_ledger_memory.config import Settings
 from harbor_ledger_memory.vault.boundary import (
     AdmittedFileSnapshot,
+    DirectoryWriteResult,
+    DirectoryCreationError,
     FileVersion,
     VaultBoundary,
     VaultPathError,
@@ -31,7 +33,8 @@ def _build_boundary(
     """Return (boundary, vault_path) for a minimal test vault."""
     vault = tmp_path / "vault"
     vault.mkdir()
-    (vault / index_root).mkdir()
+    if index_root != ".":
+        (vault / index_root).mkdir()
     boundary = VaultBoundary(Settings(vault_path=vault, index_root=index_root))
     return boundary, vault
 
@@ -134,6 +137,130 @@ class TestWriteResult:
         assert not (vault / "AI" / "rm.md").exists()
 
 
+class TestAtomicMkdir:
+    def test_atomic_mkdir_surfaces_paths_created_before_walk_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        boundary, vault = _build_boundary(tmp_path, index_root=".")
+        real_open = os.open
+        fail_path = "third"
+
+        def _fail_after_first(path: str, flags: int, *args, **kwargs):
+            if path == fail_path:
+                raise OSError(5, "injected open failure")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", _fail_after_first)
+        with pytest.raises(DirectoryCreationError) as exc_info:
+            boundary.atomic_mkdir(PurePosixPath("first/second/third"))
+
+        assert exc_info.value.created_paths == (
+            PurePosixPath("first"),
+            PurePosixPath("first/second"),
+        )
+        assert (vault / "first").is_dir()
+    def test_atomic_mkdir_closes_returned_fd_in_finally(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        boundary, _vault = _build_boundary(tmp_path, index_root=".")
+        returned_fd = os.dup(boundary._index_root_fd)
+        closed: list[int] = []
+
+        monkeypatch.setattr(
+            boundary,
+            "_walk_dir_fd_with_created",
+            lambda _relative: (returned_fd, [], True),
+        )
+        real_close = os.close
+
+        def _record_close(fd: int) -> None:
+            closed.append(fd)
+            real_close(fd)
+
+        monkeypatch.setattr(os, "close", _record_close)
+        boundary.atomic_mkdir(PurePosixPath("AI"))
+
+        assert returned_fd in closed
+        with pytest.raises(OSError):
+            os.fstat(returned_fd)
+
+    def test_atomic_mkdir_reopen_race_is_normalized(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        boundary, _vault = _build_boundary(tmp_path, index_root=".")
+        real_mkdir = os.mkdir
+        real_open = os.open
+        reopened = False
+
+        def _mark_mkdir(path: str, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+            nonlocal reopened
+            real_mkdir(path, mode, dir_fd=dir_fd)
+            reopened = True
+
+        def _race_open(path: str, flags: int, *args, **kwargs):
+            if reopened and path == "AI":
+                raise FileNotFoundError(path)
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "mkdir", _mark_mkdir)
+        monkeypatch.setattr(os, "open", _race_open)
+        with pytest.raises(VaultPathError, match="directory component"):
+            boundary.atomic_mkdir(PurePosixPath("AI"))
+
+    def test_atomic_mkdir_fails_closed_without_no_follow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        boundary, _vault = _build_boundary(tmp_path, index_root=".")
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+        with pytest.raises(VaultPathError, match="no-follow"):
+            boundary.atomic_mkdir(PurePosixPath("AI"))
+
+    def test_atomic_mkdir_creates_nested_directory_and_reports_each_created_path(
+        self, tmp_path: Path
+    ) -> None:
+        boundary, vault = _build_boundary(tmp_path, index_root=".")
+
+        result = boundary.atomic_mkdir(PurePosixPath("AI/Inbox/2026"))
+
+        assert isinstance(result, DirectoryWriteResult)
+        assert result.created_paths == (
+            PurePosixPath("AI"),
+            PurePosixPath("AI/Inbox"),
+            PurePosixPath("AI/Inbox/2026"),
+        )
+        assert result.published is True
+        assert result.durable is True
+        assert (vault / "AI" / "Inbox" / "2026").is_dir()
+
+    def test_atomic_mkdir_is_idempotent_and_rejects_file_collision(
+        self, tmp_path: Path
+    ) -> None:
+        boundary, vault = _build_boundary(tmp_path, index_root=".")
+
+        boundary.atomic_mkdir(PurePosixPath("AI/Inbox"))
+        assert boundary.atomic_mkdir(PurePosixPath("AI/Inbox")).created_paths == ()
+        (vault / "AI" / "file").write_text("not a directory")
+        with pytest.raises(VaultPathError, match="directory"):
+            boundary.atomic_mkdir(PurePosixPath("AI/file/child"))
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (vault / "AI" / "link").symlink_to(outside, target_is_directory=True)
+        with pytest.raises(VaultPathError, match="directory"):
+            boundary.atomic_mkdir(PurePosixPath("AI/link/child"))
+
+    def test_missing_parent_paths_does_not_create_directories(
+        self, tmp_path: Path
+    ) -> None:
+        boundary, vault = _build_boundary(tmp_path, index_root=".")
+
+        assert boundary.missing_parent_paths(PurePosixPath("AI/Inbox/note.md")) == (
+            PurePosixPath("AI"),
+            PurePosixPath("AI/Inbox"),
+        )
+        assert not (vault / "AI").exists()
+
+
 # ---------------------------------------------------------------------------
 # atomic_create — held-fd, no-clobber
 # ---------------------------------------------------------------------------
@@ -151,6 +278,14 @@ class TestAtomicCreate:
         result = boundary.atomic_create(PurePosixPath("AI/deep/note.md"), b"# Deep")
         assert (vault / "AI" / "deep" / "note.md").read_bytes() == b"# Deep"
         assert result.durable
+
+    def test_atomic_create_nested_path_creates_missing_parents(
+        self, tmp_path: Path
+    ) -> None:
+        boundary, vault = _build_boundary(tmp_path)
+        boundary.atomic_create(PurePosixPath("AI/Inbox/new.md"), b"# New")
+        assert (vault / "AI" / "Inbox").is_dir()
+        assert (vault / "AI" / "Inbox" / "new.md").read_bytes() == b"# New"
 
     def test_atomic_create_no_overwrite_existing(self, tmp_path: Path) -> None:
         boundary, vault = _build_boundary(tmp_path)

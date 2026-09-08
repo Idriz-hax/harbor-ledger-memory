@@ -234,6 +234,28 @@ def test_serve_base_layout(tmp_path: Path) -> None:
     assert 'href="/assets/index-' in response.text
 
 
+def test_create_app_does_not_mount_missing_web_assets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_web_dist = tmp_path / "package" / "web_dist"
+    package_web_dist.mkdir(parents=True)
+    (package_web_dist / "index.html").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.setattr(
+        app_module.resources,
+        "files",
+        lambda _: tmp_path / "package",
+    )
+
+    app = create_app(
+        Settings(
+            vault_path=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+        )
+    )
+
+    assert not any(route.path.startswith("/assets") for route in app.routes)
+
+
 def test_query_screen_renders(tmp_path: Path) -> None:
     (tmp_path / "AI").mkdir()
     settings = Settings(
@@ -592,6 +614,76 @@ def test_proposal_requires_approval_then_writes(tmp_path: Path) -> None:
     assert again.status_code == 400
 
 
+def test_folder_proposal_requires_approval_then_creates_folder(tmp_path: Path) -> None:
+    """mkdir requests are pending proposals and expose path metadata."""
+    settings = Settings(
+        vault_path=tmp_path / "vault",
+        index_root="AI",
+        folder_rules=(
+            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+        ),
+        database_url=f"sqlite:///{tmp_path / 'mkdir.db'}",
+    )
+    (settings.vault_path / "AI").mkdir(parents=True)
+    client = _client_with_rules(
+        settings,
+        [FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)],
+    )
+
+    created = client.post(
+        "/api/v1/writes",
+        json={"path": "AI/Inbox", "content": "", "operation": "mkdir"},
+    )
+    assert created.status_code == 200
+    proposal = created.json()
+    assert proposal["operation"] == "mkdir"
+    assert proposal["status"] == "pending"
+    assert proposal["affected_paths"] == ["AI/Inbox"]
+    assert proposal["created_paths"] == []
+
+    approved = client.post(f"/api/v1/writes/{proposal['id']}/approve")
+    assert approved.status_code == 200
+    assert approved.json()["created_paths"] == ["AI/Inbox"]
+    assert (settings.vault_path / "AI" / "Inbox").is_dir()
+
+
+def test_folder_request_denies_unwritable_missing_parent_before_persisting(
+    tmp_path: Path,
+) -> None:
+    """A writable leaf must not bypass authorization for a missing parent."""
+    vault = tmp_path / "vault"
+    (vault / "AI").mkdir(parents=True)
+    settings = Settings(
+        vault_path=vault,
+        folder_rules=(
+            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.NONE),
+            FolderRule(
+                path=PurePosixPath("AI/allowed/new"),
+                access=FolderAccess.PROPOSE_WRITE,
+            ),
+        ),
+        database_url=f"sqlite:///{tmp_path / 'mkdir-denied.db'}",
+    )
+    client = _client_with_rules(
+        settings,
+        [
+            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.NONE),
+            FolderRule(
+                path=PurePosixPath("AI/allowed/new"),
+                access=FolderAccess.PROPOSE_WRITE,
+            ),
+        ],
+    )
+
+    denied = client.post(
+        "/api/v1/writes",
+        json={"path": "AI/allowed/new", "content": "", "operation": "mkdir"},
+    )
+    assert denied.status_code == 403
+    assert not (vault / "AI" / "allowed").exists()
+    assert client.get("/api/v1/writes").json()["proposals"] == []
+
+
 def test_proposal_rejection_keeps_vault_unchanged(tmp_path: Path) -> None:
     """POST /api/v1/writes/{id}/reject resolves without touching the vault."""
     settings = _write_settings(tmp_path)
@@ -821,6 +913,8 @@ def test_write_listing_returns_pending_and_recent_resolved_newest_first(
             "requested_at",
             "resolved_at",
             "failure_reason",
+            "affected_paths",
+            "created_paths",
         }
         assert item["rule_access"] == "propose-write"
         assert item["requested_at"]
@@ -839,7 +933,8 @@ def test_write_request_validation_errors_return_422(tmp_path: Path) -> None:
     client = authed_client(settings)
 
     missing_content = client.post("/api/v1/writes", json={"path": "AI/proposed/x.md"})
-    assert missing_content.status_code == 422
+    assert missing_content.status_code == 200
+    assert missing_content.json()["content"] == ""
 
     missing_path = client.post("/api/v1/writes", json={"content": "x"})
     assert missing_path.status_code == 422

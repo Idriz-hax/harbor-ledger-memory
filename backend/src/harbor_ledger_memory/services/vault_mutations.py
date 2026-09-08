@@ -6,6 +6,7 @@ import hashlib
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,6 +18,7 @@ from harbor_ledger_memory.services.activity import ActivityService, graph_refs
 from harbor_ledger_memory.services.scan import ScanService
 from harbor_ledger_memory.vault.boundary import (
     AdmittedFileSnapshot,
+    DirectoryCreationError,
     VaultBoundary,
     VaultPathError,
     WriteResult,
@@ -109,6 +111,7 @@ class VaultMutationService:
         self,
         path: str,
         content: str,
+        operation: Literal["write", "mkdir"] = "write",
         policy: AccessPolicy | None = None,
     ) -> MemoryWriteProposal:
         """Request a vault write and return the proposal object.
@@ -123,8 +126,10 @@ class VaultMutationService:
         unmanaged updates / conflicts).
         """
         identity = self._validate_path(path)
-        access = self._access_for(policy, identity)
-        proposal = self._build_proposal(identity, content, access)
+        affected = self._affected_paths(identity)
+        access = self._require_writable_paths(policy, affected)
+        proposal = self._build_proposal(identity, content, access, operation)
+        proposal.affected_paths = [path.as_posix() for path in affected]
         self._session.add(proposal)
         self._session.commit()
         self.activity_service.record(
@@ -135,6 +140,8 @@ class VaultMutationService:
                 "operation": proposal.operation,
                 "access": proposal.rule_access,
                 "status": proposal.status,
+                "affected_paths": proposal.affected_paths,
+                "created_paths": proposal.created_paths,
                 "graph_refs": graph_refs([proposal.path]),
             },
         )
@@ -172,6 +179,8 @@ class VaultMutationService:
                 "proposal_id": proposal.id,
                 "path": proposal.path,
                 "operation": proposal.operation,
+                "affected_paths": proposal.affected_paths,
+                "created_paths": proposal.created_paths,
                 "graph_refs": graph_refs([proposal.path]),
             },
         )
@@ -201,7 +210,16 @@ class VaultMutationService:
         ``pending`` for a later retry.
         """
         identity = PurePosixPath(proposal.path)
-        access = self._access_for(policy, identity)
+        affected = self._merge_affected_paths(
+            self._affected_paths(identity), self._stored_paths(proposal)
+        )
+        try:
+            access = self._require_writable_paths(policy, affected)
+        except VaultWriteDenied as exc:
+            if origin == "approve":
+                self._fail_proposal(proposal, str(exc), affected)
+                raise
+            return
 
         # (1) Revalidate the access rule.
         if origin == "approve":
@@ -211,32 +229,29 @@ class VaultMutationService:
             ):
                 label = "denied" if access is FolderAccess.DENY else "read-only"
                 reason = f"path is now {label} by access rule: {identity.as_posix()}"
-                self._fail_proposal(proposal, reason)
+                self._fail_proposal(proposal, reason, affected)
                 raise VaultWriteDenied(reason)
         else:
             if access is not FolderAccess.AUTO_WRITE:
                 return  # Access no longer allows auto-writes — keep pending.
-            if proposal.operation == "create":
+            if proposal.operation in ("create", "mkdir"):
                 return  # Auto-writes never create files — keep pending.
 
         # (2) Re-read the target and pin the version to write against.
         snapshot: AdmittedFileSnapshot | None = None
-        if proposal.operation == "update":
+        if proposal.operation == "mkdir":
+            snapshot = None
+        elif proposal.operation == "update":
             try:
                 snapshot = self.boundary.read_file(identity)
             except VaultPathError:
                 if origin == "approve":
-                    self._fail_proposal(
-                        proposal,
-                        "version conflict: file no longer exists on disk",
-                    )
+                    self._fail_proposal(proposal, "version conflict: file no longer exists on disk", affected)
                 return  # Auto: file gone — keep pending.
 
             if snapshot.version is None:
                 if origin == "approve":
-                    self._fail_proposal(
-                        proposal, "could not determine file version on disk"
-                    )
+                    self._fail_proposal(proposal, "could not determine file version on disk", affected)
                 return
 
             if proposal.expected_source_hash:
@@ -245,8 +260,8 @@ class VaultMutationService:
                     if origin == "approve":
                         self._fail_proposal(
                             proposal,
-                            "version conflict: file on disk changed "
-                            "since proposal was created",
+                            "version conflict: file on disk changed since proposal was created",
+                            affected,
                         )
                     return  # Auto: changed externally — keep pending.
 
@@ -267,7 +282,20 @@ class VaultMutationService:
         content_bytes = proposal.content.encode("utf-8")
         original_content = snapshot.content if snapshot is not None else None
         try:
-            if proposal.operation == "create":
+            if proposal.operation == "mkdir":
+                directory_result = self.boundary.atomic_mkdir(identity)
+                proposal.created_paths = [
+                    path.as_posix() for path in directory_result.created_paths
+                ]
+                if not directory_result.durable:
+                    self._persist_reconciliation(
+                        proposal,
+                        f"directory creation durability is uncertain for {identity.as_posix()}",
+                        affected,
+                    )
+                    return
+                write_result = directory_result
+            elif proposal.operation == "create":
                 write_result = self.boundary.atomic_create(identity, content_bytes)
             else:
                 assert snapshot is not None
@@ -281,16 +309,32 @@ class VaultMutationService:
         except VaultPathError as exc:
             # Boundary exceptions are always pre-publication: nothing on
             # disk changed, so there is nothing to roll back.
+            if proposal.operation == "mkdir":
+                if isinstance(exc, DirectoryCreationError):
+                    proposal.created_paths = [path.as_posix() for path in exc.created_paths]
+                self._persist_reconciliation(
+                    proposal,
+                    f"reconciliation-required: mkdir failed: {exc}",
+                    affected,
+                )
+                return
             if origin == "auto" and self._is_semantic_rejection(exc):
                 # Transient/semantic rejection: safe to retry later.
                 proposal.status = STATUS_PENDING
                 self._session.commit()
                 return
-            self._fail_proposal(proposal, str(exc))
+            self._fail_proposal(proposal, str(exc), affected)
             return
         except Exception as exc:
             # Unknown failure: the write may or may not have published.
-            self._rollback_best_effort(proposal, identity, original_content, str(exc))
+            if proposal.operation == "mkdir":
+                self._persist_reconciliation(
+                    proposal,
+                    f"reconciliation-required: mkdir failed: {exc}",
+                    affected,
+                )
+                return
+            self._rollback_best_effort(proposal, identity, original_content, str(exc), affected)
             return
 
         # (5) Resolve from the explicit WriteResult.
@@ -300,7 +344,7 @@ class VaultMutationService:
                 f"{identity.as_posix()} (post-publication fsync failed)"
             )
             self._rollback_and_resolve(
-                proposal, identity, original_content, write_result, primary_reason
+                proposal, identity, original_content, write_result, primary_reason, affected
             )
             return
 
@@ -317,12 +361,19 @@ class VaultMutationService:
             )
             scan_service.full_scan()
         except Exception as exc:
+            if proposal.operation == "mkdir":
+                self._persist_reconciliation(
+                    proposal,
+                    f"reconciliation-required: {exc}",
+                    affected,
+                )
+                return
             self._rollback_and_resolve(
-                proposal, identity, original_content, write_result, str(exc)
+                proposal, identity, original_content, write_result, str(exc), affected
             )
             return
 
-        self._mark_applied(proposal, content_bytes)
+        self._mark_applied(proposal, None if proposal.operation == "mkdir" else content_bytes, affected)
 
     # ------------------------------------------------------------------
     # Rollback / resolution
@@ -335,6 +386,7 @@ class VaultMutationService:
         original_content: bytes | None,
         write_result: WriteResult,
         primary_reason: str,
+        affected: tuple[PurePosixPath, ...],
     ) -> None:
         """Roll back a published write and resolve the proposal.
 
@@ -388,13 +440,13 @@ class VaultMutationService:
             rollback_durable = None
 
         if rollback_error is None and rollback_durable:
-            self._fail_proposal(proposal, primary_reason)
+            self._fail_proposal(proposal, primary_reason, affected)
         else:
             detail = rollback_error or "rollback durability is uncertain"
             self._persist_reconciliation(
                 proposal,
-                f"reconciliation-required: {primary_reason}; "
-                f"rollback failed or conflicted: {detail}",
+                f"reconciliation-required: {primary_reason}; rollback failed or conflicted: {detail}",
+                affected,
             )
 
     def _rollback_best_effort(
@@ -403,6 +455,7 @@ class VaultMutationService:
         identity: PurePosixPath,
         original_content: bytes | None,
         write_error: str,
+        affected: tuple[PurePosixPath, ...],
     ) -> None:
         """Recover from a write exception whose publication state is unknown."""
         if original_content is None:
@@ -412,8 +465,8 @@ class VaultMutationService:
             # reconciliation_required -- never an ordinary failed.
             self._persist_reconciliation(
                 proposal,
-                f"reconciliation-required: {write_error}; "
-                "create write raised without a confirmed durable result",
+                f"reconciliation-required: {write_error}; create write raised without a confirmed durable result",
+                affected,
             )
             return
         try:
@@ -422,7 +475,7 @@ class VaultMutationService:
             current = None
         if current is not None and current.content == original_content:
             # The disk still holds the original — the write never published.
-            self._fail_proposal(proposal, write_error)
+            self._fail_proposal(proposal, write_error, affected)
             return
         try:
             assert current is not None
@@ -435,21 +488,22 @@ class VaultMutationService:
         except Exception as exc:
             self._persist_reconciliation(
                 proposal,
-                f"reconciliation-required: {write_error}; "
-                f"rollback failed or conflicted: {exc}",
+                f"reconciliation-required: {write_error}; rollback failed or conflicted: {exc}",
+                affected,
             )
             return
         if rollback_result.durable:
-            self._fail_proposal(proposal, write_error)
+            self._fail_proposal(proposal, write_error, affected)
         else:
             self._persist_reconciliation(
                 proposal,
-                f"reconciliation-required: {write_error}; "
-                "rollback durability is uncertain",
+                f"reconciliation-required: {write_error}; rollback durability is uncertain",
+                affected,
             )
 
     def _persist_reconciliation(
-        self, proposal: MemoryWriteProposal, reason: str
+        self, proposal: MemoryWriteProposal, reason: str,
+        affected: tuple[PurePosixPath, ...] | None = None,
     ) -> None:
         """Persist a reconciliation-required resolution and audit it.
 
@@ -467,6 +521,8 @@ class VaultMutationService:
                 "path": proposal.path,
                 "operation": proposal.operation,
                 "failure_reason": reason,
+                "affected_paths": [p.as_posix() for p in (affected or self._stored_paths(proposal))],
+                "created_paths": proposal.created_paths,
                 "graph_refs": graph_refs([proposal.path]),
             },
         )
@@ -554,6 +610,45 @@ class VaultMutationService:
             raise VaultWriteDenied(str(exc)) from exc
         return identity
 
+    def _affected_paths(self, identity: PurePosixPath) -> tuple[PurePosixPath, ...]:
+        return (*self.boundary.missing_parent_paths(identity), identity)
+
+    @staticmethod
+    def _merge_affected_paths(
+        current: tuple[PurePosixPath, ...], stored: list[PurePosixPath]
+    ) -> tuple[PurePosixPath, ...]:
+        merged: list[PurePosixPath] = []
+        for path in (*current, *stored):
+            if path not in merged:
+                merged.append(path)
+        return tuple(merged)
+
+    def _require_writable_paths(
+        self,
+        policy: AccessPolicy | None,
+        paths: tuple[PurePosixPath, ...],
+    ) -> FolderAccess:
+        accesses = [(path, self._access_for(policy, path)) for path in paths]
+        denied: tuple[PurePosixPath, FolderAccess] | None = None
+        for path, access in accesses:
+            if not access.is_writable:
+                # Validate every affected path, but report the requested target
+                # rather than exposing a missing parent as the denial.
+                denied = denied or (path, access)
+        if denied is not None:
+            target = paths[-1]
+            _, access = denied
+            self._record_denied(target.as_posix(), access, paths)
+            label = "read-only" if access is FolderAccess.READ else "denied"
+            raise VaultWriteDenied(
+                f"write denied: {target.as_posix()} is {label} by folder rule"
+            )
+        return accesses[-1][1]
+
+    @staticmethod
+    def _stored_paths(proposal: MemoryWriteProposal) -> list[PurePosixPath]:
+        return [PurePosixPath(path) for path in proposal.affected_paths]
+
     def _access_for(
         self, policy: AccessPolicy | None, identity: PurePosixPath
     ) -> FolderAccess:
@@ -568,7 +663,11 @@ class VaultMutationService:
         return self.boundary.access_for(identity)
 
     def _build_proposal(
-        self, identity: PurePosixPath, content: str, access: FolderAccess
+        self,
+        identity: PurePosixPath,
+        content: str,
+        access: FolderAccess,
+        requested_operation: Literal["write", "mkdir"],
     ) -> MemoryWriteProposal:
         """Create a MemoryWriteProposal based on path, content, and access rule."""
         if access is FolderAccess.DENY:
@@ -580,6 +679,12 @@ class VaultMutationService:
             self._record_denied(identity.as_posix(), access)
             raise VaultWriteDenied(
                 f"write denied: {identity.as_posix()} is read-only (read access)"
+            )
+
+        if requested_operation == "mkdir":
+            return MemoryWriteProposal(
+                path=identity.as_posix(), content=content, operation="mkdir",
+                status=STATUS_PENDING, rule_access=access.value, requested_at=_now()
             )
 
         expected_source_hash: str | None = None
@@ -604,7 +709,10 @@ class VaultMutationService:
             expected_source_hash=expected_source_hash,
         )
 
-    def _record_denied(self, path: str, access: FolderAccess) -> None:
+    def _record_denied(
+        self, path: str, access: FolderAccess,
+        affected: tuple[PurePosixPath, ...] | None = None,
+    ) -> None:
         """Record an activity event for a denied write."""
         self.activity_service.record(
             "vault.mutation.requested",
@@ -612,6 +720,8 @@ class VaultMutationService:
                 "path": path,
                 "access": access.value,
                 "status": "denied",
+                "affected_paths": [p.as_posix() for p in (affected or (PurePosixPath(path),))],
+                "created_paths": [],
                 "graph_refs": graph_refs([path]),
             },
         )
@@ -648,7 +758,12 @@ class VaultMutationService:
             self._session.commit()
             self.activity_service.record(event_type, payload)
 
-    def _fail_proposal(self, proposal: MemoryWriteProposal, reason: str) -> None:
+    def _fail_proposal(
+        self,
+        proposal: MemoryWriteProposal,
+        reason: str,
+        affected: tuple[PurePosixPath, ...] | None = None,
+    ) -> None:
         """Mark a proposal failed and persist the audit with the state."""
         proposal.status = STATUS_FAILED
         proposal.resolved_at = _now()
@@ -660,16 +775,23 @@ class VaultMutationService:
                 "path": proposal.path,
                 "operation": proposal.operation,
                 "failure_reason": reason,
+                "affected_paths": [p.as_posix() for p in (affected or self._stored_paths(proposal))],
+                "created_paths": proposal.created_paths,
                 "graph_refs": graph_refs([proposal.path]),
             },
         )
 
     def _mark_applied(
-        self, proposal: MemoryWriteProposal, content_bytes: bytes
+        self,
+        proposal: MemoryWriteProposal,
+        content_bytes: bytes | None,
+        affected: tuple[PurePosixPath, ...] | None = None,
     ) -> None:
         """Mark a proposal applied and persist the audit with the state."""
         proposal.status = STATUS_APPLIED
-        proposal.applied_content_hash = hashlib.sha256(content_bytes).hexdigest()
+        proposal.applied_content_hash = (
+            hashlib.sha256(content_bytes).hexdigest() if content_bytes is not None else None
+        )
         proposal.resolved_at = _now()
         self._commit_and_audit(
             "vault.mutation.applied",
@@ -678,6 +800,8 @@ class VaultMutationService:
                 "path": proposal.path,
                 "operation": proposal.operation,
                 "applied_content_hash": proposal.applied_content_hash,
+                "affected_paths": [p.as_posix() for p in (affected or self._stored_paths(proposal))],
+                "created_paths": proposal.created_paths,
                 "graph_refs": graph_refs([proposal.path]),
             },
         )

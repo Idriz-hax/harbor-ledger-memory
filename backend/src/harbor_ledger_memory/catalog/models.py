@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
 from pathlib import PurePosixPath
 from typing import Any
 from uuid import uuid4
@@ -389,6 +390,35 @@ class MemoryWriteProposal(Base):
         String(64),
         nullable=True,
     )
+    affected_paths_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    created_paths_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+
+    @property
+    def affected_paths(self) -> list[str]:
+        return _decode_path_list(self.affected_paths_json)
+
+    @affected_paths.setter
+    def affected_paths(self, paths: list[str]) -> None:
+        self.affected_paths_json = json.dumps(paths, separators=(",", ":"))
+
+    @property
+    def created_paths(self) -> list[str]:
+        return _decode_path_list(self.created_paths_json)
+
+    @created_paths.setter
+    def created_paths(self, paths: list[str]) -> None:
+        self.created_paths_json = json.dumps(paths, separators=(",", ":"))
+
+
+def _decode_path_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    decoded = json.loads(value)
+    return decoded if isinstance(decoded, list) else []
 
 
 class ApiToken(Base):

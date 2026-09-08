@@ -59,6 +59,12 @@ function mockWrites(lists: unknown[], options: { getWrites?: Failure; postWrites
       const source = (lists[0] as { proposals?: WriteProposal[] })?.proposals?.find(w => w.id === id) ?? ({} as WriteProposal)
       return { ok: true, json: async () => ({ ...source, status, resolved_at: new Date().toISOString() }) } as Response
     }
+    if (url === '/api/v1/writes' && method === 'POST') {
+      if (options.postWrites) return fail(options.postWrites)
+      const body = JSON.parse(String(init?.body ?? '{}')) as { path?: string; content?: string; operation?: string }
+      const response = (lists[1] as { proposals?: WriteProposal[] })?.proposals?.[0]
+      return { ok: true, json: async () => response ?? { ...pendingProposal, path: body.path ?? '', content: body.content ?? '', operation: body.operation ?? '' } } as Response
+    }
     if (options.getWrites && method === 'GET' && /^\/api\/v1\/writes$/.test(url)) return fail(options.getWrites)
     if (url.includes('/api/v1/settings')) return { ok: true, json: async () => SETTINGS_BODY } as Response
     if (method === 'GET' && /^\/api\/v1\/writes$/.test(url)) {
@@ -136,11 +142,50 @@ describe('Settings · vault writes', () => {
     expect(screen.getByText('vault path disappeared')).toBeTruthy()
   })
 
+  it('uses neutral audit wording when a folder proposal is rejected', async () => {
+    mockWrites([{
+      proposals: [{ ...pendingProposal, id: 10, path: 'AI/Rejected', content: '', operation: 'mkdir', status: 'rejected', resolved_at: minutesAgo(3) }],
+    }])
+    render(<Settings />)
+
+    expect(await screen.findByText('AI/Rejected')).toBeTruthy()
+    expect(screen.getByText('folder proposal')).toBeTruthy()
+    expect(screen.queryByText('folder created')).toBeNull()
+  })
+
   it('shows empty states when there are no writes', async () => {
     mockWrites([{ proposals: [] }])
     render(<Settings />)
     expect(await screen.findByText(/no pending proposals/)).toBeTruthy()
     expect(screen.getByText(/no writes yet/)).toBeTruthy()
+  })
+
+  it('submits an accessible folder proposal and renders its pending state', async () => {
+    const { calls, fetchMock } = mockWrites([{ proposals: [] }, { proposals: [{
+      ...pendingProposal, path: 'AI/Inbox', content: '', operation: 'mkdir',
+    }] }])
+    render(<Settings />)
+    const user = userEvent.setup()
+
+    await user.type(await screen.findByLabelText('New folder path'), 'AI/Inbox')
+    await user.click(screen.getByRole('button', { name: 'Create folder' }))
+
+    await waitFor(() => expect(calls).toContainEqual({ url: '/api/v1/writes', method: 'POST' }))
+    expect(JSON.parse(String(fetchMock.mock.calls.find(([, init]) => init?.method === 'POST' && String(init.body).includes('mkdir'))?.[1]?.body))).toEqual({ path: 'AI/Inbox', content: '', operation: 'mkdir' })
+    expect(await screen.findByText('mkdir')).toBeTruthy()
+  })
+
+  it('exposes a folder proposal error and re-enables the form after a forbidden response', async () => {
+    mockWrites([{ proposals: [] }], { postWrites: { status: 403, text: 'folder proposals are not allowed' } })
+    render(<Settings />)
+    const user = userEvent.setup()
+    const input = await screen.findByLabelText('New folder path')
+    await user.type(input, 'AI/Private')
+    await user.click(screen.getByRole('button', { name: 'Create folder' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('folder proposals are not allowed')
+    expect(screen.getByRole('button', { name: 'Create folder' })).toBeEnabled()
   })
 
   it('shows an error state with retry when the writes API fails', async () => {

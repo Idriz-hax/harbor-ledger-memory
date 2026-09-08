@@ -293,24 +293,40 @@ def build_mcp_server(
         path: str | None = None,
         content: str | None = None,
         proposal_id: int | None = None,
+        write_operation: str = "write",
     ) -> str:
         policy = _policy()
         if operation == "request":
             assert path is not None
-            if not policy.can_propose(path):
-                raise ToolError(f"path '{path}' not writable by this token")
+            preflight_engine, preflight_session = _open_session()
+            try:
+                preflight_service = VaultMutationService.from_settings(
+                    preflight_session, settings, activity_service=activity_service
+                )
+                for affected in _mutation_affected_paths(preflight_service, path):
+                    if not policy.can_propose(affected.as_posix()):
+                        raise ToolError(
+                            f"path '{affected.as_posix()}' not writable by this token"
+                        )
+            finally:
+                preflight_session.close()
+                preflight_engine.dispose()
         elif proposal_id is not None:
-            # Approve/reject check the token's own rules for the proposal's
-            # path (mirrors the REST require_writable on the stored path).
             engine, session = _open_session()
             try:
                 existing = session.get(MemoryWriteProposal, proposal_id)
                 if existing is None:
                     raise ToolError(f"proposal {proposal_id} not found")
-                if not policy.can_propose(existing.path):
-                    raise ToolError(
-                        f"path '{existing.path}' not writable by this token"
-                    )
+                service = VaultMutationService.from_settings(
+                    session, settings, activity_service=activity_service
+                )
+                for affected in _mutation_affected_paths(
+                    service, existing.path, existing.affected_paths
+                ):
+                    if not policy.can_propose(affected.as_posix()):
+                        raise ToolError(
+                            f"path '{affected.as_posix()}' not writable by this token"
+                        )
             finally:
                 session.close()
                 engine.dispose()
@@ -321,7 +337,9 @@ def build_mcp_server(
             )
             if operation == "request":
                 assert path is not None and content is not None
-                proposal = service.request(path, content, policy=policy)
+                proposal = service.request(
+                    path, content, operation=write_operation, policy=policy
+                )
             elif operation == "approve":
                 assert proposal_id is not None
                 proposal = service.approve(proposal_id, policy=policy)
@@ -338,7 +356,16 @@ def build_mcp_server(
     @mcp.tool()
     def propose_write(path: str, content: str) -> str:  # pyright: ignore[reportUnusedFunction]
         """Propose a policy-checked vault write."""
-        return _mutation_call("request", path=path, content=content)
+        return _mutation_call(
+            "request", path=path, content=content, write_operation="write"
+        )
+
+    @mcp.tool()
+    def propose_folder(path: str) -> str:  # pyright: ignore[reportUnusedFunction]
+        """Propose a policy-checked vault folder creation."""
+        return _mutation_call(
+            "request", path=path, content="", write_operation="mkdir"
+        )
 
     @mcp.tool()
     def approve_proposal(proposal_id: int) -> str:  # pyright: ignore[reportUnusedFunction]
@@ -369,4 +396,21 @@ def _write_payload(proposal: MemoryWriteProposal) -> dict[str, object]:
         "requested_at": proposal.requested_at,
         "resolved_at": proposal.resolved_at,
         "failure_reason": proposal.failure_reason,
+        "affected_paths": proposal.affected_paths,
+        "created_paths": proposal.created_paths,
     }
+
+
+def _mutation_affected_paths(
+    service: VaultMutationService,
+    path: str,
+    stored_paths: list[str] | None = None,
+) -> tuple[PurePosixPath, ...]:
+    """Return current and persisted identities covered by a mutation."""
+    identity = service._validate_path(path)
+    paths = list(service._affected_paths(identity))
+    for stored in stored_paths or []:
+        candidate = PurePosixPath(stored)
+        if candidate not in paths:
+            paths.append(candidate)
+    return tuple(paths)
