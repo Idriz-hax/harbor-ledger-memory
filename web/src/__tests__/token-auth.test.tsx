@@ -54,6 +54,7 @@ const streamUrls = () => MockEventSource.instances.map(stream => stream.url)
 const appResponses = () => ({
   '/api/v1/activity': { body: { events: [] } },
   '/api/v1/settings': { body: { folders: ['AI'] } },
+  '/api/v1/graph/view': { body: { level: 2, scope: null, clusters: [], edges: [], generation: 'test' } },
 })
 
 afterEach(() => {
@@ -69,7 +70,7 @@ describe('Settings · API tokens', () => {
     })
     render(<Settings />)
     expect(screen.getByRole('heading', { name: 'External access' })).toBeInTheDocument()
-    expect(screen.getByText(/local Web UI is already authenticated/i)).toBeInTheDocument()
+    expect(screen.getByText(/Web UI uses its own authenticated session/i)).toBeInTheDocument()
     const tokenName = screen.getByRole('textbox', { name: /token name/i })
     expect(tokenName).toHaveAttribute('name', 'token-name')
     expect(tokenName).toHaveAttribute('autocomplete', 'off')
@@ -182,7 +183,7 @@ describe('App · automatic local UI session', () => {
     expect(window.location.hash).toBe('')
     await waitFor(() => expect(calls.some(call => call.url === '/api/v1/status')).toBe(true))
     await waitFor(() => expect(calls.some(call => call.url === '/api/v1/activity?limit=40')).toBe(true))
-    await waitFor(() => expect(calls.some(call => call.url === '/api/v1/graph')).toBe(true))
+    await waitFor(() => expect(calls.some(call => call.url.startsWith('/api/v1/graph/view'))).toBe(true))
     await waitFor(() => expect(streamUrls()).toContain('/api/v1/activity/stream'))
     expect(calls.some(call => call.headers?.Authorization)).toBe(false)
     expect(streamUrls().some(url => url.includes('?token='))).toBe(false)

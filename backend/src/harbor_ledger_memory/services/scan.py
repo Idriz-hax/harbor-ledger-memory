@@ -272,6 +272,9 @@ class ScanService:
             scan_run.completed_at = _timestamp()
             scan_run.notes_indexed = len(parsed_files)
             scan_run.diagnostics_count = len(diagnostics)
+            from harbor_ledger_memory.services.graph_materialization import materialize_graph
+
+            materialize_graph(session, created_at=scan_run.completed_at)
             session.commit()
         except Exception:
             session.rollback()

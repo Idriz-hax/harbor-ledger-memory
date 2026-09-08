@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import secrets
 import subprocess
 import sys
 import time
@@ -56,6 +57,7 @@ from harbor_ledger_memory.catalog.models import (
 from harbor_ledger_memory.config import (
     FolderRule,
     Settings,
+    ThemeSettings,
     config_payload,
     update_persistent_config,
 )
@@ -69,7 +71,7 @@ from harbor_ledger_memory.services.adaptive import (
     AdaptiveService,
     FeedbackValidationError,
 )
-from harbor_ledger_memory.services.graph_projection import GraphProjectionService
+from harbor_ledger_memory.services.graph_projection import GraphHandleError, GraphProjectionService
 from harbor_ledger_memory.services.memory import MemoryService
 from harbor_ledger_memory.services.query import QueryService
 from harbor_ledger_memory.services.scan import ScanService
@@ -319,6 +321,7 @@ class SettingsResponse(BaseModel):
     effective_read_scope: str
     config_path: str
     folders: list[str]
+    theme: ThemeSettings
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -330,6 +333,7 @@ class SettingsUpdateRequest(BaseModel):
     index_root: str | None = None
     folder_rules: list[FolderRule] | None = None
     embedding_model: str | None = None
+    theme: ThemeSettings | None = None
 
 
 class SettingsUpdateResponse(BaseModel):
@@ -424,6 +428,7 @@ class GraphNodeResponse(BaseModel):
     path: str
     title: str
     isolated: bool
+    kind: str = "file"
 
 
 class GraphEdgeResponse(BaseModel):
@@ -446,6 +451,40 @@ class GraphSnapshotResponse(BaseModel):
     nodes: list[GraphNodeResponse]
     edges: list[GraphEdgeResponse]
     generation: str
+
+
+class GraphClusterResponse(BaseModel):
+    """One bounded cluster. ``scope`` is the stable drill-down scope."""
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    label: str
+    kind: str
+    type_counts: dict[str, int]
+    member_count: int
+    scope: str
+
+
+class GraphClusterEdgeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    source: str
+    target: str
+    weight: float
+
+
+class GraphViewResponse(BaseModel):
+    """Bounded graph view: level 0 broad, level 1 folder/type, level 2 leaves.
+
+    Level 2 requires an authorized ``scope``; responses never include member
+    paths, and ``generation`` hashes only the returned authorized view.
+    """
+    model_config = ConfigDict(extra="forbid")
+    level: int
+    scope: str | None
+    clusters: list[GraphClusterResponse]
+    edges: list[GraphClusterEdgeResponse]
+    generation: str
+    next_cursor: str | None = None
 
 
 def create_app(
@@ -471,6 +510,7 @@ def create_app(
         mcp_app = None
         mcp_session_manager = None
     display_settings = settings
+    graph_cursor_secret = secrets.token_bytes(32)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
@@ -942,7 +982,9 @@ def create_app(
         engine = create_database(settings.database_url)
         session = CatalogSession(bind=engine)
         try:
-            snapshot = GraphProjectionService(session).snapshot()
+            snapshot = GraphProjectionService(session).snapshot(
+                path_filter=auth.policy.can_read
+            )
         finally:
             session.close()
             engine.dispose()
@@ -952,9 +994,9 @@ def create_app(
                     path=node.path,
                     title=node.title,
                     isolated=node.isolated,
+                    kind=node.kind,
                 )
                 for node in snapshot.nodes
-                if auth.policy.can_read(node.path)
             ],
             edges=[
                 GraphEdgeResponse(
@@ -965,10 +1007,57 @@ def create_app(
                     explicit=edge.explicit,
                 )
                 for edge in snapshot.edges
-                if auth.policy.can_read(edge.source)
-                and auth.policy.can_read(edge.target)
             ],
             generation=snapshot.generation,
+        )
+
+    @application.get("/api/v1/graph/view", response_model=GraphViewResponse)
+    def graph_view(
+        level: int = Query(0), scope: str | None = Query(None),
+        page_size: int = Query(100), cursor: str | None = Query(None),
+        auth: AuthContext = Depends(authenticated),
+    ) -> GraphViewResponse:
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        try:
+            try:
+                view = GraphProjectionService(session).view(
+                    level, scope=scope, path_filter=auth.policy.can_read,
+                    policy=auth.policy,
+                    policy_fingerprint=auth.policy.fingerprint(), cursor=cursor,
+                    page_size=page_size, cursor_secret=graph_cursor_secret,
+                )
+            except GraphHandleError:
+                raise HTTPException(status_code=400, detail="graph view handle invalid or expired; restart the view") from None
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            session.close()
+            engine.dispose()
+        return GraphViewResponse(
+            level=view.level, scope=view.scope,
+            clusters=[
+                GraphClusterResponse(
+                    id=cluster.id,
+                    label=cluster.label,
+                    kind=cluster.kind,
+                    type_counts=cluster.type_counts,
+                    member_count=cluster.member_count,
+                    scope=cluster.scope,
+                )
+                for cluster in view.clusters
+            ],
+            edges=[
+                GraphClusterEdgeResponse(
+                    id=edge.id,
+                    source=edge.source,
+                    target=edge.target,
+                    weight=edge.weight,
+                )
+                for edge in view.edges
+            ],
+            generation=view.generation,
+            next_cursor=view.next_cursor,
         )
 
     @application.post("/api/v1/queries", response_model=QueryResult)

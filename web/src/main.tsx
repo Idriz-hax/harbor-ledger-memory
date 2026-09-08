@@ -1,10 +1,46 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import cytoscape, { Core, ElementDefinition } from 'cytoscape'
+import {
+  Alert,
+  Box,
+  Button,
+  Checkbox,
+  Chip,
+  CircularProgress,
+  CssBaseline,
+  Divider,
+  FormControl,
+  FormControlLabel,
+  IconButton,
+  InputLabel,
+  List,
+  ListItemButton,
+  ListItemText,
+  MenuItem,
+  Paper,
+  Select,
+  TextField,
+  ThemeProvider,
+  Typography,
+  ToggleButton,
+  ToggleButtonGroup,
+} from '@mui/material'
 import './styles.css'
+import { DEFAULT_PRESET, makeAppTheme, presetFor, type ChartPreset } from './appTheme'
+import { TideAtlas } from './TideAtlas'
+import '@fontsource/newsreader/400.css'
+import '@fontsource/newsreader/600.css'
+import '@fontsource/ibm-plex-sans/400.css'
+import '@fontsource/ibm-plex-sans/600.css'
+import '@fontsource/ibm-plex-mono/400.css'
 
 type Screen = 'graph' | 'settings'
-type Activity = { id: number; event_type: string; created_at: string; payload: Record<string, unknown> }
+const SCREEN_META: Record<Screen, { label: string; icon: string; description: string }> = {
+  graph: { label: 'Memory Chart', icon: '⌁', description: 'Explore linked notes and live memory routes' },
+  settings: { label: 'Vault Permissions', icon: '⌑', description: 'Control what agents can read and write' },
+}
+export type Activity = { id: number; event_type: string; created_at: string; payload: Record<string, unknown> }
 type Status = { indexed_notes: number; scan_runs: number; diagnostics: number; broken_links: number; ambiguous_links: number; last_scan_status: string | null; last_scan_completed_at: string | null; effective_read_scope: string }
 
 export class APIError extends Error {
@@ -61,6 +97,7 @@ const formatCreated = (stamp: string) => {
 }
 const timeAgo = (stamp: string) => { const seconds = Math.max(0, (Date.now() - new Date(stamp).getTime()) / 1000); if (seconds < 60) return `${Math.round(seconds)}s ago`; if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`; return `${Math.round(seconds / 3600)}h ago` }
 const label = (value: string) => value.replaceAll('_', ' ')
+const prefersReducedMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
 /* --- App shell --- */
 export function App() {
@@ -68,6 +105,9 @@ export function App() {
   const [events, setEvents] = useState<Activity[]>([])
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState('')
+  /* The calm-neutral chart preset follows the vault's saved theme so the whole
+     shell (not just the canvas) reflects the operator's choice. */
+  const [preset, setPreset] = useState<ChartPreset>(DEFAULT_PRESET)
 
   const refresh = useCallback(() => {
     api<Status>('/api/v1/status')
@@ -77,6 +117,12 @@ export function App() {
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
+
+  useEffect(() => {
+    api<{ theme?: { preset?: string } }>('/api/v1/settings')
+      .then(r => setPreset(presetFor(r?.theme?.preset)))
+      .catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     const stream = new EventSource('/api/v1/activity/stream')
@@ -90,38 +136,50 @@ export function App() {
   }, [])
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">✦</span>
-          <div><strong>HARBOR LEDGER</strong><small>MEMORY SERVICE</small></div>
-        </div>
-        <nav>
-          {(['graph', 'settings'] as Screen[]).map((item, index) => (
-            <button className={screen === item ? 'nav-item active' : 'nav-item'} onClick={() => setScreen(item)} key={item}>
-              <span className="nav-number">0{index + 1}</span>
-              {label(item)}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-foot">
-          <span className={connected ? 'status-dot live' : 'status-dot'}></span>
-          <span>{connected ? 'live activity' : 'reconnecting'}</span>
-          <small>private · on device</small>
-        </div>
-      </aside>
-      <main className="main">
-        <header className="topbar">
-          <div>
-            <span className="eyebrow">NEURAL MEMORY FOR AI AGENTS</span>
-            <h1>{label(screen)}</h1>
-          </div>
-        </header>
-        {error && <div className="error-banner">{error}</div>}
-        {screen === 'graph' && <Graph events={events} onRefresh={refresh} />}
-        {screen === 'settings' && <Settings />}
-      </main>
-    </div>
+    <ThemeProvider theme={makeAppTheme(preset)}>
+      <CssBaseline />
+      <Box sx={{ display: 'flex', minHeight: '100vh', background: 'transparent' }}>
+        <Box component="aside" sx={{ width: 252, flexShrink: 0, p: 3, borderRight: 1, borderColor: 'divider', bgcolor: 'background.paper', display: 'flex', flexDirection: 'column', gap: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, pb: 3, mb: 2, borderBottom: 1, borderColor: 'divider' }}>
+            <Box component="span" aria-hidden sx={{ display: 'grid', width: 38, height: 38, placeItems: 'center', borderRadius: '50%', border: 1, borderColor: 'secondary.main', color: 'secondary.main', fontSize: 17 }}>✦</Box>
+            <Box>
+              <Typography sx={{ fontWeight: 700, fontSize: 13, letterSpacing: '.12em' }}>HARBOR LEDGER</Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ fontFamily: '"IBM Plex Mono", monospace', letterSpacing: '.12em' }}>MEMORY SERVICE</Typography>
+            </Box>
+          </Box>
+          <nav aria-label="Primary navigation">
+            <List disablePadding>
+              {(['graph', 'settings'] as Screen[]).map((item, index) => (
+                <ListItemButton
+                  key={item}
+                  selected={screen === item}
+                  onClick={() => setScreen(item)}
+                  aria-label={`0${index + 1} ${item} — ${SCREEN_META[item].description}`}
+                  aria-current={screen === item ? 'page' : undefined}
+                  title={SCREEN_META[item].label}
+                  sx={{ minHeight: 52, mb: 1, gap: 1.5 }}
+                >
+                  <ListItemText primary={SCREEN_META[item].label} primaryTypographyProps={{ variant: 'subtitle2', fontWeight: 600 }} />
+                </ListItemButton>
+              ))}
+            </List>
+          </nav>
+          <Box sx={{ mt: 'auto', pt: 2, borderTop: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', gap: 1, color: 'text.secondary', fontSize: 12 }}>
+            <Box component="span" aria-hidden sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: connected ? 'success.main' : 'error.main', display: 'inline-block', flexShrink: 0 }} />
+            <span>{connected ? 'activity connected' : 'reconnecting'}</span>
+          </Box>
+        </Box>
+        <Box component="main" sx={{ flexGrow: 1, width: '100%', minWidth: 0, p: { xs: 2, sm: 3, md: 4 }, display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 'none' }}>
+          <Box component="header" sx={{ mb: 1 }}>
+            <Typography variant="overline" color="text.secondary" sx={{ display: 'block', mb: 1 }}>LOCAL · PRIVATE · AUDITABLE MEMORY</Typography>
+            <Typography variant="h2">{SCREEN_META[screen].label}</Typography>
+          </Box>
+          {error && <Alert severity="error">{error}</Alert>}
+          {screen === 'graph' && <TideAtlas events={events} onRefresh={refresh} />}
+          {screen === 'settings' && <Settings />}
+        </Box>
+      </Box>
+    </ThemeProvider>
   )
 }
 
@@ -152,7 +210,7 @@ const REFRESH_EVENT_TYPES = new Set(['scan', 'vault.mutation.applied'])
 const NODE_ACTIVITY_CLASSES = [...new Set(Object.values(ACTIVITY_NODE_CLASS))].join(' ')
 /* A compact, colour-blind-friendly family: folders differ clearly, while live
    activity keeps the brighter semantic colours (read/index/propose/write). */
-const FOLDER_PALETTE = ['#35d7c2', '#649cff', '#c28aff', '#ffb35c', '#ff719b', '#7cde79']
+const FOLDER_PALETTE = ['#38d6c0', '#2fa99f', '#75cfc1', '#f2b84b', '#d99a36', '#9ce8dc']
 const FLOW_FOLDER_CLASSES = FOLDER_PALETTE.map((_, index) => `flow-folder-${index}`).join(' ')
 const TRANSIT_NODE_CLASSES = FOLDER_PALETTE.map((_, index) => `transit-folder-${index}`).join(' ')
 const FLOW_EDGE_CLASSES = `path-active flow-query flow-scan flow-proposal flow-write flow-reverse ${FLOW_FOLDER_CLASSES}`
@@ -313,11 +371,12 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
     }
     const handle = { cancelled: false, nodeEles: null as AnyCollection | null, edgeEles: null as AnyCollection | null, cleanupTimer: null as number | null }
     pulse.current = handle
+    const motionDuration = prefersReducedMotion() ? 0 : PULSE_MS
     const finish = () => {
       if (handle.cancelled) return
       if (terminal?.length && nodeClass) {
         terminal.addClass(nodeClass)
-        terminal.animate({ style: { width: 25 }, duration: PULSE_MS, easing: 'ease-out' })
+         terminal.animate({ style: { width: 25 }, duration: motionDuration, easing: 'ease-out' })
         handle.nodeEles = terminal
       }
       handle.edgeEles = core.edges().filter(edge => edge.hasClass('path-active'))
@@ -340,7 +399,7 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
       handle.edgeEles = core.edges().filter(edge => edge.hasClass('path-active'))
       segment.edge.animate({
         style: { opacity: 1, 'line-dash-offset': segment.reverse ? -18 : 18 },
-        duration: PULSE_MS,
+         duration: motionDuration,
         easing: 'ease-in-out',
         complete: () => { segment.arrival.addClass(segment.transitClass); step(index + 1) },
       })
@@ -579,7 +638,7 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
             'background-color': '#b8b8b8',
             color: '#dce9f0',
             'font-size': 10,
-            'font-family': 'Inter, sans-serif',
+             'font-family': 'ui-sans-serif, sans-serif',
             'text-opacity': 0,
             'text-background-color': '#0b1117',
             'text-background-opacity': 0.9,
@@ -594,10 +653,10 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
             'opacity': 0.94,
           },
         },
-        ...folderOptions.map((folder, index) => ({ selector: `node.folder-${index}`, style: { 'background-color': FOLDER_PALETTE[index % FOLDER_PALETTE.length], 'border-color': '#e6fffa', 'outline-width': 2, 'outline-color': FOLDER_PALETTE[index % FOLDER_PALETTE.length], 'outline-opacity': 0.24 } as any })),
-        { selector: 'node.index-node', style: { 'shape': 'diamond', 'width': 18, 'height': 18, 'border-width': 2, 'border-opacity': 0.95, 'outline-width': 3, 'outline-opacity': 0.32, 'text-opacity': 0, 'z-index': 100 } as any },
-        { selector: 'node.root-index', style: { 'shape': 'hexagon', 'width': 25, 'height': 25, 'border-width': 2.5, 'outline-width': 4, 'outline-opacity': 0.4, 'text-opacity': 0.82, 'font-size': 8, 'font-weight': 600, 'text-margin-y': -22, 'text-background-opacity': 0.64 } as any },
-        { selector: 'node.hub-node', style: { 'border-width': 2, 'border-opacity': 0.85, 'outline-width': 3, 'outline-opacity': 0.26 } as any },
+        ...folderOptions.map((folder, index) => ({ selector: `node.folder-${index}`, style: { 'background-color': FOLDER_PALETTE[index % FOLDER_PALETTE.length], 'border-color': '#e6fffa', 'border-width': 2 } as any })),
+        { selector: 'node.index-node', style: { 'shape': 'diamond', 'width': 18, 'height': 18, 'border-width': 2, 'border-opacity': 0.95, 'text-opacity': 0, 'z-index': 100 } as any },
+        { selector: 'node.root-index', style: { 'shape': 'hexagon', 'width': 25, 'height': 25, 'border-width': 2.5, 'text-opacity': 0.82, 'font-size': 8, 'font-weight': 600, 'text-margin-y': -22, 'text-background-opacity': 0.64 } as any },
+        { selector: 'node.hub-node', style: { 'border-width': 2, 'border-opacity': 0.85 } as any },
         {
           selector: 'node[?isolated]',
           style: {
@@ -607,14 +666,12 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
             'opacity': 0.7,
           },
         },
-        { selector: 'node.pinned', style: { 'border-width': 2, 'border-color': '#f2c94c', 'outline-width': 4, 'outline-color': '#f2c94c', 'outline-opacity': 0.4 } as any },
+        { selector: 'node.pinned', style: { 'border-width': 3, 'border-color': '#f2b84b' } as any },
         { selector: 'node.focused', style: { 'text-opacity': 1, 'font-size': 10, 'font-weight': 600, 'text-outline-width': 3, 'text-outline-color': '#0b1117', 'text-margin-y': -18, 'z-index': 9999 } as any },
-        { selector: 'node.query-active', style: { 'background-color': '#59d9b1', 'border-width': 2, 'border-color': '#c9fff0', 'border-opacity': 0.9, 'outline-width': 6, 'outline-color': '#2dcfa2', 'outline-opacity': 0.55, 'opacity': 1 } as any },
-        { selector: 'node.scan-active', style: { 'background-color': '#6d9cff', 'border-width': 2, 'border-color': '#dce6ff', 'border-opacity': 0.9, 'outline-width': 6, 'outline-color': '#6d9cff', 'outline-opacity': 0.55, 'opacity': 1 } as any },
-        { selector: 'node.proposal-active', style: { 'background-color': '#bd7cff', 'border-width': 2, 'border-color': '#f0ddff', 'border-opacity': 0.9, 'outline-width': 6, 'outline-color': '#bd7cff', 'outline-opacity': 0.55, 'opacity': 1 } as any },
-        /* Radial coral-to-amber: background-fill switches the node to a gradient and
-           the stop colors are the full stop list (center coral → edge amber). */
-        { selector: 'node.write-active', style: { 'background-fill': 'radial-gradient', 'background-gradient-stop-colors': ['#ff6f91', '#ffbc5b'], 'border-width': 2, 'border-color': '#fff1d8', 'border-opacity': 0.9, 'outline-width': 6, 'outline-color': '#ff7b78', 'outline-opacity': 0.6, 'opacity': 1 } as any },
+        { selector: 'node.query-active', style: { 'background-color': '#59d9b1', 'border-width': 3, 'border-color': '#c9fff0', 'border-opacity': 1, 'opacity': 1 } as any },
+        { selector: 'node.scan-active', style: { 'background-color': '#75cfc1', 'border-width': 3, 'border-color': '#d8fff7', 'border-opacity': 1, 'opacity': 1 } as any },
+        { selector: 'node.proposal-active', style: { 'background-color': '#f2b84b', 'border-width': 3, 'border-color': '#fff0c7', 'border-opacity': 1, 'opacity': 1 } as any },
+        { selector: 'node.write-active', style: { 'background-color': '#d99a36', 'border-width': 3, 'border-color': '#fff0c7', 'border-opacity': 1, 'opacity': 1 } as any },
         {
           selector: 'edge',
           style: {
@@ -630,15 +687,15 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
         { selector: 'edge[edge_type = "links_to"]', style: { 'width': 1.15, 'line-color': '#9ab7c1', 'target-arrow-color': '#9ab7c1', 'opacity': 0.6 } },
         { selector: 'edge[edge_type = "contains"]', style: { 'width': 1, 'line-style': 'dotted', 'line-color': '#7c9a91', 'target-arrow-shape': 'none', 'opacity': 0.62 } },
         { selector: 'edge.path-active', style: { 'width': 2.5, 'line-style': 'dashed', 'line-dash-pattern': [9, 7], 'line-color': '#59d9b1', 'target-arrow-color': '#59d9b1', 'target-arrow-shape': 'triangle', 'arrow-scale': 0.8, 'opacity': 1 } },
-        { selector: 'edge.flow-scan', style: { 'line-color': '#6d9cff', 'target-arrow-color': '#6d9cff' } },
-        { selector: 'edge.flow-proposal', style: { 'line-color': '#bd7cff', 'target-arrow-color': '#bd7cff' } },
-        { selector: 'edge.flow-write', style: { 'line-color': '#ff8a70', 'target-arrow-color': '#ff8a70' } },
+        { selector: 'edge.flow-scan', style: { 'line-color': '#75cfc1', 'target-arrow-color': '#75cfc1' } },
+        { selector: 'edge.flow-proposal', style: { 'line-color': '#f2b84b', 'target-arrow-color': '#f2b84b' } },
+        { selector: 'edge.flow-write', style: { 'line-color': '#d99a36', 'target-arrow-color': '#d99a36' } },
         { selector: 'edge.flow-reverse', style: { 'source-arrow-shape': 'triangle', 'source-arrow-color': '#59d9b1', 'target-arrow-shape': 'none' } },
-        { selector: 'edge.flow-reverse.flow-scan', style: { 'source-arrow-color': '#6d9cff' } },
-        { selector: 'edge.flow-reverse.flow-proposal', style: { 'source-arrow-color': '#bd7cff' } },
-        { selector: 'edge.flow-reverse.flow-write', style: { 'source-arrow-color': '#ff8a70' } },
+        { selector: 'edge.flow-reverse.flow-scan', style: { 'source-arrow-color': '#75cfc1' } },
+        { selector: 'edge.flow-reverse.flow-proposal', style: { 'source-arrow-color': '#f2b84b' } },
+        { selector: 'edge.flow-reverse.flow-write', style: { 'source-arrow-color': '#d99a36' } },
         ...FOLDER_PALETTE.map((color, index) => ({ selector: `edge.flow-folder-${index}`, style: { 'line-color': color, 'target-arrow-color': color, 'source-arrow-color': color } })),
-        ...FOLDER_PALETTE.map((color, index) => ({ selector: `node.transit-folder-${index}`, style: { 'border-width': 2, 'border-color': color, 'outline-width': 7, 'outline-color': color, 'outline-opacity': .58, 'opacity': 1 } as any })),
+        ...FOLDER_PALETTE.map((color, index) => ({ selector: `node.transit-folder-${index}`, style: { 'border-width': 3, 'border-color': color, 'opacity': 1 } as any })),
       ],
       layout: { name: 'preset', fit: true, padding: shouldReuseSavedLayout ? 72 : 92 },
       minZoom: 0.3,
@@ -754,9 +811,9 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
       setSelectedPath(node.id())
       cy.current?.nodes().removeClass('focused')
       node.addClass('focused')
-      node.animate({ position: { x: node.position('x') + 5, y: node.position('y') + 5 }, duration: 100 }, () => {
-        node.animate({ position: { x: node.position('x') - 5, y: node.position('y') - 5 }, duration: 100 })
-      })
+       if (!prefersReducedMotion()) node.animate({ position: { x: node.position('x') + 5, y: node.position('y') + 5 }, duration: 100 }, () => {
+         node.animate({ position: { x: node.position('x') - 5, y: node.position('y') - 5 }, duration: 100 })
+       })
     })
 
     /* Replay events that arrived before this core existed, then replay the most
@@ -867,7 +924,7 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
   }
 
   const moveSelection = useCallback((delta: number) => {
-    const list = snapshot?.nodes ?? []
+    const list = visibleNodes
     if (!list.length) return
     setSelectedPath(prev => {
       const idx = prev ? list.findIndex(n => n.path === prev) : -1
@@ -876,17 +933,17 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
       const next = idx === -1 ? (delta > 0 ? 0 : list.length - 1) : (idx + delta + list.length) % list.length
       return list[next].path
     })
-  }, [snapshot])
+  }, [visibleNodes])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    const list = snapshot?.nodes ?? []
+    const list = visibleNodes
     if (!list.length) return
     if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); moveSelection(1) }
     else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); moveSelection(-1) }
     else if (e.key === 'Home') { e.preventDefault(); setSelectedPath(list[0].path) }
     else if (e.key === 'End') { e.preventDefault(); setSelectedPath(list[list.length - 1].path) }
     else if (e.key === 'Escape') { e.preventDefault(); setSelectedPath(null) }
-  }, [moveSelection, snapshot])
+  }, [moveSelection, visibleNodes])
 
   /* Accessible label for the canvas: state, counts, and how to operate it. */
   const graphLabel =
@@ -900,29 +957,35 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
 
   return (
     <div className="content graph-screen">
-      <div className="graph-header screen-intro">
-        <div>
-          <span className="eyebrow">KNOWLEDGE GRAPH</span>
-          <h2>{hasNodes ? `${nodes.length} notes` : '…'}</h2>
-          <p>Live data flows light the path: read, index, propose, and write.</p>
-        </div>
-        <div className="graph-controls">
-          {scanning && <span className="live-indicator"><i /> scanning…</span>}
-          {!scanning && <span className="live-indicator"><i /> live</span>}
-          <button className="chip" onClick={handleRescan} disabled={scanning}>
-            {scanning ? 'rescanning…' : 'rescan'}
-          </button>
-          {rescanError && <span className="rescan-error" role="alert">{rescanError}</span>}
-        </div>
-      </div>
-      <div className="graph-workspace-toolbar" aria-label="Graph workspace controls">
-        <label>Folder<select aria-label="Filter graph by folder" value={folderScope} onChange={e => { setFolderScope(e.target.value); setSelectedPath(null) }}><option value="all">All folders</option>{folderOptions.map(folder => <option key={folder} value={folder}>{folder}</option>)}</select></label>
-        <label className="graph-toggle"><input type="checkbox" checked={showDisconnected} onChange={e => setShowDisconnected(e.target.checked)} />show {disconnectedCount} disconnected</label>
-        <span className="graph-flow-state"><i />live trails</span>
-        <div className="graph-layout-actions"><button className="chip" onClick={saveLayout}>save layout</button><button className="chip" onClick={resetLayout}>reset map</button><button className="chip" onClick={toggleFullscreen} aria-label="View graph fullscreen">fullscreen</button></div>
-      </div>
-      <div ref={graphCardRef} className="graph-card">
-        {isGraphFullscreen && <button className="graph-fullscreen-exit" onClick={toggleFullscreen}>exit fullscreen</button>}
+      <Box className="graph-header screen-intro" sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
+        <Box sx={{ flex: 1, minWidth: 240 }}>
+          <Typography variant="overline" color="text.secondary">MEMORY CHART · LOCAL INDEX</Typography>
+          <Typography variant="h5">{hasNodes ? `${nodes.length} notes` : '…'}</Typography>
+          <Typography variant="body2" color="text.secondary">This Harbor Ledger server keeps its vault local. Teal routes show reads; amber marks attention and approval.</Typography>
+        </Box>
+        <Box className="graph-controls" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+          <span className="live-indicator"><i /> {scanning ? 'scanning…' : 'live'}</span>
+          <Button onClick={handleRescan} disabled={scanning}>{scanning ? 'rescanning…' : 'rescan'}</Button>
+          {rescanError && <Typography className="rescan-error" variant="body2" color="error.main" role="alert">{rescanError}</Typography>}
+        </Box>
+      </Box>
+      <Box className="graph-workspace-toolbar" aria-label="Graph workspace controls" sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', p: 1.25, border: 1, borderColor: 'divider', borderRadius: 2, bgcolor: 'background.paper' }}>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 1 }}>Folder
+          <Select native size="small" aria-label="Filter graph by folder" value={folderScope} onChange={e => { setFolderScope(e.target.value); setSelectedPath(null) }}>
+            <option value="all">All folders</option>
+            {folderOptions.map(folder => <option key={folder} value={folder}>{folder}</option>)}
+          </Select>
+        </label>
+        <FormControlLabel className="graph-toggle" control={<Checkbox checked={showDisconnected} onChange={e => setShowDisconnected(e.target.checked)} />} label={`show ${disconnectedCount} unlinked`} />
+        <span className="graph-flow-state"><i />activity connected</span>
+        <Box className="graph-layout-actions" sx={{ ml: 'auto', display: 'flex', gap: 1 }}>
+          <Button size="small" variant="outlined" onClick={saveLayout}>save chart</Button>
+          <Button size="small" variant="outlined" onClick={resetLayout}>reset chart</Button>
+          <Button size="small" variant="outlined" onClick={toggleFullscreen} aria-label="View memory chart fullscreen">fullscreen</Button>
+        </Box>
+      </Box>
+      <div ref={graphCardRef} className="graph-card" style={{ position: 'relative' }}>
+        {isGraphFullscreen && <Button className="graph-fullscreen-exit" size="small" onClick={toggleFullscreen}>exit fullscreen</Button>}
         <svg className="graph-group-auras" aria-hidden="true" viewBox={`0 0 ${auraViewport.width} ${auraViewport.height}`} preserveAspectRatio="none">
           <defs>
             <filter id="group-gas-wide" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="19" /></filter>
@@ -943,28 +1006,28 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
           onKeyDown={handleKeyDown}
         />
         {phase === 'loading' && (
-          <div className="graph-loading" role="status">
-            <span className="graph-loading-pulse" />
-            <span className="graph-empty-text">indexing notes…</span>
-          </div>
+          <Box className="graph-loading" role="status" sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1.5 }}>
+            <CircularProgress size={28} />
+            <Typography variant="body2" color="text.secondary">indexing notes…</Typography>
+          </Box>
         )}
         {phase === 'error' && (
-          <div className="graph-empty" role="alert">
-            <span className="graph-empty-text">{graphError || 'graph unavailable'}</span>
-            <button className="chip" onClick={() => loadGraph('initial')}>retry</button>
-          </div>
+          <Box className="graph-empty" role="alert" sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1.5 }}>
+            <Typography variant="body2" color="error.main">{graphError || 'graph unavailable'}</Typography>
+            <Button onClick={() => loadGraph('initial')}>retry</Button>
+          </Box>
         )}
         {phase === 'ready' && !hasNodes && (
-          <div className="graph-empty">
-            <div className="graph-empty-pulse" />
-            <span className="graph-empty-text">no indexed notes yet</span>
-          </div>
+          <Box className="graph-empty" sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1.5 }}>
+            <CircularProgress size={28} />
+            <Typography variant="body2" color="text.secondary">no indexed notes yet</Typography>
+          </Box>
         )}
         {staleError && phase === 'ready' && (
-          <div className="graph-stale" role="status">
-            <span>live update stale</span>
-            <button className="chip" onClick={() => loadGraph('refresh')}>retry</button>
-          </div>
+          <Box className="graph-stale" role="status" sx={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 1.5, p: 1, border: 1, borderColor: 'warning.main', bgcolor: 'warning.light', borderRadius: 1.5 }}>
+            <Typography variant="body2">live update stale</Typography>
+            <Button size="small" onClick={() => loadGraph('refresh')}>retry</Button>
+          </Box>
         )}
         {hasNodes && (
           <div className="graph-legend">
@@ -981,10 +1044,13 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
         )}
         {selectedNode && (
           <section className="node-details" aria-label="Selected note details">
-            <div className="node-details-head">
-              <h3>{selectedNode.title}</h3>
-              <div><button className={pinnedPaths.has(selectedNode.path) ? 'chip selected' : 'chip'} onClick={togglePin}>{pinnedPaths.has(selectedNode.path) ? 'unpin' : 'pin'}</button><button className="chip" onClick={() => setSelectedPath(null)}>close</button></div>
-            </div>
+            <Box className="node-details-head" sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+              <Typography variant="h6" sx={{ flex: 1, minWidth: 160 }}>{selectedNode.title}</Typography>
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                <Button size="small" variant={pinnedPaths.has(selectedNode.path) ? 'contained' : 'outlined'} onClick={togglePin}>{pinnedPaths.has(selectedNode.path) ? 'unpin' : 'pin'}</Button>
+                <Button size="small" onClick={() => setSelectedPath(null)}>close</Button>
+              </Box>
+            </Box>
             <dl className="node-details-list">
               <div><dt>path</dt><dd>{selectedNode.path}</dd></div>
               <div><dt>links</dt><dd>{connections}</dd></div>
@@ -992,7 +1058,7 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
             </dl>
           </section>
         )}
-        {layoutNotice && <div className="graph-layout-notice" role="status">{layoutNotice}</div>}
+        {layoutNotice && <Box className="graph-layout-notice" role="status" sx={{ position: 'absolute', bottom: 12, left: 12, p: 1, border: 1, borderColor: 'divider', borderRadius: 1.5, bgcolor: 'background.paper' }}>{layoutNotice}</Box>}
         <span className="sr-only" role="status" aria-live="polite">
           {selectedNode ? `${selectedNode.title} selected. ${selectedNode.path}` : ''}
         </span>
@@ -1172,6 +1238,14 @@ export function Settings() {
     catch (e) { setTokenError(e instanceof Error ? e.message : 'failed to revoke token') }
   }
 
+  /* Persist the folder-permission draft for the browser's own session. */
+  const saveSettings = async () => {
+    setSettingsError('')
+    try {
+      await api('/api/v1/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_rules: rules }) })
+    } catch (e) { setSettingsError(e instanceof Error ? e.message : 'failed to save folder settings') }
+  }
+
   const resolveProposal = async (action: 'approve' | 'reject', proposal: WriteProposal) => {
     setBusy({ id: proposal.id, action })
     setActionErrors(prev => { const next = { ...prev }; delete next[proposal.id]; return next })
@@ -1242,35 +1316,35 @@ export function Settings() {
     const matches = !query || node.path.toLowerCase().includes(query) || treePaths(node.children).some(path => path.toLowerCase().includes(query))
     if (!matches && node.path !== '.') return null
     return (
-    <div className="folder-tree-item" style={{ paddingLeft: depth * 16 }}>
-      <div className="tree-row">
-        {node.children.length > 0 && (
-          <button className="tree-toggle" aria-label={`${expandedNode ? 'Collapse' : 'Expand'} ${node.name}`} onClick={() => toggleExpand(node.path)}>
-            {expandedNode ? '▼' : '▶'}
-          </button>
-        )}
-        <button className={selectedFolder === node.path ? 'folder-row selected' : 'folder-row'} onClick={() => setSelectedFolder(node.path)} aria-pressed={selectedFolder === node.path}>
-          <span className="folder-icon" aria-hidden="true">{node.path === '.' ? '⌂' : '▰'}</span>
-          <span className="tree-folder-name">{node.name}</span>
-        </button>
-        <>
-          <span className={`tree-badge tree-badge-${access}`}>{explicit ? 'set' : 'inherits'} · {access}</span>
-          <select
-            className="tree-access-select"
+      <Box sx={{ pl: depth * 1.5 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1, borderRadius: 1.5, bgcolor: selectedFolder === node.path ? 'action.selected' : 'transparent', flexWrap: 'wrap' }}>
+          {node.children.length > 0 && (
+            <Button size="small" sx={{ minWidth: 34, px: 0.5, fontSize: 11, color: 'text.secondary' }} aria-label={`${expandedNode ? 'Collapse' : 'Expand'} ${node.name}`} onClick={() => toggleExpand(node.path)}>
+              {expandedNode ? '▼' : '▶'}
+            </Button>
+          )}
+          <Button size="small" onClick={() => setSelectedFolder(node.path)} aria-pressed={selectedFolder === node.path} sx={{ gap: 0.5, px: 1, textAlign: 'left', whiteSpace: 'nowrap', fontWeight: selectedFolder === node.path ? 600 : 400 }}>
+            <Typography component="span" variant="body2" aria-hidden>{node.path === '.' ? '⌂' : '▰'}</Typography>
+            {node.name}
+          </Button>
+          <Chip size="small" variant={explicit ? 'filled' : 'outlined'} sx={{ fontSize: 11, height: 22 }} label={`${explicit ? 'set' : 'inherits'} · ${access}`} />
+          <Select
+            native
+            size="small"
             aria-label={`Quick permission for ${node.path}`}
             value={access}
             onClick={e => e.stopPropagation()}
             onChange={e => setFolderAccess(node.path, e.target.value)}
+            sx={{ minWidth: 128, fontSize: 13 }}
           >
             <option value="read">read</option>
             <option value="none">none</option>
             <option value="propose-write">ask to write</option>
             <option value="auto-write">allow writes</option>
-          </select>
-        </>
-      </div>
-      {expandedNode && node.children.map(child => <TreeItem node={child} depth={depth + 1} key={child.path} />)}
-    </div>
+          </Select>
+        </Box>
+        {expandedNode && node.children.map(child => <TreeItem node={child} depth={depth + 1} key={child.path} />)}
+      </Box>
     )
   }
 
@@ -1292,217 +1366,229 @@ export function Settings() {
   const pendingHeading = pending.length === 0 ? 'Proposals' : `${pending.length} ${pending.length === 1 ? 'proposal' : 'proposals'} awaiting approval`
 
   return (
-    <div className="content settings-screen">
-      <div className="screen-intro settings-intro">
-        <span className="eyebrow">SETTINGS</span>
-        <h2>Folder permissions</h2>
-        <p>Choose what this app can read or write in your vault.</p>
-      </div>
-      <section className="panel permissions-workspace">
-          <div className="panel-title"><div><span className="eyebrow">VAULT</span><h3>{settings?.vault_path || 'Vault permissions'}</h3></div><span className="permissions-summary">{discoveredFolders.length} folders</span></div>
-          <div className="folder-tree-panel">
-            <div className="folder-tree-header">
-              <span>{discoveredFolders.length} folders + vault root · {rules.length} overrides</span>
-              <div className="tree-tools">
-                <button className="tree-tool" onClick={() => setExpanded(new Set(treePaths(tree.children).concat('.')))}>expand all</button>
-                <button className="tree-tool" onClick={() => setExpanded(new Set(['.']))}>collapse</button>
-              </div>
-            </div>
-            <label className="folder-filter"><span className="sr-only">Filter vault folders</span><input value={folderFilter} onChange={e => setFolderFilter(e.target.value)} placeholder="Filter folders…" /></label>
-            <p className="tree-instructions">Select a folder to inspect its inherited rule, or set access directly from its row.</p>
-            <div className="folder-tree">
-              {settingsError ? <div className="folder-tree-error" role="alert">{settingsError}<button className="chip" onClick={() => window.location.reload()}>retry</button></div> : <TreeItem node={tree} depth={0} />}
-            </div>
-            {selectedFolder && (
-              <div className="folder-permission-editor">
-                <code>{selectedFolder === '.' ? 'vault root' : selectedFolder}</code>
-                <label>Permission for {selectedFolder === '.' ? 'vault root' : selectedFolder}
-                  <select aria-label={`Permission for ${selectedFolder}`} value={selectedRule?.access ?? accessFor(selectedFolder)} onChange={e => setFolderAccess(selectedFolder, e.target.value)}>
-                    <option value="read">read</option>
-                    <option value="none">none</option>
-                    <option value="propose-write">propose-write</option>
-                    <option value="auto-write">auto-write</option>
-                  </select>
-                </label>
-                <div className="permission-presets" aria-label="Permission presets">
-                  <span>Quick set</span>
-                  <button onClick={() => setFolderAccess(selectedFolder, 'read')}>read only</button>
-                  <button onClick={() => setFolderAccess(selectedFolder, 'propose-write')}>ask to write</button>
-                  <button onClick={() => setFolderAccess(selectedFolder, 'auto-write')}>allow writes</button>
-                                      <button className="danger" onClick={() => setFolderAccess(selectedFolder, 'none')}>block</button>
-                </div>
-                <div className="permission-impact"><strong>Impact preview</strong><span>{inheritingDescendants.length} {inheritingDescendants.length === 1 ? 'folder' : 'folders'} will inherit this rule in tokens generated from this draft.</span>{inheritingDescendants.slice(0, 3).length > 0 && <code>{inheritingDescendants.slice(0, 3).join(' · ')}{inheritingDescendants.length > 3 ? ' · …' : ''}</code>}</div>
-                {selectedRule && <button className="tree-delete-btn" onClick={() => setRules(rules.filter(rule => rule.path !== selectedFolder))}>clear override</button>}
-              </div>
-            )}
-          </div>
-      </section>
+    <Box component="section" sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <Box sx={{ mb: 1 }}>
+        <Typography variant="h2">Vault Permissions</Typography>
+        <Typography variant="body1" color="text.secondary">Your vault stays local. Choose exactly what trusted agents can read or write, with every change reviewable.</Typography>
+      </Box>
+      <Paper elevation={0} sx={{ p: { xs: 2, md: 3 }, border: 1, borderColor: 'divider' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', mb: 2 }}>
+          <Box>
+            <Typography variant="overline" color="text.secondary">VAULT</Typography>
+            <Typography variant="h6">{settings?.vault_path || 'Vault permissions'}</Typography>
+          </Box>
+          <Box sx={{ ml: 'auto' }}>
+            <Chip size="small" label={`${discoveredFolders.length} folders`} />
+          </Box>
+        </Box>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, border: 1, borderColor: 'divider', borderRadius: 2, p: 2, bgcolor: 'background.default' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+            <Typography variant="body2" color="text.secondary">{discoveredFolders.length} folders + vault root · {rules.length} overrides</Typography>
+            <Box sx={{ ml: 'auto', display: 'flex', gap: 1 }}>
+              <Button size="small" onClick={() => setExpanded(new Set(treePaths(tree.children).concat('.')))}>expand all</Button>
+              <Button size="small" onClick={() => setExpanded(new Set(['.']))}>collapse</Button>
+            </Box>
+          </Box>
+          <TextField
+            size="small"
+            sx={{ maxWidth: 320 }}
+            slotProps={{ input: { 'aria-label': 'Filter vault folders' } }}
+            value={folderFilter}
+            onChange={e => setFolderFilter(e.target.value)}
+            placeholder="Filter folders…"
+          />
+          <Typography variant="body2" color="text.secondary">Select a folder to inspect its inherited rule, or set access directly from its row.</Typography>
+          <Box sx={{ minHeight: 40 }}>
+            {settingsError ? <Box role="alert" sx={{ display: 'flex', alignItems: 'center', gap: 2, color: 'error.main' }}>{settingsError}<Button size="small" onClick={() => window.location.reload()}>retry</Button></Box> : <TreeItem node={tree} depth={0} />}
+          </Box>
+          {selectedFolder && (
+            <Box sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 2, bgcolor: 'background.paper' }}>
+              <Typography variant="body2" sx={{ fontFamily: '"IBM Plex Mono", monospace', color: 'text.secondary', mb: 1 }}>{selectedFolder === '.' ? 'vault root' : selectedFolder}</Typography>
+              <Typography variant="body2" sx={{ display: 'block', mb: 0.5 }}>Permission for {selectedFolder === '.' ? 'vault root' : selectedFolder}</Typography>
+              <Select native size="small" aria-label={`Permission for ${selectedFolder}`} value={selectedRule?.access ?? accessFor(selectedFolder)} onChange={e => setFolderAccess(selectedFolder, e.target.value)} sx={{ minWidth: 160, mb: 1 }}>
+                <option value="read">read</option>
+                <option value="none">none</option>
+                <option value="propose-write">propose-write</option>
+                <option value="auto-write">auto-write</option>
+              </Select>
+              {selectedRule
+                ? <Button size="small" color="error" onClick={() => setRules(rules.filter(rule => rule.path !== selectedFolder))}>remove explicit override</Button>
+                : <Button size="small" disabled={selectedFolder === '.'} onClick={() => setFolderAccess(selectedFolder, accessFor(selectedFolder))}>save inherited value</Button>}
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                {selectedRule ? (selectedRule.access === 'read' ? 'Read-only — writes create a proposal instead of touching the vault.' : selectedRule.access === 'none' ? 'No access — matching notes are hidden from this token.' : selectedRule.access === 'propose-write' ? 'Read access with write proposals requiring approval.' : 'Read and write access, applied immediately with an audit record.') : 'This folder currently inherits read access from its nearest explicit rule.'}
+                {inheritingDescendants.length > 0 && ` Applies to ${inheritingDescendants.length} descendant folder${inheritingDescendants.length === 1 ? '' : 's'} without an explicit override.`}
+              </Typography>
+            </Box>
+          )}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+            <Typography variant="body2" color="text.secondary">{settings?.vault_path || 'no vault configured'}</Typography>
+            <Button variant="contained" size="small" sx={{ ml: 'auto' }} disabled={!settings} onClick={saveSettings}>save folder settings</Button>
+          </Box>
+        </Box>
+      </Paper>
       <div className="settings-workspace-layout" data-layout="quiet-split">
       <section className="tokens-section" aria-labelledby="tokens-heading">
-        <div className="tokens-intro">
-          <span className="eyebrow">EXTERNAL ACCESS</span>
-          <h2 id="tokens-heading">External access</h2>
-          <p>The local Web UI is already authenticated. Tokens here are for REST and MCP clients.</p>
-        </div>
+        <Box className="tokens-intro" sx={{ mb: 3 }}>
+          <Typography variant="overline" color="text.secondary">TRUSTED CONNECTIONS</Typography>
+          <Typography variant="h2" id="tokens-heading">External access</Typography>
+          <Typography variant="body2" color="text.secondary">The Web UI uses its own authenticated session. Tokens for trusted REST and MCP clients use the folder-permission policy configured above.</Typography>
+        </Box>
         <div className="tokens-layout" data-layout="single-column">
-          <section className="panel token-zone token-create" aria-labelledby="create-token-heading">
-            <div className="panel-title">
-              <div><span className="eyebrow">CREATE TOKEN</span><h3 id="create-token-heading">New external token</h3></div>
-            </div>
+          <Paper elevation={0} className="token-zone token-create" sx={{ p: { xs: 2, md: 2.5 }, border: 1, borderColor: 'divider' }} aria-labelledby="create-token-heading">
+            <Typography variant="overline" color="text.secondary">CREATE TOKEN</Typography>
+            <Typography variant="h6" id="create-token-heading">New external token</Typography>
             {adminDenied ? (
-              <p className="token-masked-note">This local session cannot manage external tokens — ask an admin to generate or revoke them.</p>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>This local session cannot manage external tokens — ask an admin to generate or revoke them.</Typography>
             ) : (
-              <div className="token-generator">
-                <div className="token-gen-fields">
-                  <label className="token-field">
-                    <span>Token name</span>
-                    <input name="token-name" autoComplete="off" spellCheck={false} value={tokenName} onChange={e => setTokenName(e.target.value)} placeholder={`${tokenNameSuggestion()}…`} />
-                  </label>
-                  <label className="token-admin">
-                    <input name="token-admin" type="checkbox" checked={tokenAdmin} onChange={e => setTokenAdmin(e.target.checked)} />
-                    <span>Admin — can manage tokens</span>
-                  </label>
-                </div>
-                <button type="button" className="primary-button token-generate-button" onClick={generateToken} disabled={generating} aria-busy={generating}>
-                  <span>Generate token</span>{generating && <span className="button-spinner" aria-hidden="true" />}
-                </button>
-              </div>
+              <Box sx={{ display: 'grid', gap: 2, mt: 2 }}>
+                <TextField size="small" label="Token name" name="token-name" autoComplete="off" value={tokenName} onChange={e => setTokenName(e.target.value)} placeholder={`${tokenNameSuggestion()}…`} inputProps={{ spellCheck: false }} />
+                <FormControlLabel control={<Checkbox name="token-admin" checked={tokenAdmin} onChange={e => setTokenAdmin(e.target.checked)} />} label="Admin — can manage tokens" />
+                <Typography variant="caption" color="text.secondary">Admin tokens can create and revoke other tokens. Only enable this for a trusted operator.</Typography>
+                <Button variant="contained" sx={{ alignSelf: 'flex-start' }} onClick={generateToken} disabled={generating} aria-busy={generating} startIcon={generating ? <CircularProgress size={14} /> : undefined}>Generate token</Button>
+              </Box>
             )}
-            {tokenError && <p className="token-error" role="alert">{tokenError}</p>}
-          </section>
-          {justCreated && <section className="panel token-zone token-revealed" aria-labelledby="token-revealed-heading">
-            <div className="panel-title"><div><span className="eyebrow">ONE-TIME SECRET</span><h3 id="token-revealed-heading">Token ready to copy</h3></div><span className="token-live-mark">shown only once</span></div>
-            <p className="token-revealed-copy">Copy this token now. It will not be available again after this session.</p>
-            <div className="token-plaintext" role="status">
-              <code translate="no">{revealed ? justCreated.token : '•'.repeat(Math.min(32, Math.max(16, justCreated.token.length)))}</code>
-              <div className="token-plaintext-actions">
-                <button type="button" className="chip token-copy-button" onClick={copyToken}>{copied ? 'Copied ✓' : 'Copy token'}</button>
-                <button type="button" className="chip" onClick={() => setRevealed(v => !v)}>{revealed ? 'Hide token' : 'Reveal token'}</button>
-              </div>
-            </div>
-          </section>}
-          <section className="panel token-zone token-existing" aria-labelledby="existing-tokens-heading">
-            <div className="panel-title"><div><span className="eyebrow">MANAGE</span><h3 id="existing-tokens-heading">Existing tokens</h3></div>{tokenRows !== null && <span className="token-count">{tokenRows.length}</span>}</div>
-            {tokenRows !== null && <ul className="token-list">
-              {tokenRows.length === 0 && <li className="token-empty">No tokens yet — generate the first one above.</li>}
+            {tokenError && <Alert severity="error" sx={{ mt: 2 }}>{tokenError}</Alert>}
+          </Paper>
+          {justCreated && <Paper elevation={0} className="token-zone token-revealed" sx={{ p: { xs: 2, md: 2.5 }, mt: 2, border: 1, borderColor: 'success.main', bgcolor: 'success.light', color: 'text.primary' }} aria-labelledby="token-revealed-heading">
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Typography variant="h6" id="token-revealed-heading">Token ready to copy</Typography>
+              <Typography variant="caption" sx={{ ml: 'auto', color: 'text.secondary', fontVariant: 'small-caps', letterSpacing: '.08em' }}>shown only once</Typography>
+            </Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1, mb: 2 }}>Copy this token now. It will not be available again after this session.</Typography>
+            <Box role="status" sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+              <Box component="code" translate="no" sx={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 14, fontWeight: 600 }}>{revealed ? justCreated.token : '•'.repeat(Math.min(32, Math.max(16, justCreated.token.length)))}</Box>
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                <Button size="small" variant="contained" onClick={copyToken}>{copied ? 'Copied ✓' : 'Copy token'}</Button>
+                <Button size="small" variant="outlined" onClick={() => setRevealed(v => !v)}>{revealed ? 'Hide token' : 'Reveal token'}</Button>
+              </Box>
+            </Box>
+          </Paper>}
+          <Paper elevation={0} className="token-zone token-existing" sx={{ p: { xs: 2, md: 2.5 }, mt: 2, border: 1, borderColor: 'divider' }} aria-labelledby="existing-tokens-heading">
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Box>
+                <Typography variant="overline" color="text.secondary">MANAGE</Typography>
+                <Typography variant="h6" id="existing-tokens-heading">Existing tokens</Typography>
+              </Box>
+              {tokenRows !== null && <Chip size="small" label={tokenRows.length} sx={{ ml: 'auto' }} />}
+            </Box>
+            {tokenRows !== null && <Box component="ul" sx={{ listStyle: 'none', p: 0, m: 0, mt: 2, display: 'grid', gap: 1 }}>
+              {tokenRows.length === 0 && <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>No tokens yet — generate the first one above.</Typography>}
               {tokenRows.map(row => (
-                <li key={row.name} className="token-row">
-                  <div className="token-row-main">
-                    <span className="token-row-name" translate="no">
-                      {row.name}
-                      {row.admin && <span className="token-admin-badge">admin</span>}
-                    </span>
-                    <span className="token-row-meta">{ruleSummary(row.rules)}{formatCreated(row.created_at) ? ` · created ${formatCreated(row.created_at)}` : ''}</span>
-                  </div>
-                  <button
-                    type="button"
+                <Box component="li" key={row.name} sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1.5, flexWrap: 'wrap' }}>
+                  <Box sx={{ minWidth: 0, flexGrow: 1 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>{row.name}{row.admin && <Chip size="small" label="admin" sx={{ ml: 1, height: 18, fontSize: 10 }} />}</Typography>
+                    <Typography variant="caption" color="text.secondary">{ruleSummary(row.rules)}{formatCreated(row.created_at) ? ` · created ${formatCreated(row.created_at)}` : ''}</Typography>
+                  </Box>
+                  <Button
+                    size="small"
+                    color={confirmRevoke === row.name ? 'error' : undefined}
+                    variant={confirmRevoke === row.name ? 'contained' : 'outlined'}
                     aria-label={`${confirmRevoke === row.name ? 'Confirm revoke' : 'Revoke'} token ${row.name}`}
                     className={confirmRevoke === row.name ? 'token-revoke armed' : 'token-revoke'}
                     onClick={() => (confirmRevoke === row.name ? revokeToken(row.name) : armRevoke(row.name))}
                   >
                     {confirmRevoke === row.name ? 'Confirm revoke' : 'Revoke'}
-                  </button>
-                </li>
+                  </Button>
+                </Box>
               ))}
-            </ul>}
-          </section>
+            </Box>}
+          </Paper>
         </div>
       </section>
       <section className="writes-section" aria-labelledby="writes-heading">
         <div className="writes-layout">
-          <div className="panel writes-panel write-proposals-region">
-            <div className="writes-intro">
-              <span className="eyebrow">WRITES</span>
-              <h3 id="writes-heading">Write proposals</h3>
-              <p>Review changes that need approval before they reach your vault.</p>
-            </div>
+          <Paper elevation={0} className="writes-panel write-proposals-region" sx={{ p: { xs: 2, md: 2.5 }, border: 1, borderColor: 'divider', display: 'grid', gap: 2 }}>
+            <Box>
+              <Typography variant="overline" color="text.secondary">WRITES</Typography>
+              <Typography variant="h6" id="writes-heading">Write proposals</Typography>
+              <Typography variant="body2" color="text.secondary">Review changes that need approval before they reach your vault.</Typography>
+            </Box>
             {writesStale && writes !== null && (
-              <div className="writes-stale" role="status" title={writesStale}>
-                <span>live update failed — the list may be out of date</span>
-                <button className="chip" onClick={() => loadWrites(true)}>retry</button>
-              </div>
+              <Box className="writes-stale" role="status" title={writesStale} sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', p: 1.5, border: 1, borderColor: 'warning.main', bgcolor: 'warning.light', borderRadius: 1.5 }}>
+                <Typography variant="body2">live update failed — the list may be out of date</Typography>
+                <Button size="small" onClick={() => loadWrites(true)}>retry</Button>
+              </Box>
             )}
-            <div className="panel-title">
-              <span className="eyebrow">PENDING</span>
-              <h3>{pendingHeading}</h3>
-            </div>
+            <Box>
+              <Typography variant="overline" color="text.secondary">PENDING</Typography>
+              <Typography variant="h6">{pendingHeading}</Typography>
+            </Box>
             {writesError && (
-              <div className="writes-error" role="alert">
-                <span>{writesError}</span>
-                <button className="chip" onClick={() => loadWrites()}>retry</button>
-              </div>
+              <Box className="writes-error" role="alert" sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', p: 1.5, border: 1, borderColor: 'error.main', bgcolor: 'error.light', borderRadius: 1.5 }}>
+                <Typography variant="body2">{writesError}</Typography>
+                <Button size="small" onClick={() => loadWrites()}>retry</Button>
+              </Box>
             )}
             {!writesError && writes === null && (
-              <div className="writes-loading" role="status">
-                <span className="graph-empty-pulse" />
-                <span>loading proposals…</span>
-              </div>
+              <Box className="writes-loading" role="status" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, color: 'text.secondary' }}>
+                <CircularProgress size={16} /><Typography variant="body2">loading proposals…</Typography>
+              </Box>
             )}
             {!writesError && writes !== null && pending.length === 0 && (
-              <div className="writes-empty">no pending proposals — writes appear here when the index wants to add or update a note.</div>
+              <Typography variant="body2" color="text.secondary">no pending proposals — writes appear here when the index wants to add or update a note.</Typography>
             )}
             {pending.map(w => {
               const preview = previewContent(w.content)
               return (
-              <article key={w.id} className="write-card" aria-label={`write proposal for ${w.path}`}>
-                <header className="write-card-head">
-                  <code className="write-path">{w.path}</code>
-                  <span className="write-ops">
-                    <span className={`write-op write-op-${w.operation}`}>{label(w.operation)}</span>
-                    <span className={`tree-badge tree-badge-${w.rule_access}`}>{label(w.rule_access)}</span>
-                  </span>
-                </header>
-                <p className="write-preview" title={preview}>{preview}</p>
-                <footer className="write-card-foot">
-                  <time dateTime={w.requested_at} title={w.requested_at}>{timeAgo(w.requested_at)} · {w.content.length.toLocaleString()} chars</time>
-                  <div className="write-actions">
-                    {actionErrors[w.id] ? <span className="write-action-error" role="alert">{actionErrors[w.id]}</span> : null}
-                    <button className="write-btn approve" disabled={busy !== null} aria-label={`Approve ${w.path}`} onClick={() => resolveProposal('approve', w)}>
+              <Box component="article" key={w.id} className="write-card" aria-label={`write proposal for ${w.path}`} sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 2, bgcolor: 'background.default', display: 'grid', gap: 1.5 }}>
+                <Box component="header" className="write-card-head" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+                  <Box component="code" className="write-path" sx={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 12 }}>{w.path}</Box>
+                  <Box component="span" className="write-ops" sx={{ ml: 'auto', display: 'flex', gap: 1 }}>
+                    <Chip size="small" label={label(w.operation)} sx={{ height: 20, fontSize: 10 }} />
+                    <Chip size="small" variant="outlined" label={label(w.rule_access)} sx={{ height: 20, fontSize: 10 }} />
+                  </Box>
+                </Box>
+                <Box component="p" className="write-preview" title={preview} sx={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 12, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{preview}</Box>
+                <Box component="footer" className="write-card-foot" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+                  <Box component="time" dateTime={w.requested_at} title={w.requested_at} sx={{ color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }}>{timeAgo(w.requested_at)} · {w.content.length.toLocaleString()} chars</Box>
+                  <Box className="write-actions" sx={{ ml: 'auto', display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                    {actionErrors[w.id] ? <span className="write-action-error" role="alert" style={{ color: 'var(--mui-error-main)', fontSize: 12 }}>{actionErrors[w.id]}</span> : null}
+                    <Button size="small" color="success" variant="contained" disabled={busy !== null} aria-label={`Approve ${w.path}`} onClick={() => resolveProposal('approve', w)}>
                       {busy?.id === w.id && busy.action === 'approve' ? 'approving…' : 'approve'}
-                    </button>
-                    <button className="write-btn reject" disabled={busy !== null} aria-label={`Reject ${w.path}`} onClick={() => resolveProposal('reject', w)}>
+                    </Button>
+                    <Button size="small" color="error" variant="outlined" disabled={busy !== null} aria-label={`Reject ${w.path}`} onClick={() => resolveProposal('reject', w)}>
                       {busy?.id === w.id && busy.action === 'reject' ? 'rejecting…' : 'reject'}
-                    </button>
-                  </div>
-                </footer>
-              </article>
+                    </Button>
+                  </Box>
+                </Box>
+              </Box>
               )
             })}
-          </div>
+          </Paper>
           <section className="audit-region" aria-labelledby="audit-heading">
-            <div className="panel-title">
-              <span className="eyebrow">AUDIT</span>
-              <h3 id="audit-heading">Recent activity</h3>
-            </div>
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="overline" color="text.secondary">AUDIT</Typography>
+              <Typography variant="h6" id="audit-heading">Recent activity</Typography>
+            </Box>
             {writesError && (
-              <div className="writes-empty">audit unavailable — the writes feed could not be loaded.</div>
+              <Typography variant="body2" color="text.secondary">audit unavailable — the writes feed could not be loaded.</Typography>
             )}
             {!writesError && writes === null && (
-              <div className="writes-loading" role="status">
-                <span>loading audit…</span>
-              </div>
+              <Box role="status" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, color: 'text.secondary' }}>
+                <CircularProgress size={16} /><Typography variant="body2">loading audit…</Typography>
+              </Box>
             )}
             {!writesError && writes !== null && audit.length === 0 && (
-              <div className="writes-empty">no writes yet — approved, rejected, and failed writes are audited here.</div>
+              <Typography variant="body2" color="text.secondary">no writes yet — approved, rejected, and failed writes are audited here.</Typography>
             )}
             {!writesError && writes !== null && audit.length > 0 && (
-              <ul className="audit-list">
+              <Box component="ul" className="audit-list" sx={{ listStyle: 'none', p: 0, m: 0, display: 'grid', gap: 0.5 }}>
                 {audit.slice(0, 10).map(w => (
-                  <li key={w.id} className={`audit-row audit-row-${w.status}`}>
-                    <code className="audit-path">{w.path}</code>
-                    <span className={`write-status write-status-${w.status}`}>{statusLabel(w.status)}</span>
-                    <time className="audit-time" dateTime={w.resolved_at ?? w.requested_at} title={w.resolved_at ?? w.requested_at}>{timeAgo(w.resolved_at ?? w.requested_at)}</time>
-                    {w.failure_reason && <span className="audit-reason" title={w.failure_reason}>{w.failure_reason}</span>}
-                  </li>
+                  <Box component="li" key={w.id} className={`audit-row audit-row-${w.status}`} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', p: 1.25, border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
+                    <Box component="code" className="audit-path" sx={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 12 }}>{w.path}</Box>
+                    <Chip size="small" label={statusLabel(w.status)} sx={{ height: 20, fontSize: 10, ml: 'auto' }} />
+                    <Box component="time" className="audit-time" dateTime={w.resolved_at ?? w.requested_at} title={w.resolved_at ?? w.requested_at} sx={{ color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }}>{timeAgo(w.resolved_at ?? w.requested_at)}</Box>
+                    {w.failure_reason && <Typography variant="caption" color="error.main" title={w.failure_reason}>{w.failure_reason}</Typography>}
+                  </Box>
                 ))}
-              </ul>
+              </Box>
             )}
           </section>
         </div>
         <span className="sr-only" role="status" aria-live="polite">{liveMessage}</span>
       </section>
       </div>
-    </div>
+    </Box>
   )
 }
 

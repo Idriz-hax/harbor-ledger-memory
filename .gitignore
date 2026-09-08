@@ -37,6 +37,7 @@ data/
 .superpowers/
 token-optimizer/
 .worktrees/
+.slim/deepwork/
 docs/
 !docs/
 docs/*

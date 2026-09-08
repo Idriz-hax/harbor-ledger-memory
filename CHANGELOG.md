@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0 - 2026-09-08
+
+- Added durable Tide Atlas graph snapshots with policy-bound opaque pagination
+  handles and SQL-level aggregate graph views.
+- Added the interactive Tide Atlas web experience.
+
 ## Unreleased
 
 ## 1.0.0 - 2026-09-05
