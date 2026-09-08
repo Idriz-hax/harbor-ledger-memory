@@ -1124,6 +1124,9 @@ export function Settings() {
   const [busy, setBusy] = useState<{ id: number; action: 'approve' | 'reject' } | null>(null)
   const [actionErrors, setActionErrors] = useState<Record<number, string>>({})
   const [liveMessage, setLiveMessage] = useState('')
+  const [newFolderPath, setNewFolderPath] = useState('')
+  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [folderCreateError, setFolderCreateError] = useState('')
   const [tokenRows, setTokenRows] = useState<TokenSummary[] | null>(null)
   const [tokenName, setTokenName] = useState('')
   const [tokenAdmin, setTokenAdmin] = useState(false)
@@ -1265,6 +1268,23 @@ export function Settings() {
     } finally {
       setBusy(prev => (prev && prev.id === proposal.id ? null : prev))
     }
+  }
+
+  const proposeFolder = async () => {
+    const path = newFolderPath.trim()
+    if (!path) { setFolderCreateError('Enter a folder path.'); return }
+    setCreatingFolder(true); setFolderCreateError('')
+    try {
+      await api<WriteProposal>('/api/v1/writes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, content: '', operation: 'mkdir' }),
+      })
+      setNewFolderPath('')
+      await loadWrites(true)
+    } catch (error) {
+      setFolderCreateError(error instanceof Error ? error.message : 'failed to create folder proposal')
+    } finally { setCreatingFolder(false) }
   }
 
   const toggleExpand = (path: string) => {
@@ -1503,6 +1523,21 @@ export function Settings() {
               <Typography variant="h6" id="writes-heading">Write proposals</Typography>
               <Typography variant="body2" color="text.secondary">Review changes that need approval before they reach your vault.</Typography>
             </Box>
+            <Box component="form" onSubmit={event => { event.preventDefault(); proposeFolder() }} sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, flexWrap: 'wrap', p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1.5, bgcolor: 'background.default' }}>
+              <TextField
+                size="small"
+                label="New folder path"
+                value={newFolderPath}
+                onChange={event => setNewFolderPath(event.target.value)}
+                placeholder="AI/Inbox"
+                inputProps={{ spellCheck: false }}
+                sx={{ flex: '1 1 220px' }}
+              />
+              <Button type="submit" variant="contained" size="small" disabled={creatingFolder} aria-busy={creatingFolder} sx={{ mt: 0.5 }}>
+                {creatingFolder ? 'Creating…' : 'Create folder'}
+              </Button>
+              {folderCreateError && <Alert severity="error" role="alert" sx={{ flexBasis: '100%', py: 0 }}>{folderCreateError}</Alert>}
+            </Box>
             {writesStale && writes !== null && (
               <Box className="writes-stale" role="status" title={writesStale} sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', p: 1.5, border: 1, borderColor: 'warning.main', bgcolor: 'warning.light', borderRadius: 1.5 }}>
                 <Typography variant="body2">live update failed — the list may be out of date</Typography>
@@ -1528,7 +1563,7 @@ export function Settings() {
               <Typography variant="body2" color="text.secondary">no pending proposals — writes appear here when the index wants to add or update a note.</Typography>
             )}
             {pending.map(w => {
-              const preview = previewContent(w.content)
+              const preview = w.operation === 'mkdir' ? 'Folder creation' : previewContent(w.content)
               return (
               <Box component="article" key={w.id} className="write-card" aria-label={`write proposal for ${w.path}`} sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 2, bgcolor: 'background.default', display: 'grid', gap: 1.5 }}>
                 <Box component="header" className="write-card-head" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
@@ -1540,7 +1575,7 @@ export function Settings() {
                 </Box>
                 <Box component="p" className="write-preview" title={preview} sx={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 12, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{preview}</Box>
                 <Box component="footer" className="write-card-foot" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
-                  <Box component="time" dateTime={w.requested_at} title={w.requested_at} sx={{ color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }}>{timeAgo(w.requested_at)} · {w.content.length.toLocaleString()} chars</Box>
+                  <Box component="time" dateTime={w.requested_at} title={w.requested_at} sx={{ color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }}>{timeAgo(w.requested_at)} · {w.operation === 'mkdir' ? 'folder' : `${w.content.length.toLocaleString()} chars`}</Box>
                   <Box className="write-actions" sx={{ ml: 'auto', display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                     {actionErrors[w.id] ? <span className="write-action-error" role="alert" style={{ color: 'var(--mui-error-main)', fontSize: 12 }}>{actionErrors[w.id]}</span> : null}
                     <Button size="small" color="success" variant="contained" disabled={busy !== null} aria-label={`Approve ${w.path}`} onClick={() => resolveProposal('approve', w)}>
@@ -1576,6 +1611,7 @@ export function Settings() {
                 {audit.slice(0, 10).map(w => (
                   <Box component="li" key={w.id} className={`audit-row audit-row-${w.status}`} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', p: 1.25, border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
                     <Box component="code" className="audit-path" sx={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 12 }}>{w.path}</Box>
+                    {w.operation === 'mkdir' && <Typography variant="caption" color="text.secondary">{w.status === 'applied' ? 'folder created' : 'folder proposal'}</Typography>}
                     <Chip size="small" label={statusLabel(w.status)} sx={{ height: 20, fontSize: 10, ml: 'auto' }} />
                     <Box component="time" className="audit-time" dateTime={w.resolved_at ?? w.requested_at} title={w.resolved_at ?? w.requested_at} sx={{ color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }}>{timeAgo(w.resolved_at ?? w.requested_at)}</Box>
                     {w.failure_reason && <Typography variant="caption" color="error.main" title={w.failure_reason}>{w.failure_reason}</Typography>}

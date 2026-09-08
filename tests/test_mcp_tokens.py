@@ -22,6 +22,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 from harbor_ledger_memory.api.app import create_app
 from harbor_ledger_memory.api.auth import hlm_internal_request, hlm_mcp_token
 from harbor_ledger_memory.api.mcp_server import build_mcp_server
+from harbor_ledger_memory.catalog.database import CatalogSession, create_database
+from harbor_ledger_memory.catalog.models import MemoryWriteProposal
 from harbor_ledger_memory.config import (
     FolderAccess,
     FolderRule,
@@ -258,6 +260,56 @@ def test_mcp_propose_write_path_check(tmp_path: Path) -> None:
             )
         finally:
             hlm_mcp_token.reset(token)
+    finally:
+        activity.close()
+        service.close()
+
+
+def test_mcp_propose_folder_denies_unwritable_missing_parent_before_persisting(
+    tmp_path: Path,
+) -> None:
+    """A writable mkdir leaf cannot bypass a denied missing parent."""
+    (tmp_path / "AI").mkdir()
+    settings = _settings(
+        tmp_path,
+        rules=(
+            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.NONE),
+            FolderRule(
+                path=PurePosixPath("AI/allowed/new"),
+                access=FolderAccess.PROPOSE_WRITE,
+            ),
+        ),
+    )
+    (tmp_path / "AI" / "allowed" / "new").rmdir()
+    (tmp_path / "AI" / "allowed").rmdir()
+    activity = ActivityService(settings.database_url)
+    service = TokenService(settings.database_url)
+    try:
+        transport, _ = build_mcp_server(settings, activity, service)
+        server = transport.state.mcp_server
+        writer, _ = service.create(
+            "writer",
+            rules=[
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.NONE),
+                FolderRule(
+                    path=PurePosixPath("AI/allowed/new"),
+                    access=FolderAccess.PROPOSE_WRITE,
+                ),
+            ],
+        )
+        token = hlm_mcp_token.set(writer)
+        try:
+            with pytest.raises(ToolError):
+                _call(server, "propose_folder", {"path": "AI/allowed/new"})
+        finally:
+            hlm_mcp_token.reset(token)
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        try:
+            assert session.query(MemoryWriteProposal).count() == 0
+        finally:
+            session.close()
+            engine.dispose()
     finally:
         activity.close()
         service.close()

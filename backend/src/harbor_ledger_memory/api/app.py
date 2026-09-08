@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from importlib import metadata as importlib_metadata
 from importlib import resources
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 
 import httpx
@@ -393,7 +393,8 @@ class WriteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str
-    content: str
+    content: str = ""
+    operation: Literal["write", "mkdir"] = "write"
 
 
 class WriteProposalResponse(BaseModel):
@@ -410,6 +411,8 @@ class WriteProposalResponse(BaseModel):
     requested_at: str
     resolved_at: str | None
     failure_reason: str | None
+    affected_paths: list[str]
+    created_paths: list[str]
 
 
 class WritesListResponse(BaseModel):
@@ -648,7 +651,7 @@ def create_app(
     else:
         web_dist = Path(__file__).resolve().parents[4] / "web" / "dist"
     web_index = web_dist / "index.html"
-    if web_dist.is_dir():
+    if web_dist.is_dir() and (web_dist / "assets").is_dir():
         application.mount(
             "/assets",
             StaticFiles(directory=str(web_dist / "assets")),
@@ -807,15 +810,20 @@ def create_app(
         the global ``settings.folder_rules`` are a draft template for the
         UI and never enforce.
         """
-        require_writable(auth, request.path)
         engine = create_database(settings.database_url)
         session = CatalogSession(bind=engine)
         try:
             service = VaultMutationService.from_settings(
                 session, settings, activity_service=activity_service
             )
+            _require_mutation_paths_writable(
+                auth, _mutation_affected_paths(service, request.path)
+            )
             proposal = service.request(
-                request.path, request.content, policy=auth.policy
+                request.path,
+                request.content,
+                operation=request.operation,
+                policy=auth.policy,
             )
             return _write_response(proposal)
         except VaultWriteDenied as exc:
@@ -881,9 +889,11 @@ def create_app(
             existing = session.get(MemoryWriteProposal, id)
             if existing is None:
                 raise HTTPException(status_code=404, detail=f"proposal {id} not found")
-            require_writable(auth, existing.path)
             service = VaultMutationService.from_settings(
                 session, settings, activity_service=activity_service
+            )
+            _require_mutation_paths_writable(
+                auth, _mutation_affected_paths(service, existing.path, existing.affected_paths)
             )
             proposal = service.approve(id, policy=auth.policy)
             return _write_response(proposal)
@@ -910,9 +920,11 @@ def create_app(
             existing = session.get(MemoryWriteProposal, id)
             if existing is None:
                 raise HTTPException(status_code=404, detail=f"proposal {id} not found")
-            require_writable(auth, existing.path)
             service = VaultMutationService.from_settings(
                 session, settings, activity_service=activity_service
+            )
+            _require_mutation_paths_writable(
+                auth, _mutation_affected_paths(service, existing.path, existing.affected_paths)
             )
             proposal = service.reject(id)
             return _write_response(proposal)
@@ -1672,7 +1684,38 @@ def _write_response(proposal: MemoryWriteProposal) -> WriteProposalResponse:
         requested_at=proposal.requested_at,
         resolved_at=proposal.resolved_at,
         failure_reason=proposal.failure_reason,
+        affected_paths=proposal.affected_paths,
+        created_paths=proposal.created_paths,
     )
+
+
+def _mutation_affected_paths(
+    service: VaultMutationService,
+    path: str,
+    stored_paths: Sequence[str] = (),
+) -> tuple[PurePosixPath, ...]:
+    """Return current and persisted identities covered by a mutation."""
+    identity = service._validate_path(path)
+    paths = list(service._affected_paths(identity))
+    for stored in stored_paths:
+        candidate = PurePosixPath(stored)
+        if candidate not in paths:
+            paths.append(candidate)
+    return tuple(paths)
+
+
+def _require_mutation_paths_writable(
+    auth: AuthContext, paths: Sequence[PurePosixPath]
+) -> None:
+    """Preflight every path a mutation may create or touch."""
+    denied = False
+    for path in paths:
+        if not auth.policy.can_propose(path):
+            denied = True
+    if denied:
+        # Missing parents must still be checked above, while the denial shown
+        # to the caller remains the requested target path.
+        require_writable(auth, paths[-1].as_posix())
 
 
 def _scan_activity_payload(result: object) -> dict[str, object]:

@@ -22,6 +22,22 @@ class VaultPathError(ValueError):
     """Raised when a path cannot be admitted to the configured index root."""
 
 
+class DirectoryCreationError(VaultPathError):
+    """A directory walk failed after creating one or more components."""
+
+    def __init__(self, message: str, created_paths: tuple[PurePosixPath, ...]) -> None:
+        super().__init__(message)
+        self.created_paths = created_paths
+
+
+def _no_follow_flag() -> int:
+    """Return the no-follow flag, refusing insecure fallback behavior."""
+    try:
+        return os.O_NOFOLLOW
+    except AttributeError as exc:
+        raise VaultPathError("secure no-follow directory traversal is unavailable") from exc
+
+
 @dataclass(frozen=True)
 class FileVersion:
     """Immutable fingerprint of a file on disk for version-checked replaces."""
@@ -94,6 +110,15 @@ class WriteResult:
     reconciliation_required: bool = False
 
 
+@dataclass(frozen=True)
+class DirectoryWriteResult:
+    """Outcome of securely creating a directory identity."""
+
+    created_paths: tuple[PurePosixPath, ...]
+    published: bool
+    durable: bool
+
+
 class VaultBoundary:
     """Provide the only filesystem path boundary used by the application.
 
@@ -111,7 +136,7 @@ class VaultBoundary:
         self._rules = tuple(settings.folder_rules)
 
         # ---- held index-root FD (O_NOFOLLOW) ----
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        no_follow = _no_follow_flag()
         directory = getattr(os, "O_DIRECTORY", 0)
         self._index_root_fd = os.open(
             self._index_root, os.O_RDONLY | directory | no_follow
@@ -234,6 +259,56 @@ class VaultBoundary:
             return self._create_in_dir(parent_fd, filename, identity, content)
         finally:
             os.close(parent_fd)
+
+    def atomic_mkdir(self, identity: PurePosixPath) -> DirectoryWriteResult:
+        """Create an admitted directory path through held, no-follow FDs.
+
+        Existing directories are accepted, while every missing component is
+        created beneath the held index-root descriptor.  The parent descriptor
+        is fsynced after each successful mkdir; a failed fsync is reported as
+        uncertain durability rather than pretending the directory was absent.
+        """
+        self._check_index_root_integrity()
+        relative = self._relative_within_index(identity)
+        fd, created, durable = self._walk_dir_fd_with_created(relative)
+        try:
+            return DirectoryWriteResult(
+                created_paths=tuple(created), published=True, durable=durable
+            )
+        finally:
+            os.close(fd)
+
+    def missing_parent_paths(self, identity: PurePosixPath) -> tuple[PurePosixPath, ...]:
+        """Return missing parent directories without modifying the vault."""
+        self._check_index_root_integrity()
+        relative = self._relative_within_index(identity)
+        parts = relative.parts[:-1]
+        if not parts:
+            return ()
+
+        no_follow = _no_follow_flag()
+        directory = getattr(os, "O_DIRECTORY", 0)
+        current = os.dup(self._index_root_fd)
+        try:
+            for index, part in enumerate(parts):
+                try:
+                    next_fd = os.open(
+                        part, os.O_RDONLY | directory | no_follow, dir_fd=current
+                    )
+                except FileNotFoundError:
+                    return tuple(
+                        self._index_relative / PurePosixPath(*parts[: position + 1])
+                        for position in range(index, len(parts))
+                    )
+                except OSError as exc:
+                    raise VaultPathError(
+                        f"symlinked directory component in {identity.as_posix()}"
+                    ) from exc
+                os.close(current)
+                current = next_fd
+            return ()
+        finally:
+            os.close(current)
 
     def atomic_replace(
         self,
@@ -468,39 +543,82 @@ class VaultBoundary:
         Returns an open fd for the final directory.
         Raises :class:`VaultPathError` for symlinked components.
         """
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        current, _created, durable = self._walk_dir_fd_with_created(relative)
+        if not durable:
+            os.close(current)
+            raise VaultPathError(
+                f"could not durably create directory path {relative.as_posix()}"
+            )
+        return current
+
+    def _walk_dir_fd_with_created(
+        self, relative: PurePosixPath
+    ) -> tuple[int, list[PurePosixPath], bool]:
+        """Walk a relative directory and report newly-created components."""
+        no_follow = _no_follow_flag()
         directory = getattr(os, "O_DIRECTORY", 0)
         current = os.dup(self._index_root_fd)
+        created: list[PurePosixPath] = []
+        durable = True
         try:
-            for part in relative.parts:
+            for index, part in enumerate(relative.parts):
                 try:
                     next_fd = os.open(
                         part, os.O_RDONLY | directory | no_follow, dir_fd=current
                     )
                 except FileNotFoundError:
-                    os.mkdir(part, 0o755, dir_fd=current)
-                    next_fd = os.open(
-                        part, os.O_RDONLY | directory | no_follow, dir_fd=current
-                    )
+                    try:
+                        os.mkdir(part, 0o755, dir_fd=current)
+                    except FileExistsError:
+                        # Another actor won the creation race; the no-follow
+                        # open below still validates what now occupies the name.
+                        pass
+                    else:
+                        created.append(
+                            self._index_relative
+                            / PurePosixPath(*relative.parts[: index + 1])
+                        )
+                        try:
+                            os.fsync(current)
+                        except OSError:
+                            durable = False
+                    try:
+                        next_fd = os.open(
+                            part, os.O_RDONLY | directory | no_follow, dir_fd=current
+                        )
+                    except OSError as exc:
+                        raise VaultPathError(
+                            f"symlinked directory component in {relative.as_posix()}"
+                        ) from exc
                 except (NotADirectoryError, OSError) as exc:
                     raise VaultPathError(
                         f"symlinked directory component in {relative.as_posix()}"
                     ) from exc
                 os.close(current)
                 current = next_fd
-            return current
-        except VaultPathError:
+            return current, created, durable
+        except VaultPathError as exc:
             os.close(current)
+            if created:
+                raise DirectoryCreationError(
+                    f"directory creation failed for {relative.as_posix()}: {exc}",
+                    tuple(created),
+                ) from exc
             raise
-        except Exception:
+        except Exception as exc:
             os.close(current)
+            if created:
+                raise DirectoryCreationError(
+                    f"directory creation failed for {relative.as_posix()}: {exc}",
+                    tuple(created),
+                ) from exc
             raise
 
     def _open_relative_file(self, relative: PurePosixPath) -> int:
         """Open an index-relative file without following root/component links."""
         if not relative.parts:
             raise VaultPathError("admitted path must name a file")
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        no_follow = _no_follow_flag()
         directory = getattr(os, "O_DIRECTORY", 0)
         current = os.dup(self._index_root_fd)
         try:
@@ -547,7 +665,7 @@ class VaultBoundary:
 
         *path_prefix* is the vault-relative path corresponding to *fd*.
         """
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        no_follow = _no_follow_flag()
         directory = getattr(os, "O_DIRECTORY", 0)
 
         for entry in os.listdir(fd):
@@ -772,7 +890,7 @@ class VaultBoundary:
         observations and that the fingerprint describes exactly the bytes
         that were hashed.
         """
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        no_follow = _no_follow_flag()
         try:
             target_fd = os.open(filename, os.O_RDONLY | no_follow, dir_fd=parent_fd)
         except FileNotFoundError as exc:
@@ -1010,7 +1128,7 @@ class VaultBoundary:
 
     def _open_temp_file(self, parent_fd: int, filename: str) -> tuple[str, int]:
         """Open a fresh temp file in *parent_fd*; return (name, fd)."""
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        no_follow = _no_follow_flag()
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow
         tmp_name = f".tmp-{os.getpid()}-{filename}"
         try:
@@ -1301,7 +1419,7 @@ class VaultBoundary:
         :class:`AdmittedFileSnapshot`.  Returns ``None`` if the file
         cannot be snapshotted.
         """
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        no_follow = _no_follow_flag()
         try:
             fd = os.open(filename, os.O_RDONLY | no_follow, dir_fd=dir_fd)
         except OSError:
