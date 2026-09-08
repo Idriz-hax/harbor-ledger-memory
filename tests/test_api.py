@@ -228,7 +228,10 @@ def test_serve_base_layout(tmp_path: Path) -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "Harbor Ledger Memory" in response.text
-    assert 'href="/static/style.css"' in response.text
+    assert '<div id="root"></div>' in response.text
+    assert 'type="module"' in response.text
+    assert 'src="/assets/index-' in response.text
+    assert 'href="/assets/index-' in response.text
 
 
 def test_query_screen_renders(tmp_path: Path) -> None:

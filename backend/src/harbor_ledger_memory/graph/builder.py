@@ -99,6 +99,7 @@ class GraphBuilder:
                 title=note.title,
                 node_type=node_type.value,
                 type=node_type.value,
+                kind=node_kind(node_type),
                 status=note.status,
                 note_type=note.type,
                 summary=note.summary,
@@ -214,6 +215,19 @@ def infer_node_type(note: Note) -> NodeType:
     return NodeType.FILE
 
 
+def node_kind(node_type: NodeType | str) -> str:
+    """Return the stable public kind for a node type.
+
+    Unknown values are deliberately mapped to ``file`` rather than leaking an
+    implementation-specific value to clients.
+    """
+    try:
+        value = node_type.value if isinstance(node_type, NodeType) else str(node_type)
+        return NodeType(value).value.lower()
+    except (ValueError, TypeError):
+        return NodeType.FILE.value.lower()
+
+
 def _parent_target(note: Note) -> str | None:
     try:
         loaded: object = json.loads(note.frontmatter_json)
@@ -237,4 +251,4 @@ def _ai_prefix(paths: tuple[str, ...]) -> str:
     return PurePosixPath(paths[0]).parts[0] if paths else "AI"
 
 
-__all__ = ["GraphBuilder", "NodeType", "infer_node_type"]
+__all__ = ["GraphBuilder", "NodeType", "infer_node_type", "node_kind"]

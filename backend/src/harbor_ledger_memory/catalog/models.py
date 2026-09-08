@@ -121,6 +121,63 @@ class ScanRun(Base):
     diagnostics_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
+class GraphProjectionVersion(Base):
+    """Immutable full graph facts produced by one completed scan transaction."""
+
+    __tablename__ = "graph_projection_versions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+
+
+class GraphSnapshotHandle(Base):
+    """Opaque short-lived handle retaining a historical graph version."""
+
+    __tablename__ = "graph_snapshot_handles"
+
+    handle: Mapped[str] = mapped_column(String(128), primary_key=True)
+    version_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    policy_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    offset: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    level: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+
+
+class GraphNodeFact(Base):
+    """A durable node fact belonging to one graph projection version."""
+
+    __tablename__ = "graph_node_facts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("graph_projection_versions.id", ondelete="CASCADE"),
+        nullable=False, index=True, primary_key=True,
+    )
+    path: Mapped[str] = mapped_column(PosixPathType(), nullable=False, index=True)
+    parent_folder: Mapped[str] = mapped_column(String(512), nullable=False)
+    top_folder: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+
+
+class GraphEdgeFact(Base):
+    """A durable weighted edge fact belonging to one graph projection version."""
+
+    __tablename__ = "graph_edge_facts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("graph_projection_versions.id", ondelete="CASCADE"),
+        nullable=False, index=True, primary_key=True,
+    )
+    source: Mapped[str] = mapped_column(PosixPathType(), nullable=False, index=True)
+    target: Mapped[str] = mapped_column(PosixPathType(), nullable=False, index=True)
+    edge_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    weight: Mapped[float] = mapped_column(Float, nullable=False)
+
+
 class Diagnostic(Base):
     """A parser or catalog diagnostic associated with an optional note."""
 

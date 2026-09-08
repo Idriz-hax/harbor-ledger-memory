@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import tomllib
+import re
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
@@ -166,6 +167,29 @@ class FrontendSettings(BaseModel):
     password_verifier: str | None = None
 
 
+class ThemeSettings(BaseModel):
+    """Strict, server-owned visual theme configuration."""
+    model_config = ConfigDict(extra="forbid")
+    preset: Literal["daylight", "dusk", "deepwater", "low-tide", "moonlit", "salt-marsh"] = "dusk"
+    palette: dict[str, str] = Field(default_factory=dict)
+    grid_size: int = Field(default=24, ge=4, le=128)
+    grid_opacity: float = Field(default=0.18, ge=0.0, le=1.0)
+    node_radius: int = Field(default=8, ge=2, le=32)
+    node_opacity: float = Field(default=1.0, ge=0.1, le=1.0)
+
+    @field_validator("palette")
+    @classmethod
+    def validate_palette(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > 8:
+            raise ValueError("palette may contain at most 8 colors")
+        for name, color in value.items():
+            if len(name) > 32 or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+                raise ValueError("palette names must be short identifiers")
+            if not re.fullmatch(r"#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?", color):
+                raise ValueError("palette colors must be #RRGGBB or #RRGGBBAA")
+        return value
+
+
 class ApiSettings(BaseModel):
     """Configuration for the REST bearer API."""
 
@@ -232,6 +256,7 @@ class Settings(BaseSettings):
     retrieval: QuerySettings = Field(default_factory=QuerySettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     frontend: FrontendSettings = Field(default_factory=FrontendSettings)
+    theme: ThemeSettings = Field(default_factory=ThemeSettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
     mcp: McpSettings = Field(default_factory=McpSettings)
     network: NetworkSettings = Field(default_factory=NetworkSettings)
@@ -289,7 +314,7 @@ class Settings(BaseSettings):
         """Load settings from an explicit TOML path, then environment."""
         values = _persistent_values(path)
         environment = _environment_values()
-        for section in ("memory", "frontend", "api", "mcp", "network"):
+        for section in ("memory", "frontend", "theme", "api", "mcp", "network"):
             environment_section = environment.pop(section, None)
             if isinstance(environment_section, dict):
                 persistent_section = values.get(section, {})
@@ -364,6 +389,10 @@ def update_persistent_config(updates: dict[str, Any], path: Path | None = None) 
     ]
     if "embedding_model" in merged and merged["embedding_model"] == "":
         merged.pop("embedding_model")
+    if isinstance(merged.get("theme"), dict):
+        merged["theme"] = ThemeSettings.model_validate(merged["theme"]).model_dump(
+            mode="json"
+        )
 
     target.parent.mkdir(parents=True, exist_ok=True)
     document = _toml_document(merged)
@@ -399,6 +428,7 @@ def config_payload(settings: Settings) -> dict[str, Any]:
         "embedding_model": settings.memory.embedding_model,
         "effective_read_scope": settings.effective_read_scope,
         "config_path": str(config_path()),
+        "theme": settings.theme.model_dump(mode="json"),
     }
 
 
@@ -417,7 +447,7 @@ def _persistent_values(path: Path | None = None) -> dict[str, Any]:
             values[key] = raw[key]
     if "folder_rules" in values:
         values["folder_rules"] = _coerce_folder_rules(values["folder_rules"])
-    for section in ("memory", "frontend", "api", "mcp", "network"):
+    for section in ("memory", "frontend", "theme", "api", "mcp", "network"):
         section_values = raw.get(section)
         if isinstance(section_values, dict):
             values[section] = dict(cast(dict[str, Any], section_values))
@@ -552,7 +582,7 @@ def _toml_document(values: dict[str, Any]) -> str:
                 f"{_toml_string(str(rule['access']))} }},"
             )
         lines.append("]")
-    for section in ("memory", "frontend", "api", "mcp", "network"):
+    for section in ("memory", "frontend", "theme", "api", "mcp", "network"):
         section_values = values.get(section)
         if isinstance(section_values, dict):
             lines.append("")
@@ -560,6 +590,10 @@ def _toml_document(values: dict[str, Any]) -> str:
             typed_section = cast(dict[str, Any], section_values)
             for key, value in typed_section.items():
                 if value is None:
+                    continue
+                if isinstance(value, dict):
+                    # TOML tables preserve declarative mappings such as
+                    # theme.palette without relying on non-TOML JSON syntax.
                     continue
                 if isinstance(value, (list, tuple)):
                     items = cast(list[Any] | tuple[Any, ...], value)
@@ -571,6 +605,14 @@ def _toml_document(values: dict[str, Any]) -> str:
                     lines.append(f"{key} = {value}")
                 else:
                     lines.append(f"{key} = {_toml_string(str(value))}")
+            for key, value in typed_section.items():
+                if not isinstance(value, dict):
+                    continue
+                lines.append("")
+                lines.append(f"[{section}.{key}]")
+                for nested_key, nested_value in sorted(value.items()):
+                    if not isinstance(nested_value, (dict, list, tuple)):
+                        lines.append(f"{nested_key} = {_toml_string(str(nested_value))}")
     return "\n".join(lines) + "\n"
 
 
@@ -582,6 +624,7 @@ __all__ = [
     "FolderAccess",
     "FolderRule",
     "FrontendSettings",
+    "ThemeSettings",
     "ApiSettings",
     "McpSettings",
     "MemorySettings",
