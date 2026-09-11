@@ -36,6 +36,7 @@ export type GraphEdge = {
   source: string
   target: string
   weight: number
+  edge_type: string
 }
 
 export type GraphView = {

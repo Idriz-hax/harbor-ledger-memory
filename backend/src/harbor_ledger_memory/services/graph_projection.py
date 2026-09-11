@@ -77,6 +77,7 @@ class GraphClusterEdge:
     source: str
     target: str
     weight: float
+    edge_type: str
 
 
 @dataclass(frozen=True)
@@ -226,9 +227,9 @@ class GraphProjectionService:
         if scope is not None:
             prefix = scope.rstrip("/")
             edge_where.extend([(left.path == scope) | left.path.like(prefix + "/%"), (right.path == scope) | right.path.like(prefix + "/%")])
-        edge_stmt = select(left_key, left.kind, right_key, right.kind, func.sum(GraphEdgeFact.weight)).join(left, left.path == GraphEdgeFact.source).join(right, right.path == GraphEdgeFact.target).where(*edge_where).group_by(left_key, left.kind, right_key, right.kind).order_by(left_key, left.kind, right_key, right.kind).limit(page_size + 1).offset(offset)
+        edge_stmt = select(left_key, left.kind, right_key, right.kind, GraphEdgeFact.edge_type, func.sum(GraphEdgeFact.weight)).join(left, left.path == GraphEdgeFact.source).join(right, right.path == GraphEdgeFact.target).where(*edge_where).group_by(left_key, left.kind, right_key, right.kind, GraphEdgeFact.edge_type).order_by(left_key, left.kind, right_key, right.kind, GraphEdgeFact.edge_type).limit(page_size + 1).offset(offset)
         edge_rows = list(self._session.execute(edge_stmt))
-        edges = tuple(GraphClusterEdge(_cluster_edge_id(_cluster_id(level, a, ak), _cluster_id(level, b, bk)), _cluster_id(level, a, ak), _cluster_id(level, b, bk), float(weight)) for a, ak, b, bk, weight in edge_rows[:page_size] if a != b)
+        edges = tuple(GraphClusterEdge(_cluster_edge_id(_cluster_id(level, a, ak), _cluster_id(level, b, bk), str(edge_type)), _cluster_id(level, a, ak), _cluster_id(level, b, bk), float(weight), str(edge_type)) for a, ak, b, bk, edge_type, weight in edge_rows[:page_size] if a != b)
         max_nodes, max_edges = GRAPH_VIEW_BUDGETS[level]
         if len(clusters) > max_nodes or len(edges) > max_edges:
             raise ValueError(
@@ -237,7 +238,7 @@ class GraphProjectionService:
             )
         payload = {"level": level, "scope": scope,
                    "clusters": [(c.id, c.label, c.kind, sorted(c.type_counts.items()), c.member_count, c.scope) for c in clusters],
-                   "edges": [(e.id, e.source, e.target, e.weight) for e in edges]}
+                   "edges": [(e.id, e.source, e.target, e.weight, e.edge_type) for e in edges]}
         generation = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
         page_clusters = tuple(clusters)
         page_edges = edges
@@ -270,8 +271,8 @@ def _cluster_id(level: int, folder: str, kind: str) -> str:
     return "c_" + hashlib.sha256(f"{level}\t{folder}\t{kind}".encode()).hexdigest()[:16]
 
 
-def _cluster_edge_id(source: str, target: str) -> str:
-    return hashlib.sha256(f"{source}\t{target}".encode()).hexdigest()[:16]
+def _cluster_edge_id(source: str, target: str, edge_type: str) -> str:
+    return hashlib.sha256(f"{source}\t{target}\t{edge_type}".encode()).hexdigest()[:16]
 
 
 def _encode_handle(payload: dict[str, object], secret: bytes) -> str:

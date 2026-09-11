@@ -10,6 +10,13 @@ export type LiveTraversalEvent = {
   edge_type?: string
 }
 
+export type LiveTraversalOptions = {
+  reducedMotion?: boolean
+  duration?: number
+  nodeIdForPath?: (path: string) => string | undefined
+  edgeIdForEvent?: (event: LiveTraversalEvent) => string | undefined
+}
+
 type Trace = { timer: number | null; elements: Map<string, Set<string>> }
 
 /** Owns only the visual classes introduced by one live trace. */
@@ -19,7 +26,9 @@ export class LiveTraversalController {
   private readonly classOwners = new Map<string, Set<string>>()
   private disposed = false
 
-  constructor(private readonly core: Core, private readonly options: { reducedMotion?: boolean; duration?: number } = {}) {}
+  constructor(private readonly core: Core, private readonly options: LiveTraversalOptions = {}) {}
+
+  setReducedMotion(reducedMotion: boolean) { this.options.reducedMotion = reducedMotion }
 
   apply(event: LiveTraversalEvent) {
     if (this.disposed || !event.trace_id || !Number.isFinite(event.sequence)) return
@@ -29,18 +38,18 @@ export class LiveTraversalController {
 
     const trace: Trace = { timer: null, elements: new Map() }
     this.traces.set(event.trace_id, trace)
-    const node = this.core.getElementById(event.node_path)
+    const nodeId = this.options.nodeIdForPath?.(event.node_path) ?? event.node_path
+    const node = this.core.getElementById(nodeId)
     const nodeClass = event.mode === 'write' ? 'traversal-write' : 'traversal-read'
     this.addOwned(trace, node, nodeClass)
 
     if (event.source_path && event.target_path) {
-      const edge = this.core.edges().filter(candidate => {
-        const source = String(candidate.data('source') ?? '')
-        const target = String(candidate.data('target') ?? '')
-        const type = event.edge_type
-        return source === event.source_path && target === event.target_path
-          && (!type || String(candidate.data('edge_type') ?? candidate.data('type') ?? '') === type)
-      })
+      const edgeId = this.options.edgeIdForEvent?.(event)
+      const edge = this.options.edgeIdForEvent
+        ? edgeId ? this.core.getElementById(edgeId) : this.core.edges().filter(() => false)
+        : this.core.edges().filter(candidate => String(candidate.data('source') ?? '') === event.source_path
+          && String(candidate.data('target') ?? '') === event.target_path
+          && (!event.edge_type || String(candidate.data('edge_type') ?? candidate.data('type') ?? '') === event.edge_type))
       this.addOwned(trace, edge, 'traversal-forward')
       if (!this.options.reducedMotion && edge.length) {
         edge.animate({ style: { 'line-dash-offset': -13 }, duration: this.options.duration ?? 900 })

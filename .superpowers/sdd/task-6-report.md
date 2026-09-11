@@ -25,3 +25,13 @@ Implemented and committed as `feat: visualize live graph traversals`.
 
 - The live stream is intentionally bounded to the currently rendered Cytoscape view; events for nodes or edges outside that view are safely ignored until the view changes.
 - Reviewer should verify the backend event field names for parallel edges where `edge_type` is omitted; the controller matches source/target and accepts any edge type in that case.
+
+## Review follow-up
+
+- Added `edge_type` to the graph-view projection contract and included it in projected edge identity, so traversal events resolve one directed edge rather than lighting an ambiguous parallel set.
+- Tide Atlas now resolves event paths to the current hashed cluster IDs using the view's existing `scope` contract; aggregate views resolve folder scopes without exposing member paths.
+- Reduced-motion changes update the live controller in place; the Cytoscape core, graph data, layout, and viewport are preserved.
+- LIVE/RECONNECTING state now renders from traversal stream open/error events, including the disconnected indicator styling.
+- Regression coverage now uses real level-2 hashed cluster/edge IDs and verifies stream status and preference changes.
+
+Follow-up validation: focused web tests **44 passed, 6 skipped**; web build **passed**; focused backend graph/traversal tests **21 passed**.
