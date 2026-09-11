@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Sequence
+from typing import Any
 from uuid import uuid4
 
 import networkx as nx
@@ -34,6 +35,7 @@ from harbor_ledger_memory.services.adaptive import AdaptiveService
 from harbor_ledger_memory.services.context import ContextBuilder
 from harbor_ledger_memory.services.memory import MemoryService
 from harbor_ledger_memory.services.retrieval import HybridRetrievalService
+from harbor_ledger_memory.services.live_traversal import NullLiveTraversalPublisher, TraversalEvent
 
 _TRACE_SCHEMA_VERSION = 1
 
@@ -54,6 +56,7 @@ class QueryService:
         memory_settings: MemorySettings | None = None,
         path_filter: Callable[[str], bool] | None = None,
         activity_service: ActivityService | None = None,
+        live_traversal: Any | None = None,
     ) -> None:
         self._session = (
             CatalogSession(bind=session) if isinstance(session, Engine) else session
@@ -62,6 +65,7 @@ class QueryService:
         self._memory_settings = memory_settings or MemorySettings()
         self._path_filter = path_filter
         self._activity_service = activity_service or ActivityService(self._session)
+        self._live_traversal = live_traversal or NullLiveTraversalPublisher()
 
     def query(self, request: QueryRequest) -> QueryResult:
         """Execute a retrieval query end-to-end.
@@ -202,6 +206,14 @@ class QueryService:
         trace.latency_ms = round(elapsed_ms, 2)
 
         self._session.commit()
+
+        for sequence, node in enumerate(sorted(activated, key=lambda item: (item.hop, item.path)), 1):
+            self._live_traversal.publish(
+                TraversalEvent(
+                    str(trace_uuid), sequence, "read", node.path,
+                    node.edge_source, node.edge_target, node.edge_type,
+                )
+            )
 
         total_tokens = sum(mem.estimated_tokens for mem in selected)
         touched_paths = {memory.path for memory in selected} | {

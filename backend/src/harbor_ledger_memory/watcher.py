@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 import time
+import inspect
+from uuid import uuid4
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +15,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from harbor_ledger_memory.services.scan import ScanResult, ScanService
+from harbor_ledger_memory.services.live_traversal import NullLiveTraversalPublisher
 from harbor_ledger_memory.vault.boundary import VaultBoundary, VaultPathError
 
 
@@ -59,6 +62,7 @@ class VaultWatchService:
         *,
         debounce_seconds: float = 0.25,
         observer_factory: Callable[[], Any] = Observer,
+        live_traversal: object | None = None,
     ) -> None:
         if debounce_seconds <= 0:
             raise ValueError("debounce_seconds must be positive")
@@ -66,6 +70,7 @@ class VaultWatchService:
         self.scan_service = scan_service
         self.debounce_seconds = debounce_seconds
         self._observer_factory = observer_factory
+        self._live_traversal = live_traversal or NullLiveTraversalPublisher()
         self._pending: dict[str, float] = {}
         self._retry_counts: dict[str, int] = {}
         self._diagnostics: list[WatchDiagnostic] = []
@@ -145,7 +150,12 @@ class VaultWatchService:
 
         self.scan_calls += 1
         try:
-            result = self.scan_service.full_scan()
+            if "trace_id" in inspect.signature(self.scan_service.full_scan).parameters:
+                result = self.scan_service.full_scan(trace_id=str(uuid4()))
+            else:
+                # Keep the watcher compatible with small test/dry-run scan
+                # implementations that predate the optional trace argument.
+                result = self.scan_service.full_scan()
         except Exception as exc:
             with self._lock:
                 for path in pending:

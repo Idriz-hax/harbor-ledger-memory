@@ -75,6 +75,7 @@ from harbor_ledger_memory.services.graph_projection import GraphHandleError, Gra
 from harbor_ledger_memory.services.memory import MemoryService
 from harbor_ledger_memory.services.query import QueryService
 from harbor_ledger_memory.services.scan import ScanService
+from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
 from harbor_ledger_memory.services.status import (
     CatalogStatusService,
     token_status_payload,
@@ -505,6 +506,7 @@ def create_app(
     """
 
     activity_service = ActivityService(settings.database_url)
+    live_traversal = LiveTraversalPublisher()
     token_service = TokenService(settings.database_url)
     ui_session_service = ui_session_service or UiSessionService()
     if settings.mcp.enabled:
@@ -550,10 +552,11 @@ def create_app(
                 is_real_scanner = callable(set_activity_service)
                 if is_real_scanner:
                     set_activity_service(activity_service)
+                scanner.set_live_traversal(live_traversal)
                 scan_result = scanner.full_scan()
                 if not is_real_scanner:
                     activity_service.record("scan", _scan_activity_payload(scan_result))
-                watcher = VaultWatchService(scanner.boundary, scanner)
+                watcher = VaultWatchService(scanner.boundary, scanner, live_traversal=live_traversal)
                 watcher.start()
                 application.state.vault_watcher = watcher
                 application.state.activity_service = activity_service
@@ -579,6 +582,7 @@ def create_app(
         lifespan=lifespan,
     )
     application.state.activity_service = activity_service
+    application.state.live_traversal = live_traversal
     application.state.token_service = token_service
     application.state.ui_session_service = ui_session_service
     application.state.ui_origin = ui_origin or _loopback_origin(
@@ -793,6 +797,7 @@ def create_app(
         set_activity_service = getattr(scanner, "set_activity_service", None)
         if callable(set_activity_service):
             set_activity_service(activity_service)
+        scanner.set_live_traversal(live_traversal)
         scan_result = scanner.full_scan()
         return ScanResponse(
             files_indexed=scan_result.files_indexed,
@@ -816,7 +821,8 @@ def create_app(
         session = CatalogSession(bind=engine)
         try:
             service = VaultMutationService.from_settings(
-                session, settings, activity_service=activity_service
+                session, settings, activity_service=activity_service,
+                live_traversal=live_traversal,
             )
             _require_mutation_paths_writable(
                 auth, _mutation_affected_paths(service, request.path)
@@ -892,7 +898,8 @@ def create_app(
             if existing is None:
                 raise HTTPException(status_code=404, detail=f"proposal {id} not found")
             service = VaultMutationService.from_settings(
-                session, settings, activity_service=activity_service
+                session, settings, activity_service=activity_service,
+                live_traversal=live_traversal,
             )
             _require_mutation_paths_writable(
                 auth, _mutation_affected_paths(service, existing.path, existing.affected_paths)
@@ -923,7 +930,8 @@ def create_app(
             if existing is None:
                 raise HTTPException(status_code=404, detail=f"proposal {id} not found")
             service = VaultMutationService.from_settings(
-                session, settings, activity_service=activity_service
+                session, settings, activity_service=activity_service,
+                live_traversal=live_traversal,
             )
             _require_mutation_paths_writable(
                 auth, _mutation_affected_paths(service, existing.path, existing.affected_paths)
@@ -1095,6 +1103,7 @@ def create_app(
                 memory_settings=settings.memory,
                 path_filter=VaultBoundary(settings).is_admitted,
                 activity_service=activity_service,
+                live_traversal=live_traversal,
             )
             result = service.query(request)
         finally:

@@ -6,7 +6,8 @@ import hashlib
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Any, Literal
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from harbor_ledger_memory.config import FolderAccess, Settings
 from harbor_ledger_memory.services.access import AccessPolicy
 from harbor_ledger_memory.services.activity import ActivityService, graph_refs
 from harbor_ledger_memory.services.scan import ScanService
+from harbor_ledger_memory.services.live_traversal import NullLiveTraversalPublisher, TraversalEvent
 from harbor_ledger_memory.vault.boundary import (
     AdmittedFileSnapshot,
     DirectoryCreationError,
@@ -81,11 +83,15 @@ class VaultMutationService:
         session: Session,
         boundary: VaultBoundary,
         activity_service: ActivityService,
+        live_traversal: Any | None = None,
     ) -> None:
         self._session = session
         self.boundary = boundary
         self.activity_service = activity_service
         self.on_applying: Callable[[MemoryWriteProposal], None] | None = None
+        self._live_traversal = live_traversal or NullLiveTraversalPublisher()
+        self._traversal_trace: str | None = None
+        self._traversal_sequence = 0
 
     @classmethod
     def from_settings(
@@ -93,6 +99,7 @@ class VaultMutationService:
         session: Session,
         settings: Settings,
         activity_service: ActivityService | None = None,
+        live_traversal: Any | None = None,
     ) -> VaultMutationService:
         """Construct a service from an existing session and application settings.
 
@@ -101,7 +108,7 @@ class VaultMutationService:
         live subscribers.
         """
         boundary = VaultBoundary(settings)
-        return cls(session, boundary, activity_service or ActivityService(session))
+        return cls(session, boundary, activity_service or ActivityService(session), live_traversal)
 
     # ------------------------------------------------------------------
     # Public API
@@ -127,6 +134,7 @@ class VaultMutationService:
         unmanaged updates / conflicts).
         """
         identity = self._validate_path(path)
+        self._start_traversal()
         affected = self._affected_paths(identity)
         access = self._require_writable_paths(policy, affected)
         proposal = self._build_proposal(identity, content, access, operation)
@@ -147,6 +155,7 @@ class VaultMutationService:
                 "graph_refs": graph_refs([proposal.path]),
             },
         )
+        self._publish_traversal(proposal.path)
         # Auto-write: attempt immediate apply through the shared path.
         if access is FolderAccess.AUTO_WRITE and proposal.status == STATUS_PENDING:
             self._apply(proposal, origin="auto", policy=policy)
@@ -164,6 +173,7 @@ class VaultMutationService:
         without one fall back to the boundary's folder rules).
         """
         proposal = self._fetch_proposal(proposal_id)
+        self._start_traversal()
         self._check_pending(proposal)
         self._validate_path(proposal.path)
         self._apply(proposal, origin="approve", policy=policy)
@@ -172,6 +182,7 @@ class VaultMutationService:
     def reject(self, proposal_id: int) -> MemoryWriteProposal:
         """Reject a pending proposal without writing to disk."""
         proposal = self._fetch_proposal(proposal_id)
+        self._start_traversal()
         self._check_pending(proposal)
         proposal.status = STATUS_REJECTED
         proposal.resolved_at = _now()
@@ -186,6 +197,7 @@ class VaultMutationService:
                 "graph_refs": graph_refs([proposal.path]),
             },
         )
+        self._publish_traversal(proposal.path)
         return proposal
 
     # ------------------------------------------------------------------
@@ -198,6 +210,7 @@ class VaultMutationService:
         *,
         origin: str,
         policy: AccessPolicy | None = None,
+        traversal_trace: str | None = None,
     ) -> None:
         """Apply one proposal (origin: ``"approve"`` or ``"auto"``).
 
@@ -277,6 +290,9 @@ class VaultMutationService:
         proposal.status = STATUS_APPLYING
         proposal.applying_at = _now()
         self._session.commit()
+        if traversal_trace is not None:
+            self._traversal_trace = traversal_trace
+        self._publish_traversal(proposal.path)
         if self.on_applying is not None:
             self.on_applying(proposal)
 
@@ -360,6 +376,7 @@ class VaultMutationService:
                 self._session,
                 embedding_model=None,
                 activity_service=self.activity_service,
+                live_traversal=self._live_traversal,
             )
             scan_service.full_scan()
         except Exception as exc:
@@ -728,6 +745,19 @@ class VaultMutationService:
             },
         )
 
+    def _start_traversal(self) -> None:
+        self._traversal_trace = str(uuid4())
+        self._traversal_sequence = 0
+
+    def _publish_traversal(self, path: str) -> None:
+        if self._traversal_trace is None:
+            self._start_traversal()
+        assert self._traversal_trace is not None
+        self._traversal_sequence += 1
+        self._live_traversal.publish(
+            TraversalEvent(self._traversal_trace, self._traversal_sequence, "write", path)
+        )
+
     def _fetch_proposal(self, proposal_id: int) -> MemoryWriteProposal:
         """Fetch a proposal by ID or raise."""
         proposal = self._session.get(MemoryWriteProposal, proposal_id)
@@ -782,6 +812,7 @@ class VaultMutationService:
                 "graph_refs": graph_refs([proposal.path]),
             },
         )
+        self._publish_traversal(proposal.path)
 
     def _mark_applied(
         self,
@@ -807,6 +838,7 @@ class VaultMutationService:
                 "graph_refs": graph_refs([proposal.path]),
             },
         )
+        self._publish_traversal(proposal.path)
 
 
 def _now() -> str:
