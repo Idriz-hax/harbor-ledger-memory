@@ -35,3 +35,24 @@ Result: 98 passed.
 
 - Existing static diagnostics remain in unrelated/pre-existing API helper
   code and the mutation write-result union; focused runtime tests pass.
+
+## Review follow-up
+
+- Commit: `204346a` (`fix: close live traversal review gaps`).
+- Query API construction now combines admitted-vault filtering with the
+  authenticated token's read policy before graph construction, so telemetry
+  cannot expose filtered nodes or edge endpoints.
+- Mutation post-write scans inherit the active mutation trace and continue its
+  sequence; watcher construction now composes its publisher into the scan
+  service instead of leaving the parameter inert.
+- Added focused coverage for query policy filtering, ordered mutation-to-scan
+  lifecycle events, watcher publisher composition, and saturated subscriber
+  non-interference.
+
+### Review verification
+
+```text
+uv run pytest tests/test_query.py tests/test_scan.py tests/test_watcher.py tests/test_vault_mutations.py -v
+```
+
+Result: 99 passed.
