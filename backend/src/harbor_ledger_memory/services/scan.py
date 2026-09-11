@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from uuid import uuid4
 import posixpath
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -26,6 +27,7 @@ from harbor_ledger_memory.catalog.models import (
 )
 from harbor_ledger_memory.domain.models import ParseDiagnostic, ParsedNote
 from harbor_ledger_memory.services.activity import ActivityService, graph_refs
+from harbor_ledger_memory.services.live_traversal import NullLiveTraversalPublisher, TraversalEvent
 from harbor_ledger_memory.services.embeddings import (
     EmbeddingService,
     effective_embedding_model,
@@ -80,6 +82,7 @@ class ScanService:
         *,
         embedding_model: str | None = None,
         activity_service: ActivityService | None = None,
+        live_traversal: Any | None = None,
     ) -> None:
         self.boundary = boundary
         self._embedding_model = embedding_model
@@ -87,6 +90,7 @@ class ScanService:
             CatalogSession(bind=session) if isinstance(session, Engine) else session
         )
         self._activity_service = activity_service or ActivityService(self._session)
+        self._live_traversal = live_traversal or NullLiveTraversalPublisher()
 
     @classmethod
     def from_settings(cls, settings: Any) -> ScanService:
@@ -100,10 +104,11 @@ class ScanService:
             embedding_model=settings.memory.embedding_model,
         )
 
-    def full_scan(self) -> ScanResult:
+    def full_scan(self, trace_id: str | None = None) -> ScanResult:
         """Replace the catalog with a deterministic snapshot of admitted files."""
         snapshots = tuple(self.boundary.iter_admitted_snapshots())
         known_paths = tuple(snapshot.path.as_posix() for snapshot in snapshots)
+        traversal_trace = trace_id or str(uuid4())
 
         parsed_files: list[tuple[str, ParsedNote, str, int, int | None]] = []
         for snapshot in snapshots:
@@ -304,6 +309,8 @@ class ScanService:
             deleted_paths=deleted_paths,
             topology_paths=topology_paths,
         )
+        for sequence, path in enumerate(sorted(result.indexed_paths), 1):
+            self._live_traversal.publish(TraversalEvent(traversal_trace, sequence, "read", path))
         self._activity_service.record(
             "scan",
             {
@@ -330,6 +337,10 @@ class ScanService:
     def set_activity_service(self, activity_service: ActivityService) -> None:
         """Use the application's shared activity fan-out for future scans."""
         self._activity_service = activity_service
+
+    def set_live_traversal(self, publisher: Any) -> None:
+        """Use the application's shared traversal publisher."""
+        self._live_traversal = publisher
 
 
 def resolve_target(
