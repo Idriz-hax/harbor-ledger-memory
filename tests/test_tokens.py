@@ -86,6 +86,14 @@ def test_create_without_rules_is_read_only(tmp_path: Path) -> None:
         service.close()
 
 
+def test_token_approval_scope_defaults_false_and_round_trips(tmp_path: Path) -> None:
+    service = TokenService(f"sqlite:///{tmp_path / 'catalog.db'}")
+    default, _ = service.create("default")
+    approved, _ = service.create("approved", approve_own_proposals=True)
+    assert default.approve_own_proposals is False
+    assert approved.approve_own_proposals is True
+
+
 def test_create_rejects_bad_rules_and_duplicate_active_name(tmp_path: Path) -> None:
     rule = FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ)
     service = _service(tmp_path)

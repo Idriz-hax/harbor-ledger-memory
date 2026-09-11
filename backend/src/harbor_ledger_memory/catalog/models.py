@@ -385,6 +385,11 @@ class MemoryWriteProposal(Base):
     )
     resolved_at: Mapped[str | None] = mapped_column(String(128), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    creator_token_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("api_tokens.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     applying_at: Mapped[str | None] = mapped_column(String(128), nullable=True)
     applied_content_hash: Mapped[str | None] = mapped_column(
         String(64),
@@ -442,6 +447,9 @@ class ApiToken(Base):
     scopes: Mapped[str] = mapped_column(Text, nullable=False)  # JSON array of scopes
     rules: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array
     admin: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("0"), default=False
+    )
+    approve_own_proposals: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("0"), default=False
     )
     created_at: Mapped[str] = mapped_column(
