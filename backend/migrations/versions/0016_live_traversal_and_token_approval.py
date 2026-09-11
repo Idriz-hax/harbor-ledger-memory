@@ -7,10 +7,7 @@ from alembic import op
 from sqlalchemy import inspect, text
 
 revision = "0016_live_traversal_and_token_approval"
-# 0008 is the repository's effective head because it merged the existing
-# proposal branch with the graph branch at 0015. Keep both ancestors here so
-# adding this migration does not reintroduce a second Alembic head.
-down_revision = ("0008_memory_write_proposal_paths", "0015_snapshot_handle_level")
+down_revision = "0008_memory_write_proposal_paths"
 branch_labels = None
 depends_on = None
 
