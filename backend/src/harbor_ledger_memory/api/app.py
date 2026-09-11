@@ -481,6 +481,7 @@ class GraphClusterEdgeResponse(BaseModel):
     source: str
     target: str
     weight: float
+    edge_type: str
 
 
 class GraphViewResponse(BaseModel):

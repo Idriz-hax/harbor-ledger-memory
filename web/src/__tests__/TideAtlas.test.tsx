@@ -19,7 +19,51 @@ function mockAtlas(responses: unknown[]) {
   return fetchMock
 }
 
+class MockTraversalEventSource {
+  static current: MockTraversalEventSource | null = null
+  onopen: (() => void) | null = null
+  onerror: (() => void) | null = null
+  listeners: Record<string, EventListener> = {}
+  constructor(readonly url: string) { MockTraversalEventSource.current = this }
+  addEventListener(type: string, listener: EventListener) { this.listeners[type] = listener }
+  removeEventListener(type: string) { delete this.listeners[type] }
+  close() {}
+}
+
 describe('TideAtlas controls and viewport', () => {
+  it('renders traversal stream connection status, not scan status', async () => {
+    vi.stubGlobal('EventSource', MockTraversalEventSource)
+    mockAtlas([view(2, null)])
+    render(<TideAtlas events={[]} />)
+    MockTraversalEventSource.current?.onerror?.()
+    expect(screen.getByText('RECONNECTING')).toBeInTheDocument()
+    MockTraversalEventSource.current?.onopen?.()
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeInTheDocument())
+    MockTraversalEventSource.current?.onerror?.()
+    await waitFor(() => expect(screen.getByText('RECONNECTING')).toBeInTheDocument())
+  })
+
+  it('updates reduced-motion behavior without rebuilding chart state', async () => {
+    const listeners: Array<(event: Event) => void> = []
+    const media = {
+      matches: false,
+      media: '(prefers-reduced-motion: reduce)',
+      addEventListener: (_type: string, listener: (event: Event) => void) => listeners.push(listener),
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+    }
+    vi.stubGlobal('matchMedia', vi.fn(() => media))
+    mockAtlas([view(2, null)])
+    render(<TideAtlas events={[]} />)
+    await waitFor(() => expect(cytoscapeMock.nodeIds()).toContain('harbor'))
+    const position = cytoscapeMock.positionFor('harbor')
+    media.matches = true
+    listeners.forEach(listener => listener(new Event('change')))
+    expect(cytoscapeMock.createCalls).toBe(1)
+    expect(cytoscapeMock.destroyCalls).toBe(0)
+    expect(cytoscapeMock.positionFor('harbor')).toEqual(position)
+  })
   it('assigns stable accessible colors by top-level folder', () => {
     expect(topLevelFolder('AI/Notes/Harbor.md')).toBe('AI')
     expect(topLevelFolder('/')).toBe('(root)')
