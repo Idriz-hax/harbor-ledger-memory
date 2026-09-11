@@ -34,4 +34,18 @@ describe('LiveTraversalController', () => {
     expect(cytoscapeMock.classesFor('one')).not.toContain('traversal-write')
     vi.useRealTimers()
   })
+
+  it('does not light an edge when an aggregate path maps ambiguously', () => {
+    const core = createMockCore({ elements: [
+      { data: { id: 'cluster-a' } }, { data: { id: 'cluster-b' } },
+      { data: { id: 'edge', source: 'cluster-a', target: 'cluster-b', edge_type: 'links_to' } },
+    ] })
+    const controller = new LiveTraversalController(core as never, {
+      nodeIdForPath: () => 'cluster-a',
+      edgeIdForEvent: () => undefined,
+      reducedMotion: true,
+    })
+    controller.apply({ trace_id: 'aggregate', sequence: 1, mode: 'read', node_path: 'AI/one.md', source_path: 'AI/one.md', target_path: 'AI/two.md', edge_type: 'links_to' })
+    expect(cytoscapeMock.classesFor('edge')).not.toContain('traversal-forward')
+  })
 })
