@@ -52,6 +52,7 @@ class TokenRecord:
     name: str
     rules: tuple[FolderRule, ...]
     admin: bool
+    approve_own_proposals: bool
     created_at: datetime
     id: int = 0
     last_used_at: str | None = None
@@ -66,6 +67,7 @@ class TokenRecord:
             "name": self.name,
             "rules": [rule.model_dump(mode="json") for rule in self.rules],
             "admin": self.admin,
+            "approve_own_proposals": self.approve_own_proposals,
             "created_at": self.created_at.isoformat(),
             "last_used_at": self.last_used_at,
             "revoked_at": self.revoked_at,
@@ -85,6 +87,7 @@ class CreatedToken(tuple[TokenRecord, str]):
     _name: str
     _rules: tuple[FolderRule, ...]
     _admin: bool
+    _approve_own_proposals: bool
 
     def __new__(
         cls,
@@ -93,11 +96,13 @@ class CreatedToken(tuple[TokenRecord, str]):
         name: str,
         rules: tuple[FolderRule, ...],
         admin: bool,
+        approve_own_proposals: bool,
     ) -> CreatedToken:
         instance = super().__new__(cls, (record, plaintext))
         instance._name = name
         instance._rules = rules
         instance._admin = admin
+        instance._approve_own_proposals = approve_own_proposals
         return instance
 
     def __init__(
@@ -107,10 +112,12 @@ class CreatedToken(tuple[TokenRecord, str]):
         name: str,
         rules: tuple[FolderRule, ...],
         admin: bool,
+        approve_own_proposals: bool,
     ) -> None:
         self._name = name
         self._rules = rules
         self._admin = admin
+        self._approve_own_proposals = approve_own_proposals
 
     @property
     def record(self) -> TokenRecord:
@@ -131,6 +138,10 @@ class CreatedToken(tuple[TokenRecord, str]):
     @property
     def admin(self) -> bool:
         return self._admin
+
+    @property
+    def approve_own_proposals(self) -> bool:
+        return self._approve_own_proposals
 
 
 def _scopes_from_json(value: str | None) -> tuple[str, ...]:
@@ -167,6 +178,7 @@ def _record_from_row(row: ApiToken) -> TokenRecord:
         name=row.name,
         rules=_rules_from_json(row.rules),
         admin=bool(row.admin),
+        approve_own_proposals=bool(row.approve_own_proposals),
         created_at=_created_at_from_value(row.created_at),
         id=row.id,
         last_used_at=row.last_used_at,
@@ -238,6 +250,7 @@ class TokenService:
         name: str,
         rules: Sequence[FolderRule] | None = None,
         admin: bool = False,
+        approve_own_proposals: bool = False,
         *,
         activity: Any = None,
     ) -> CreatedToken:
@@ -265,6 +278,7 @@ class TokenService:
                 scopes=scopes_json,
                 rules=rules_json,
                 admin=admin,
+                approve_own_proposals=approve_own_proposals,
                 created_at=_timestamp(),
             )
             self._session.add(row)
@@ -277,6 +291,7 @@ class TokenService:
                     "name": name,
                     "rules": [rule.model_dump(mode="json") for rule in parsed_rules],
                     "admin": admin,
+                    "approve_own_proposals": approve_own_proposals,
                 },
             )
         return CreatedToken(
@@ -285,6 +300,7 @@ class TokenService:
             name=name,
             rules=parsed_rules,
             admin=admin,
+            approve_own_proposals=approve_own_proposals,
         )
 
     def list(self) -> list[TokenRecord]:
