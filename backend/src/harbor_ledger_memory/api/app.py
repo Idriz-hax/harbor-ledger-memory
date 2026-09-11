@@ -5,11 +5,13 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+from dataclasses import asdict
+from queue import Empty
 import secrets
 import subprocess
 import sys
 import time
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from importlib import metadata as importlib_metadata
 from importlib import resources
@@ -75,7 +77,10 @@ from harbor_ledger_memory.services.graph_projection import GraphHandleError, Gra
 from harbor_ledger_memory.services.memory import MemoryService
 from harbor_ledger_memory.services.query import QueryService
 from harbor_ledger_memory.services.scan import ScanService
-from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
+from harbor_ledger_memory.services.live_traversal import (
+    LiveTraversalPublisher,
+    TraversalEvent,
+)
 from harbor_ledger_memory.services.status import (
     CatalogStatusService,
     token_status_payload,
@@ -1039,6 +1044,43 @@ def create_app(
             generation=snapshot.generation,
         )
 
+    @application.get("/api/v1/graph/traversal/stream")
+    def traversal_stream(
+        auth: AuthContext = Depends(authenticated),
+    ) -> StreamingResponse:
+        """Stream newly published traversal events visible to this caller.
+
+        The subscription is created only after authentication and has no
+        replay source.  Its bounded queue deliberately makes slow clients
+        lossy rather than allowing a traversal to accumulate in memory.
+        """
+        subscription = live_traversal.subscribe()
+
+        def iterator() -> Iterator[str]:
+            try:
+                while True:
+                    try:
+                        event = subscription.get(timeout=15)
+                    except Empty:
+                        yield ": keepalive\n\n"
+                        continue
+                    if _traversal_event_visible(auth.policy, event):
+                        yield (
+                            "event: traversal\n"
+                            f"data: {json.dumps(asdict(event), ensure_ascii=False)}\n\n"
+                        )
+            finally:
+                subscription.close()
+
+        return StreamingResponse(
+            iterator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     @application.get("/api/v1/graph/view", response_model=GraphViewResponse)
     def graph_view(
         level: int = Query(0), scope: str | None = Query(None),
@@ -1605,6 +1647,14 @@ def _activity_payload_readable(
                 if isinstance(endpoint, str) and not policy.can_read(endpoint):
                     return False
     return True
+
+
+def _traversal_event_visible(policy: AccessPolicy, event: TraversalEvent) -> bool:
+    """Require read access to every vault path carried by a traversal event."""
+    return all(
+        path is None or policy.can_read(path)
+        for path in (event.node_path, event.source_path, event.target_path)
+    )
 
 
 def _sweep_activity_payload(
