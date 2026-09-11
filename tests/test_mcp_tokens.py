@@ -337,6 +337,7 @@ def test_mcp_approve_reject_check_proposal_path(tmp_path: Path) -> None:
             rules=[
                 FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)
             ],
+            approve_own_proposals=True,
         )
         token = hlm_mcp_token.set(writer)
         try:
@@ -382,6 +383,68 @@ def test_mcp_approve_reject_check_proposal_path(tmp_path: Path) -> None:
             rejected = json.loads(raw.content[0].text)
             assert rejected["status"] == "rejected"
             assert not (tmp_path / "AI" / "z.md").exists()
+        finally:
+            hlm_mcp_token.reset(token)
+    finally:
+        activity.close()
+        service.close()
+
+
+def test_mcp_approval_requires_opt_in_and_creator_match(tmp_path: Path) -> None:
+    """MCP approvals require the explicit owner-approval permission."""
+    settings = _settings(
+        tmp_path,
+        rules=(
+            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+        ),
+    )
+    activity = ActivityService(settings.database_url)
+    service = TokenService(settings.database_url)
+    try:
+        transport, _ = build_mcp_server(settings, activity, service)
+        server = transport.state.mcp_server
+        rules = [
+            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)
+        ]
+        creator, _ = service.create(
+            "creator", rules=rules, approve_own_proposals=True
+        )
+        other, _ = service.create("other", rules=rules, approve_own_proposals=True)
+        plain, _ = service.create("plain", rules=rules)
+
+        token = hlm_mcp_token.set(creator)
+        try:
+            proposal = json.loads(
+                _call(
+                    server,
+                    "propose_write",
+                    {"path": "AI/owned.md", "content": "# Owned"},
+                ).content[0].text
+            )
+            assert proposal["creator_token_id"] == creator.id
+        finally:
+            hlm_mcp_token.reset(token)
+
+        for caller, message in (
+            (plain, "token lacks approve-own-proposals permission"),
+            (other, "proposal was created by a different token"),
+        ):
+            token = hlm_mcp_token.set(caller)
+            try:
+                with pytest.raises(ToolError) as exc_info:
+                    _call(server, "approve_proposal", {"proposal_id": proposal["id"]})
+                assert message in str(exc_info.value)
+            finally:
+                hlm_mcp_token.reset(token)
+
+        token = hlm_mcp_token.set(creator)
+        try:
+            approved = json.loads(
+                _call(server, "approve_proposal", {"proposal_id": proposal["id"]})
+                .content[0]
+                .text
+            )
+            assert approved["status"] == "applied"
         finally:
             hlm_mcp_token.reset(token)
     finally:

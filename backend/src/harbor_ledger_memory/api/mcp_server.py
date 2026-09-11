@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import PurePosixPath
+from typing import Literal
 
 from harbor_ledger_memory.api.auth import hlm_internal_request, hlm_mcp_token
 from harbor_ledger_memory.catalog.database import CatalogSession, create_database
@@ -89,6 +90,15 @@ def build_mcp_server(
         if record is None:
             raise ToolError("authentication required: provide a valid API token")
         return AccessPolicy(record.rules, record.admin)
+
+    def _token_record():
+        """Return the authenticated MCP token, or None for internal drives."""
+        if hlm_internal_request.get():
+            return None
+        record = hlm_mcp_token.get()
+        if record is None:
+            raise ToolError("authentication required: provide a valid API token")
+        return record
 
     mcp = MCPServer(
         "harbor-ledger-memory",
@@ -293,9 +303,10 @@ def build_mcp_server(
         path: str | None = None,
         content: str | None = None,
         proposal_id: int | None = None,
-        write_operation: str = "write",
+        write_operation: Literal["write", "mkdir"] = "write",
     ) -> str:
         policy = _policy()
+        caller = _token_record()
         if operation == "request":
             assert path is not None
             preflight_engine, preflight_session = _open_session()
@@ -327,6 +338,11 @@ def build_mcp_server(
                         raise ToolError(
                             f"path '{affected.as_posix()}' not writable by this token"
                         )
+                if operation == "approve" and caller is not None:
+                    if not caller.approve_own_proposals:
+                        raise ToolError("token lacks approve-own-proposals permission")
+                    if existing.creator_token_id != caller.id:
+                        raise ToolError("proposal was created by a different token")
             finally:
                 session.close()
                 engine.dispose()
@@ -338,7 +354,11 @@ def build_mcp_server(
             if operation == "request":
                 assert path is not None and content is not None
                 proposal = service.request(
-                    path, content, operation=write_operation, policy=policy
+                    path,
+                    content,
+                    operation=write_operation,
+                    policy=policy,
+                    creator_token_id=caller.id if caller is not None else None,
                 )
             elif operation == "approve":
                 assert proposal_id is not None
@@ -398,6 +418,7 @@ def _write_payload(proposal: MemoryWriteProposal) -> dict[str, object]:
         "failure_reason": proposal.failure_reason,
         "affected_paths": proposal.affected_paths,
         "created_paths": proposal.created_paths,
+        "creator_token_id": proposal.creator_token_id,
     }
 
 
