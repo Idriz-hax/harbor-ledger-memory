@@ -210,7 +210,7 @@ class GraphProjectionService:
         title_expr = GraphNodeFact.title if level == 2 else folder_expr
         node_stmt = select(folder_expr, GraphNodeFact.kind, title_expr, func.count(GraphNodeFact.id)).where(*node_where).group_by(folder_expr, GraphNodeFact.kind, title_expr).order_by(folder_expr, GraphNodeFact.kind, title_expr).limit(page_size + 1).offset(offset)
         cluster_rows = list(self._session.execute(node_stmt))
-        if level == 2 and not cluster_rows:
+        if level == 2 and not cluster_rows and cursor is None:
             raise ValueError("scope is not accessible or contains no notes")
         clusters: list[GraphCluster] = []
         for folder, kind, label, count in cluster_rows[:page_size]:

@@ -122,6 +122,9 @@ def test_watcher_stop_waits_for_active_scan(tmp_path: Path) -> None:
         def join(self) -> None:
             pass
 
+        def is_alive(self) -> bool:
+            return True
+
     fake = BlockingScan()
     watcher = VaultWatchService(
         VaultBoundary(Settings(HLM_VAULT_PATH=tmp_path)),
@@ -152,3 +155,42 @@ def test_watcher_stop_waits_for_active_scan(tmp_path: Path) -> None:
     assert not stop_thread.is_alive()
     assert stop_finished.is_set()
     assert not fake.scan_active.is_set()
+
+
+def test_watcher_restarts_observer_after_it_stops_being_alive(tmp_path: Path) -> None:
+    class FakeObserver:
+        def __init__(self) -> None:
+            self.alive = False
+            observers.append(self)
+            if len(observers) == 2:
+                replacement_started.set()
+
+        def schedule(self, handler: object, path: str, recursive: bool) -> None:
+            pass
+
+        def start(self) -> None:
+            self.alive = True
+
+        def stop(self) -> None:
+            self.alive = False
+
+        def join(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+    observers: list[FakeObserver] = []
+    replacement_started = Event()
+    watcher = VaultWatchService(
+        VaultBoundary(Settings(HLM_VAULT_PATH=tmp_path)),
+        _FakeScanService(),
+        debounce_seconds=0.01,
+        observer_factory=FakeObserver,
+    )
+    watcher.start()
+    try:
+        observers[0].alive = False
+        assert replacement_started.wait(timeout=0.2)
+    finally:
+        watcher.stop()

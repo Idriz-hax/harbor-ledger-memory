@@ -88,11 +88,7 @@ class VaultWatchService:
                 return
             if not self.boundary.index_root.is_dir():
                 raise VaultPathError("index root is not an existing directory")
-            observer = self._observer_factory()
-            observer.schedule(
-                _EventHandler(self), str(self.boundary.index_root), recursive=True
-            )
-            observer.start()
+            observer = self._new_observer()
             self._observer = observer
             self._stopping.clear()
             self._worker = threading.Thread(
@@ -203,10 +199,34 @@ class VaultWatchService:
 
     def _flush_loop(self) -> None:
         while not self._stopping.wait(self.debounce_seconds):
+            self._restart_observer_if_dead()
             with self._lock:
                 has_pending = bool(self._pending)
             if has_pending:
                 self.flush()
+
+    def _new_observer(self) -> Any:
+        observer = self._observer_factory()
+        observer.schedule(
+            _EventHandler(self), str(self.boundary.index_root), recursive=True
+        )
+        observer.start()
+        return observer
+
+    def _restart_observer_if_dead(self) -> None:
+        with self._lock:
+            observer = self._observer
+            if observer is None or self._stopping.is_set() or observer.is_alive():
+                return
+            self._observer = None
+
+        observer.stop()
+        observer.join()
+
+        with self._lock:
+            if self._stopping.is_set() or self._observer is not None:
+                return
+            self._observer = self._new_observer()
 
 
 def _is_temporary(path: Path) -> bool:

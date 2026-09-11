@@ -315,6 +315,13 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
         setView({ ...firstResponse, clusters: [...clusters.values()], edges: [...edges.values()] })
       }
     } catch (e) {
+      if (generation === requestGenerationRef.current && nextScope && e instanceof Error && e.message === 'scope is not accessible or contains no notes') {
+        scopeRef.current = null
+        setScope(null)
+        setSelected(null)
+        void loadView(2, null)
+        return
+      }
       if (generation === requestGenerationRef.current && !(e instanceof DOMException && e.name === 'AbortError')) {
         setError(e instanceof Error ? e.message : 'chart unavailable')
       }
