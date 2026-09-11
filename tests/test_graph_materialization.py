@@ -98,3 +98,34 @@ def test_snapshot_handle_creation_cleans_expired_and_caps_capacity(tmp_path: Pat
     finally:
         session.close()
         engine.dispose()
+
+
+def test_edge_heavy_level_two_pages_without_scope(tmp_path: Path) -> None:
+    service, session, engine = _service(tmp_path)
+    try:
+        names = [f"note-{index:02d}" for index in range(26)]
+        for name in names:
+            links = "\n".join(f"[[{target}]]" for target in names if target != name)
+            (tmp_path / "AI" / f"{name}.md").write_text(f"# {name}\n{links}\n", encoding="utf-8")
+        service.full_scan()
+
+        policy = AccessPolicy(())
+        first = GraphProjectionService(session).view(
+            2, page_size=500, policy=policy, policy_fingerprint=policy.fingerprint()
+        )
+        assert len(first.clusters) < 500
+        assert len(first.edges) == 500
+        assert first.next_cursor is not None
+
+        second = GraphProjectionService(session).view(
+            2,
+            page_size=500,
+            cursor=first.next_cursor,
+            policy=policy,
+            policy_fingerprint=policy.fingerprint(),
+        )
+        assert second.scope is None
+        assert second.edges
+    finally:
+        session.close()
+        engine.dispose()

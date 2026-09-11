@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 - 2026-09-11
+
+- Recover the filesystem observer after an unexpected stop, such as macOS
+  sleep/wake.
+- Recover Tide Atlas to the whole vault when a stale scoped graph selection
+  becomes unavailable.
+- Continue multi-page level-2 graph views when only edges remain.
+
 ## 1.2.0 - 2026-09-08
 
 - Added durable Tide Atlas graph snapshots with policy-bound opaque pagination

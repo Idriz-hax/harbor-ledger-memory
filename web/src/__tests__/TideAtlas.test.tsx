@@ -239,6 +239,37 @@ describe('TideAtlas controls and viewport', () => {
     expect(screen.getByText('AI/Knowledge')).toBeInTheDocument()
   })
 
+  it('clears a stale scope and reloads the whole vault after a scoped 400', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/v1/graph/view') && url.includes('scope=')) {
+        return {
+          ok: false,
+          status: 400,
+          statusText: 'Bad Request',
+          text: async () => JSON.stringify({ detail: 'scope is not accessible or contains no notes' }),
+        } as Response
+      }
+      if (url.includes('/api/v1/graph/view')) {
+        const wholeVault = fetchMock.mock.calls.filter(call => String(call[0]).includes('/api/v1/graph/view')).length > 1
+        return { ok: true, json: async () => wholeVault ? view(2, null, [cluster('whole', 'AI')]) : view(1, null, [cluster('archive', 'AI/Knowledge')]) } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<TideAtlas events={[]} />)
+    await waitFor(() => expect(cytoscapeMock.nodeIds()).toContain('archive'))
+    emitMockEvent('tap', { target: { id: () => 'archive' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Enter archive' }))
+
+    await waitFor(() => expect(cytoscapeMock.nodeIds()).toContain('whole'))
+    const graphCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('/api/v1/graph/view'))
+    expect(graphCalls).toHaveLength(3)
+    expect(String(graphCalls[2][0])).not.toContain('scope=')
+    expect(screen.queryByText('scope is not accessible or contains no notes')).not.toBeInTheDocument()
+  })
+
   it('does not run a layout after pan, zoom, or selection', async () => {
     mockAtlas([view(2, null, [cluster('one', 'AI/One.md'), cluster('two', 'AI/Two.md')])])
     render(<TideAtlas events={[]} />)
