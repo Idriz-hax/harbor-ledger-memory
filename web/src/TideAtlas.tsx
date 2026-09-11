@@ -393,9 +393,12 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
       edgeIdForEvent: event => {
         const current = viewRef.current
         if (!current || !event.source_path || !event.target_path || !event.edge_type) return undefined
-        const resolve = (path: string) => current.clusters.find(cluster => current.level === 2
-          ? cluster.scope === path
-          : path === cluster.scope || path.startsWith(`${cluster.scope}/`))?.id
+        const resolve = (path: string) => {
+          const matches = current.clusters.filter(cluster => current.level === 2
+            ? cluster.scope === path
+            : path === cluster.scope || path.startsWith(`${cluster.scope}/`))
+          return matches.length === 1 ? matches[0].id : undefined
+        }
         const source = resolve(event.source_path)
         const target = resolve(event.target_path)
         if (!source || !target) return undefined
@@ -681,8 +684,8 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
       </Box>
       <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
         <Box className="live-indicator">
-          <Box className={scanning || !traversalConnected ? 'live-dot disconnected' : 'live-dot'} />
-          <span>{scanning ? 'SCANNING' : traversalConnected ? 'LIVE' : 'RECONNECTING'}</span>
+          <Box className={!traversalConnected ? 'live-dot disconnected' : 'live-dot'} />
+          <span>{traversalConnected ? 'LIVE' : 'RECONNECTING'}</span>
         </Box>
         <Chip icon={<Terrain />} label={scanning ? 'scanning' : 'active'} color="primary" variant="outlined" sx={{ borderColor: 'rgba(118, 163, 174, .3)', color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }} />
         <Button startIcon={<Refresh />} onClick={handleRescan} disabled={scanning} sx={{ color: 'text.secondary', border: 1, borderColor: 'rgba(118, 163, 174, .3)', borderRadius: 6, '&:hover': { borderColor: 'rgba(230, 191, 105, .5)', background: 'rgba(230, 191, 105, .06)' } }}>

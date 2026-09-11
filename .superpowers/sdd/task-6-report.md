@@ -35,3 +35,9 @@ Implemented and committed as `feat: visualize live graph traversals`.
 - Regression coverage now uses real level-2 hashed cluster/edge IDs and verifies stream status and preference changes.
 
 Follow-up validation: focused web tests **44 passed, 6 skipped**; web build **passed**; focused backend graph/traversal tests **21 passed**.
+
+## Re-review follow-up
+
+- Aggregate path resolution now requires exactly one matching source and target cluster; ambiguous mappings return no edge and cannot light an arbitrary route.
+- Traversal connectivity is now rendered solely from the traversal stream: scan progress remains in the scan chip/button feedback and never changes LIVE/RECONNECTING or disconnected styling.
+- Added regression coverage for ambiguous aggregate edge resolution and retained stream status coverage.
