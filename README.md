@@ -123,6 +123,11 @@ re-enable semantic search.
   configured folder rules; creates, unmanaged files, and conflicts remain
   proposals for approval. MCP exposes `propose_write`, `approve_proposal`, and
   `reject_proposal` with the same policy-controlled lifecycle.
+- **Operational telemetry is restricted.** Activity history and streams require
+  authentication and are filtered to the caller's readable paths. Graph
+  traversal telemetry is live-only: it is intentionally lossy under backpressure,
+  is policy-filtered, is not persisted, and cannot be replayed after connecting.
+  Reconnects provide only newly published traversal events.
 - **The install is isolated.** `uv tool install` uses a private virtual
   runtime; there is no `sudo`, no global Python packages, and no `npm install -g`.
 - **The scope is bounded.** By default the whole vault is indexed. Narrow it
@@ -217,6 +222,11 @@ everywhere.
 
 Tokens are immutable — to change a rule or the admin flag, create a new token
 and revoke the old one.
+
+Tokens may also be created with `approve_own_proposals: true` (or the matching
+CLI/API option). This explicitly permits that token to approve proposals it
+created itself; without it, own-proposal approval is rejected even when the
+token can otherwise write to the path.
 
 It prints the plaintext `hlm_…` token **once** (only its SHA-256 hash is
 stored). Send it as `Authorization: Bearer hlm_…` on external REST/MCP calls;
@@ -346,6 +356,9 @@ Core JSON API routes are `GET /health`, `GET /api/v1/status`,
 exposes `GET /api/v1/settings`, `PUT /api/v1/settings`,
 `GET /api/v1/update-status`, and `POST /api/v1/update`. Settings changes
 persist only application configuration and do not mutate a running watcher.
+`GET /api/v1/graph/traversal/stream` is an authenticated SSE feed of newly
+published, policy-filtered traversal events. It has no history or replay cursor;
+slow subscribers may miss events.
 
 The `@Memory` agent can load vault context before tasks by querying the API:
 

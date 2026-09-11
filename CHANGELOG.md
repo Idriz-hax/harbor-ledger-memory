@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0 - 2026-09-12
+
+- Added authenticated, live-only graph traversal telemetry with bounded,
+  lossy delivery, token policy filtering, and no replay support.
+- Added token-scoped approval of a caller's own write proposals when explicitly
+  enabled with `approve_own_proposals`.
+- Released the API and package metadata as version 1.3.0.
+
 ## 1.2.1 - 2026-09-11
 
 - Recover the filesystem observer after an unexpected stop, such as macOS
