@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -118,10 +119,11 @@ vault = Path.cwd() / "vault"
 (vault / "AI").mkdir(parents=True)
 response = TestClient(create_app(Settings(HLM_VAULT_PATH=vault))).get("/")
 assert response.status_code == 200
+assert create_app(Settings(HLM_VAULT_PATH=vault)).version == __import__("sys").argv[2]
 assert response.text == Path(__import__("sys").argv[1]).read_text()
 """
         subprocess.run(
-            [sys.executable, "-c", code, str(web_index)],
+            [sys.executable, "-c", code, str(web_index), wheel.stem.split("-")[1]],
             cwd=extracted,
             env={**os.environ, "PYTHONPATH": str(extracted)},
             check=True,
@@ -138,8 +140,18 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--version", help="release version without the leading v")
     group.add_argument("--tag", help="release tag, exactly v<version>")
-    parser.add_argument("artifacts", nargs="+", type=Path)
+    parser.add_argument("artifacts", nargs="*", type=Path)
     args = parser.parse_args()
+    if not args.artifacts:
+        project = Path(__file__).parents[1]
+        with (project / "pyproject.toml").open("rb") as handle:
+            metadata = tomllib.load(handle)
+        version = metadata["project"]["version"]
+        web_dist = project / "web" / "dist"
+        if not (web_dist / "index.html").is_file() or not (web_dist / "assets").is_dir():
+            parser.error("built Web UI is missing from web/dist")
+        print(f"verified source release metadata and Web UI for {version}")
+        return
     try:
         version = release_version(args.artifacts, version=args.version, tag=args.tag)
     except ValueError as error:
