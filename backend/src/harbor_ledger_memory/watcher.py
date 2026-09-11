@@ -71,6 +71,9 @@ class VaultWatchService:
         self.debounce_seconds = debounce_seconds
         self._observer_factory = observer_factory
         self._live_traversal = live_traversal or NullLiveTraversalPublisher()
+        set_live_traversal = getattr(scan_service, "set_live_traversal", None)
+        if callable(set_live_traversal):
+            set_live_traversal(self._live_traversal)
         self._pending: dict[str, float] = {}
         self._retry_counts: dict[str, int] = {}
         self._diagnostics: list[WatchDiagnostic] = []

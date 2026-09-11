@@ -1097,11 +1097,12 @@ def create_app(
         engine = create_database(settings.database_url)
         session = CatalogSession(bind=engine)
         try:
+            boundary = VaultBoundary(settings)
             service = QueryService(
                 session,
                 retrieval_settings=settings.retrieval,
                 memory_settings=settings.memory,
-                path_filter=VaultBoundary(settings).is_admitted,
+                path_filter=lambda path: boundary.is_admitted(path) and auth.policy.can_read(path),
                 activity_service=activity_service,
                 live_traversal=live_traversal,
             )

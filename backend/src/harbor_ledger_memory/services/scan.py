@@ -104,7 +104,7 @@ class ScanService:
             embedding_model=settings.memory.embedding_model,
         )
 
-    def full_scan(self, trace_id: str | None = None) -> ScanResult:
+    def full_scan(self, trace_id: str | None = None, sequence_start: int = 0) -> ScanResult:
         """Replace the catalog with a deterministic snapshot of admitted files."""
         snapshots = tuple(self.boundary.iter_admitted_snapshots())
         known_paths = tuple(snapshot.path.as_posix() for snapshot in snapshots)
@@ -309,7 +309,7 @@ class ScanService:
             deleted_paths=deleted_paths,
             topology_paths=topology_paths,
         )
-        for sequence, path in enumerate(sorted(result.indexed_paths), 1):
+        for sequence, path in enumerate(sorted(result.indexed_paths), sequence_start + 1):
             self._live_traversal.publish(TraversalEvent(traversal_trace, sequence, "read", path))
         self._activity_service.record(
             "scan",
