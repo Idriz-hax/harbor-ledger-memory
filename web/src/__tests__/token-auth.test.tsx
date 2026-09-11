@@ -106,7 +106,7 @@ describe('Settings · API tokens', () => {
     const post = calls.find(call => call.method === 'POST' && call.url === '/api/v1/tokens')
     expect(JSON.parse(put?.body ?? '{}')).toEqual({ folder_rules: [{ path: 'AI', access: 'propose-write' }] })
     expect(post?.headers?.['Content-Type']).toBe('application/json')
-    expect(JSON.parse(post?.body ?? '{}')).toEqual({ name: 'opencode', rules: [{ path: 'AI', access: 'propose-write' }], admin: false })
+    expect(JSON.parse(post?.body ?? '{}')).toEqual({ name: 'opencode', rules: [{ path: 'AI', access: 'propose-write' }], admin: false, approve_own_proposals: false })
   })
 
   it('falls back to a suggested name and sends admin when the checkbox is set', async () => {
@@ -122,7 +122,23 @@ describe('Settings · API tokens', () => {
     const suggested = `agent-${new Date().toISOString().slice(0, 10)}`
     await waitFor(() => expect(screen.getByText(/shown only once/)).toBeInTheDocument())
     const post = calls.find(call => call.method === 'POST' && call.url === '/api/v1/tokens')
-    expect(JSON.parse(post?.body ?? '{}')).toEqual({ name: suggested, rules: [], admin: true })
+    expect(JSON.parse(post?.body ?? '{}')).toEqual({ name: suggested, rules: [], admin: true, approve_own_proposals: false })
+  })
+
+  it('leaves own-proposal approval unchecked and sends it only after selection', async () => {
+    const user = userEvent.setup()
+    const { calls } = mockApi({
+      'POST /api/v1/tokens': { status: 201, body: { token: 'hlm_proposer', name: 'agent', rules: [], admin: false } },
+      '/api/v1/tokens': { body: [] },
+    })
+    render(<Settings />)
+    const checkbox = screen.getByRole('checkbox', { name: /approve own proposals/i })
+    expect(checkbox).not.toBeChecked()
+    await user.click(checkbox)
+    await user.click(screen.getByRole('button', { name: /generate token/i }))
+    await waitFor(() => expect(screen.getByText(/shown only once/)).toBeInTheDocument())
+    const post = calls.find(call => call.method === 'POST')
+    expect(JSON.parse(post?.body ?? '{}').approve_own_proposals).toBe(true)
   })
 
   it('revokes only after the two-step confirm, with a DELETE by token name', async () => {

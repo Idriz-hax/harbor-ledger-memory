@@ -81,7 +81,7 @@ export const api = async <T,>(url: string, init?: RequestInit) => {
   return response.json() as Promise<T>
 }
 export type TokenRule = { path: string; access: string }
-export type TokenSummary = { name: string; rules: TokenRule[]; admin: boolean; created_at: string }
+export type TokenSummary = { name: string; rules: TokenRule[]; admin: boolean; approve_own_proposals: boolean; created_at: string }
 /* Short, scannable rule summary for a token list row: only the rules that
    deviate from the default read are named. */
 const RULE_SUMMARY_LABEL: Record<string, string> = { none: 'none', 'propose-write': 'propose', 'auto-write': 'write' }
@@ -1130,6 +1130,7 @@ export function Settings() {
   const [tokenRows, setTokenRows] = useState<TokenSummary[] | null>(null)
   const [tokenName, setTokenName] = useState('')
   const [tokenAdmin, setTokenAdmin] = useState(false)
+  const [approveOwnProposals, setApproveOwnProposals] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [justCreated, setJustCreated] = useState<{ name: string; token: string } | null>(null)
   const [revealed, setRevealed] = useState(false)
@@ -1205,7 +1206,7 @@ export function Settings() {
     setGenerating(true); setTokenError(''); setJustCreated(null)
     try {
       await api('/api/v1/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_rules: rules }) })
-      const r = await api<{ token: string } & TokenSummary>('/api/v1/tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, rules, admin: tokenAdmin }) })
+      const r = await api<{ token: string } & TokenSummary>('/api/v1/tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, rules, admin: tokenAdmin, approve_own_proposals: approveOwnProposals }) })
       setJustCreated({ name, token: r.token })
       setRevealed(false); setCopied(false)
       setTokenName('')
@@ -1463,6 +1464,7 @@ export function Settings() {
               <Box sx={{ display: 'grid', gap: 2, mt: 2 }}>
                 <TextField size="small" label="Token name" name="token-name" autoComplete="off" value={tokenName} onChange={e => setTokenName(e.target.value)} placeholder={`${tokenNameSuggestion()}…`} inputProps={{ spellCheck: false }} />
                 <FormControlLabel control={<Checkbox name="token-admin" checked={tokenAdmin} onChange={e => setTokenAdmin(e.target.checked)} />} label="Admin — can manage tokens" />
+                <FormControlLabel control={<Checkbox name="approve-own-proposals" checked={approveOwnProposals} onChange={e => setApproveOwnProposals(e.target.checked)} />} label="Approve own proposals" />
                 <Typography variant="caption" color="text.secondary">Admin tokens can create and revoke other tokens. Only enable this for a trusted operator.</Typography>
                 <Button variant="contained" sx={{ alignSelf: 'flex-start' }} onClick={generateToken} disabled={generating} aria-busy={generating} startIcon={generating ? <CircularProgress size={14} /> : undefined}>Generate token</Button>
               </Box>

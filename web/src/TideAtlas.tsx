@@ -6,6 +6,7 @@ import { api, type Activity } from './main'
 import { activityColors, type ActivityKind } from './appTheme'
 import { MAX_ZOOM, MIN_ZOOM, viewLevelForZoom, type GraphView, type GraphCluster } from './graphView'
 import { buildCoastalPlacement, clearPositionOverrides, isIndexPath, loadPositionOverrides, savePositionOverride, settleOneHop, type Island } from './coastalLayout'
+import { LiveTraversalController, type LiveTraversalEvent } from './liveTraversal'
 
 type ViewState = { pan: { x: number; y: number }; zoom: number }
 
@@ -120,6 +121,12 @@ const computeStyles = (): StylesheetJson => [
     'line-color': 'rgba(89, 217, 177, .65)',
     opacity: 0.9,
     width: '1.5',
+  }},
+  { selector: 'node.traversal-read', style: { 'border-color': '#62e8f2', 'border-width': '4', 'z-index': 125 }},
+  { selector: 'node.traversal-write', style: { 'border-color': '#f4bd62', 'border-width': '4', 'z-index': 125 }},
+  { selector: 'edge.traversal-forward', style: {
+    'line-color': '#62e8f2', 'target-arrow-color': '#62e8f2', 'target-arrow-shape': 'triangle', 'arrow-scale': 1.2,
+    opacity: 1, width: '3', 'line-style': 'dashed', 'line-dash-pattern': [8, 5], 'line-dash-offset': 0, 'z-index': 124,
   }},
   { selector: 'node.activity-glow', style: {
     'border-color': '#f5d889',
@@ -252,6 +259,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
   const [error, setError] = useState('')
   const [fullScreen, setFullScreen] = useState(false)
   const [scanning, setScanning] = useState(false)
+  const [traversalConnected, setTraversalConnected] = useState(false)
   const [islands, setIslands] = useState<Island[]>([])
   const [layoutRevision, setLayoutRevision] = useState(0)
   const viewRef = useRef(view)
@@ -260,6 +268,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
   const requestGenerationRef = useRef(0)
   const rearrangeNonceRef = useRef(0)
   const requestControllerRef = useRef<AbortController | null>(null)
+  const traversalControllerRef = useRef<LiveTraversalController | null>(null)
   const levelDebounceRef = useRef<number | null>(null)
   const initialWholeVaultLayoutRef = useRef(false)
   const suppressViewportHandlingRef = useRef(false)
@@ -369,6 +378,8 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
       style: computeStyles(),
     })
     coreRef.current = instance
+    const traversalController = new LiveTraversalController(instance, { reducedMotion })
+    traversalControllerRef.current = traversalController
     instance.on('tap', 'node', event => {
       const id = event.target.id()
       const selectedNode = instance.getElementById(id)
@@ -460,12 +471,27 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
     return () => {
       if (levelDebounceRef.current !== null) window.clearTimeout(levelDebounceRef.current)
       requestControllerRef.current?.abort()
+      traversalController.dispose()
+      traversalControllerRef.current = null
       momentumFramesRef.current.forEach(frame => window.cancelAnimationFrame(frame))
       momentumFramesRef.current.clear()
       instance.destroy()
       coreRef.current = null
     }
-  }, [syncViewport])
+  }, [syncViewport, reducedMotion])
+
+  /* Traversal is deliberately separate from the activity history stream. */
+  useEffect(() => {
+    if (typeof EventSource === 'undefined') return
+    const stream = new EventSource('/api/v1/graph/traversal/stream')
+    stream.onopen = () => setTraversalConnected(true)
+    stream.onerror = () => setTraversalConnected(false)
+    const onTraversal = (event: Event) => {
+      try { traversalControllerRef.current?.apply(JSON.parse((event as MessageEvent).data) as LiveTraversalEvent) } catch { /* ignore malformed events */ }
+    }
+    stream.addEventListener('traversal', onTraversal)
+    return () => { stream.removeEventListener('traversal', onTraversal); stream.close(); setTraversalConnected(false) }
+  }, [])
 
   /* Apply view data without a global layout. Every node stays draggable. */
   useEffect(() => {
