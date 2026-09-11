@@ -385,6 +385,7 @@ class TokenCreateBody(BaseModel):
     name: str
     rules: tuple[FolderRule, ...] = Field(default_factory=tuple)
     admin: bool = False
+    approve_own_proposals: bool = False
 
 
 class WriteRequest(BaseModel):
@@ -413,6 +414,7 @@ class WriteProposalResponse(BaseModel):
     failure_reason: str | None
     affected_paths: list[str]
     created_paths: list[str]
+    creator_token_id: int | None
 
 
 class WritesListResponse(BaseModel):
@@ -941,6 +943,7 @@ def create_app(
                 "name": record.name,
                 "rules": [rule.model_dump(mode="json") for rule in record.rules],
                 "admin": record.admin,
+                "approve_own_proposals": record.approve_own_proposals,
                 "created_at": record.created_at.isoformat(),
             }
             for record in token_service.list()
@@ -958,7 +961,11 @@ def create_app(
     ) -> dict[str, object] | JSONResponse:
         try:
             created = token_service.create(
-                body.name, body.rules, admin=body.admin, activity=activity_service
+                body.name,
+                body.rules,
+                admin=body.admin,
+                approve_own_proposals=body.approve_own_proposals,
+                activity=activity_service,
             )
         except (DuplicateTokenNameError, InvalidTokenRequestError) as exc:
             status = 409 if isinstance(exc, DuplicateTokenNameError) else 400
@@ -968,6 +975,7 @@ def create_app(
             "name": created.name,
             "rules": [rule.model_dump(mode="json") for rule in created.rules],
             "admin": created.admin,
+            "approve_own_proposals": created.approve_own_proposals,
             "created_at": created.record.created_at.isoformat(),
         }
 
@@ -1686,6 +1694,7 @@ def _write_response(proposal: MemoryWriteProposal) -> WriteProposalResponse:
         failure_reason=proposal.failure_reason,
         affected_paths=proposal.affected_paths,
         created_paths=proposal.created_paths,
+        creator_token_id=proposal.creator_token_id,
     )
 
 

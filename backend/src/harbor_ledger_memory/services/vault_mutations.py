@@ -113,6 +113,7 @@ class VaultMutationService:
         content: str,
         operation: Literal["write", "mkdir"] = "write",
         policy: AccessPolicy | None = None,
+        creator_token_id: int | None = None,
     ) -> MemoryWriteProposal:
         """Request a vault write and return the proposal object.
 
@@ -129,6 +130,7 @@ class VaultMutationService:
         affected = self._affected_paths(identity)
         access = self._require_writable_paths(policy, affected)
         proposal = self._build_proposal(identity, content, access, operation)
+        proposal.creator_token_id = creator_token_id
         proposal.affected_paths = [path.as_posix() for path in affected]
         self._session.add(proposal)
         self._session.commit()
