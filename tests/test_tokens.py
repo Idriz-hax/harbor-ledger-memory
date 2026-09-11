@@ -88,10 +88,26 @@ def test_create_without_rules_is_read_only(tmp_path: Path) -> None:
 
 def test_token_approval_scope_defaults_false_and_round_trips(tmp_path: Path) -> None:
     service = TokenService(f"sqlite:///{tmp_path / 'catalog.db'}")
-    default, _ = service.create("default")
-    approved, _ = service.create("approved", approve_own_proposals=True)
-    assert default.approve_own_proposals is False
-    assert approved.approve_own_proposals is True
+    try:
+        default, default_plaintext = service.create("default")
+        approved, approved_plaintext = service.create(
+            "approved", approve_own_proposals=True
+        )
+        assert default.approve_own_proposals is False
+        assert approved.approve_own_proposals is True
+
+        listed = {record.name: record for record in service.list()}
+        assert listed["default"].approve_own_proposals is False
+        assert listed["approved"].approve_own_proposals is True
+
+        verified_default = service.verify(default_plaintext)
+        verified_approved = service.verify(approved_plaintext)
+        assert verified_default is not None
+        assert verified_default.approve_own_proposals is False
+        assert verified_approved is not None
+        assert verified_approved.approve_own_proposals is True
+    finally:
+        service.close()
 
 
 def test_create_rejects_bad_rules_and_duplicate_active_name(tmp_path: Path) -> None:
@@ -258,10 +274,13 @@ def test_backfill_legacy_tokens_is_idempotent(tmp_path: Path) -> None:
         by_name = {record.name: record for record in service.list()}
         assert by_name["legacy"].rules == rules
         assert by_name["legacy"].admin is False
+        assert by_name["legacy"].approve_own_proposals is False
         assert by_name["legacy-admin"].rules == rules
         assert by_name["legacy-admin"].admin is True
+        assert by_name["legacy-admin"].approve_own_proposals is False
         assert by_name["modern"].rules == rules
         assert by_name["modern"].admin is False
+        assert by_name["modern"].approve_own_proposals is False
         assert service.backfill_legacy_tokens(rules) == 0
     finally:
         service.close()
