@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from queue import Empty
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
@@ -24,6 +25,7 @@ from harbor_ledger_memory.config import (
     Settings,
 )
 from harbor_ledger_memory.services.activity import ActivityService
+from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher, TraversalEvent
 from harbor_ledger_memory.services.vault_mutations import (
     VaultMutationService,
     VaultWriteDenied,
@@ -69,6 +71,67 @@ def _write_note(vault: Path, index_root: str, rel: str, content: str) -> Path:
 
 def _sha256(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
+
+
+def test_approval_and_post_write_scan_share_ordered_trace(tmp_path: Path) -> None:
+    settings = _build_settings(
+        tmp_path,
+        folder_rules=(
+            FolderRule(path=PurePosixPath("AI/proposed"), access=FolderAccess.PROPOSE_WRITE),
+        ),
+    )
+    note = _write_note(
+        settings.vault_path,
+        "AI",
+        "proposed/live.md",
+        "---\nmanaged_by: harbor-ledger-memory\n---\n# Original\n",
+    )
+    publisher = LiveTraversalPublisher(queue_size=20)
+    subscription = publisher.subscribe()
+    engine = create_database(settings.database_url)
+    session = CatalogSession(bind=engine)
+    try:
+        service = VaultMutationService.from_settings(session, settings, live_traversal=publisher)
+        proposal = service.request(note.relative_to(settings.vault_path).as_posix(), "# New")
+        while True:
+            try:
+                subscription.get_nowait()
+            except Empty:
+                break
+        service.approve(proposal.id)
+        events: list[TraversalEvent] = []
+        while True:
+            try:
+                events.append(subscription.get_nowait())
+            except Empty:
+                break
+        assert [event.sequence for event in events] == [1, 2, 3]
+        assert len({event.trace_id for event in events}) == 1
+        assert [event.mode for event in events] == ["write", "read", "write"]
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_saturated_traversal_subscriber_does_not_block_approval(tmp_path: Path) -> None:
+    settings = _build_settings(
+        tmp_path,
+        folder_rules=(
+            FolderRule(path=PurePosixPath("AI/proposed"), access=FolderAccess.PROPOSE_WRITE),
+        ),
+    )
+    publisher = LiveTraversalPublisher(queue_size=1)
+    publisher.subscribe()
+    engine = create_database(settings.database_url)
+    session = CatalogSession(bind=engine)
+    try:
+        service = VaultMutationService.from_settings(session, settings, live_traversal=publisher)
+        proposal = service.request("AI/proposed/saturated.md", "# New")
+        result = service.approve(proposal.id)
+        assert result.status == "applied"
+    finally:
+        session.close()
+        engine.dispose()
 
 
 # ---------------------------------------------------------------------------

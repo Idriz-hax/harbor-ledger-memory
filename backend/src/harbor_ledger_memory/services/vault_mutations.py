@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -292,6 +293,10 @@ class VaultMutationService:
         self._session.commit()
         if traversal_trace is not None:
             self._traversal_trace = traversal_trace
+        if self._traversal_trace is None:
+            self._start_traversal()
+        trace = self._traversal_trace
+        assert trace is not None
         self._publish_traversal(proposal.path)
         if self.on_applying is not None:
             self.on_applying(proposal)
@@ -378,7 +383,14 @@ class VaultMutationService:
                 activity_service=self.activity_service,
                 live_traversal=self._live_traversal,
             )
-            scan_service.full_scan()
+            if "trace_id" in inspect.signature(scan_service.full_scan).parameters:
+                scan_result = scan_service.full_scan(
+                    trace_id=trace,
+                    sequence_start=self._traversal_sequence,
+                )
+                self._traversal_sequence += scan_result.files_indexed
+            else:
+                scan_service.full_scan()
         except Exception as exc:
             if proposal.operation == "mkdir":
                 self._persist_reconciliation(
