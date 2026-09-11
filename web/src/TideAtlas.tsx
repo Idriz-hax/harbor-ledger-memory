@@ -176,7 +176,7 @@ const applyView = (instance: Core, view: GraphView, layoutSeed?: string | number
        classes: view.level === 2 && isIndexPath(cluster.scope) ? 'index-port'
       : 'file-node',
   }))
-  const desiredEdges = view.edges.map(edge => ({ data: { id: edge.id, source: edge.source, target: edge.target, weight: edge.weight } }))
+  const desiredEdges = view.edges.map(edge => ({ data: { id: edge.id, source: edge.source, target: edge.target, weight: edge.weight, edge_type: edge.edge_type } }))
   const desiredIds = new Set([...desiredNodes.map(n => String(n.data.id)), ...desiredEdges.map(e => String(e.data.id))])
   const current = instance.elements()
   const currentIds = new Set(current.map(el => String(el.id())))
@@ -283,6 +283,8 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
   viewportRef.current = viewport
   const small = useMediaQuery('(max-width:700px)')
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
+  const reducedMotionRef = useRef(reducedMotion)
+  reducedMotionRef.current = reducedMotion
 
   const resizeChart = useCallback(() => {
     coreRef.current?.resize()
@@ -378,7 +380,29 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
       style: computeStyles(),
     })
     coreRef.current = instance
-    const traversalController = new LiveTraversalController(instance, { reducedMotion })
+    const traversalController = new LiveTraversalController(instance, {
+      reducedMotion,
+      nodeIdForPath: path => {
+        const current = viewRef.current
+        if (!current) return undefined
+        const matches = current.clusters.filter(cluster => current.level === 2
+          ? cluster.scope === path
+          : path === cluster.scope || path.startsWith(`${cluster.scope}/`))
+        return matches.length === 1 ? matches[0].id : undefined
+      },
+      edgeIdForEvent: event => {
+        const current = viewRef.current
+        if (!current || !event.source_path || !event.target_path || !event.edge_type) return undefined
+        const resolve = (path: string) => current.clusters.find(cluster => current.level === 2
+          ? cluster.scope === path
+          : path === cluster.scope || path.startsWith(`${cluster.scope}/`))?.id
+        const source = resolve(event.source_path)
+        const target = resolve(event.target_path)
+        if (!source || !target) return undefined
+        const matches = current.edges.filter(edge => edge.source === source && edge.target === target && edge.edge_type === event.edge_type)
+        return matches.length === 1 ? matches[0].id : undefined
+      },
+    })
     traversalControllerRef.current = traversalController
     instance.on('tap', 'node', event => {
       const id = event.target.id()
@@ -445,7 +469,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
       })
       restingPositionsRef.current = { ...restingPositionsRef.current, ...settled }
       Object.entries(settled).forEach(([id, position]) => savePositionOverride(generation, id, position))
-      if (reducedMotion || samples.length < 2) return
+      if (reducedMotionRef.current || samples.length < 2) return
       const first = samples[0]
       const last = samples[samples.length - 1]
       const dt = Math.max(16, last.time - first.time)
@@ -478,7 +502,9 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
       instance.destroy()
       coreRef.current = null
     }
-  }, [syncViewport, reducedMotion])
+  }, [syncViewport])
+
+  useEffect(() => { traversalControllerRef.current?.setReducedMotion(reducedMotion) }, [reducedMotion])
 
   /* Traversal is deliberately separate from the activity history stream. */
   useEffect(() => {
@@ -655,8 +681,8 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
       </Box>
       <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
         <Box className="live-indicator">
-          <Box className={`live-dot ${scanning ? 'disconnected' : ''}`} />
-          <span>{scanning ? 'SCANNING' : 'LIVE'}</span>
+          <Box className={scanning || !traversalConnected ? 'live-dot disconnected' : 'live-dot'} />
+          <span>{scanning ? 'SCANNING' : traversalConnected ? 'LIVE' : 'RECONNECTING'}</span>
         </Box>
         <Chip icon={<Terrain />} label={scanning ? 'scanning' : 'active'} color="primary" variant="outlined" sx={{ borderColor: 'rgba(118, 163, 174, .3)', color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }} />
         <Button startIcon={<Refresh />} onClick={handleRescan} disabled={scanning} sx={{ color: 'text.secondary', border: 1, borderColor: 'rgba(118, 163, 174, .3)', borderRadius: 6, '&:hover': { borderColor: 'rgba(230, 191, 105, .5)', background: 'rgba(230, 191, 105, .06)' } }}>
