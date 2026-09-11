@@ -5,6 +5,7 @@ from threading import Event, Thread
 
 from harbor_ledger_memory.config import FolderRule, Settings
 from harbor_ledger_memory.services.scan import ScanResult
+from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
 from harbor_ledger_memory.vault.boundary import VaultBoundary
 from harbor_ledger_memory.watcher import VaultWatchService
 
@@ -12,6 +13,10 @@ from harbor_ledger_memory.watcher import VaultWatchService
 class _FakeScanService:
     def __init__(self) -> None:
         self.calls = 0
+        self.publisher = None
+
+    def set_live_traversal(self, publisher: object) -> None:
+        self.publisher = publisher
 
     def full_scan(self) -> ScanResult:
         self.calls += 1
@@ -39,6 +44,17 @@ def test_watcher_coalesces_atomic_save_and_ignores_unadmitted_paths(
     watcher.flush()
 
     assert watcher.scan_calls == 1
+
+
+def test_watcher_composes_publisher_into_scan_service(tmp_path: Path) -> None:
+    publisher = LiveTraversalPublisher()
+    fake = _FakeScanService()
+    VaultWatchService(
+        VaultBoundary(Settings(HLM_VAULT_PATH=tmp_path)),
+        fake,
+        live_traversal=publisher,
+    )
+    assert fake.publisher is publisher
 
 
 def test_watcher_ignores_denied_subtrees(tmp_path: Path) -> None:
