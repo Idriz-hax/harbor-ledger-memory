@@ -81,6 +81,14 @@ def test_zero_tokens_is_locked(tmp_path: Path) -> None:
         assert client.post("/api/v1/writes/1/approve").status_code == 401
 
 
+def test_application_version_matches_release(tmp_path: Path) -> None:
+    settings = Settings(
+        vault_path=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'version.db'}",
+    )
+    assert create_app(settings).version == "1.3.0"
+
+
 def test_valid_token_unlocks(tmp_path: Path) -> None:
     app, db = _make_app(tmp_path)
     with TestClient(app) as client:
