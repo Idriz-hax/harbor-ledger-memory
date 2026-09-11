@@ -523,7 +523,7 @@ def test_mcp_scan_and_feedback_require_write_access(tmp_path: Path) -> None:
 
 
 def test_mcp_internal_bypass_and_unauthenticated(tmp_path: Path) -> None:
-    """Internal in-process callers get full access; a bare caller is denied."""
+    """Internal callers retain access except proposal approval needs a token."""
     settings = _settings(
         tmp_path,
         rules=(
@@ -543,18 +543,18 @@ def test_mcp_internal_bypass_and_unauthenticated(tmp_path: Path) -> None:
             _call(server, "query", {"text": "anything"})
         assert "authentication required" in str(exc_info.value)
 
-        # The internal bypass resolves to full access without any token.
+        # The internal bypass can create a proposal without a token, but it
+        # cannot approve one without an opted-in creator token.
         token = hlm_internal_request.set(True)
         try:
             proposed = _call(
                 server, "propose_write", {"path": "AI/int.md", "content": "# I"}
             )
             proposal = json.loads(proposed.content[0].text)
-            approved = _call(
-                server, "approve_proposal", {"proposal_id": proposal["id"]}
-            )
-            assert json.loads(approved.content[0].text)["status"] == "applied"
-            assert (tmp_path / "AI" / "int.md").is_file()
+            with pytest.raises(ToolError) as exc_info:
+                _call(server, "approve_proposal", {"proposal_id": proposal["id"]})
+            assert "approve-own-proposals" in str(exc_info.value)
+            assert not (tmp_path / "AI" / "int.md").exists()
         finally:
             hlm_internal_request.reset(token)
     finally:

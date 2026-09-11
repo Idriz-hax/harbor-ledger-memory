@@ -92,11 +92,9 @@ def build_mcp_server(
         return AccessPolicy(record.rules, record.admin)
 
     def _token_record():
-        """Return the authenticated MCP token, or None for internal drives."""
-        if hlm_internal_request.get():
-            return None
+        """Return the authenticated MCP token, when one is present."""
         record = hlm_mcp_token.get()
-        if record is None:
+        if record is None and not hlm_internal_request.get():
             raise ToolError("authentication required: provide a valid API token")
         return record
 
@@ -338,7 +336,11 @@ def build_mcp_server(
                         raise ToolError(
                             f"path '{affected.as_posix()}' not writable by this token"
                         )
-                if operation == "approve" and caller is not None:
+                if operation == "approve":
+                    if caller is None:
+                        raise ToolError(
+                            "token lacks approve-own-proposals permission"
+                        )
                     if not caller.approve_own_proposals:
                         raise ToolError("token lacks approve-own-proposals permission")
                     if existing.creator_token_id != caller.id:
