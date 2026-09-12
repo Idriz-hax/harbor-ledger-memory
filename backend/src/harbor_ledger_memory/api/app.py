@@ -517,7 +517,10 @@ def create_app(
     ui_session_service = ui_session_service or UiSessionService()
     if settings.mcp.enabled:
         mcp_app, mcp_session_manager = build_mcp_server(
-            settings, activity_service, token_service
+            settings,
+            activity_service,
+            token_service,
+            live_traversal=live_traversal,
         )
     else:
         mcp_app = None

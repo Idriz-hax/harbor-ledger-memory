@@ -93,7 +93,12 @@ class ScanService:
         self._live_traversal = live_traversal or NullLiveTraversalPublisher()
 
     @classmethod
-    def from_settings(cls, settings: Any) -> ScanService:
+    def from_settings(
+        cls,
+        settings: Any,
+        *,
+        live_traversal: Any | None = None,
+    ) -> ScanService:
         """Construct a service from settings without touching the vault yet."""
         from harbor_ledger_memory.catalog.database import create_database
 
@@ -102,6 +107,7 @@ class ScanService:
             boundary,
             create_database(settings.database_url),
             embedding_model=settings.memory.embedding_model,
+            live_traversal=live_traversal,
         )
 
     def full_scan(self, trace_id: str | None = None, sequence_start: int = 0) -> ScanResult:

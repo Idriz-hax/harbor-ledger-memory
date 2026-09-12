@@ -17,6 +17,7 @@ from harbor_ledger_memory.config import (
     Settings,
 )
 from harbor_ledger_memory.services.activity import ActivityService
+from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
 from harbor_ledger_memory.services.scan import ScanService
 from harbor_ledger_memory.services.tokens import TokenService
 
@@ -120,6 +121,59 @@ def test_mcp_status_policy_shape(tmp_path: Path) -> None:
         assert manager is not None
     finally:
         hlm_internal_request.reset(internal)
+        activity.close()
+
+
+def test_mcp_query_and_write_publish_to_supplied_live_traversal(tmp_path: Path) -> None:
+    (tmp_path / "source.md").write_text(
+        "# Source\n\n[[target]]", encoding="utf-8"
+    )
+    (tmp_path / "target.md").write_text(
+        "# Target\n\ntelemetry target phrase", encoding="utf-8"
+    )
+    settings = Settings(
+        HLM_VAULT_PATH=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'telemetry.db'}",
+    )
+    activity = ActivityService(settings.database_url)
+    token_service = TokenService(settings.database_url)
+    caller, _ = token_service.create("telemetry", approve_own_proposals=True)
+    publisher = LiveTraversalPublisher()
+    subscription = publisher.subscribe()
+    internal = hlm_internal_request.set(True)
+    token = hlm_mcp_token.set(caller)
+    try:
+        ScanService.from_settings(settings).full_scan()
+        transport, _ = build_mcp_server(
+            settings, activity, token_service, live_traversal=publisher
+        )
+        server = transport.state.mcp_server
+
+        queried = asyncio.run(
+            server.call_tool("query", {"text": "telemetry target phrase"})
+        )
+        assert json.loads(queried.content[0].text)["trace_id"]
+        query_event = subscription.get_nowait()
+        assert query_event.mode == "read"
+        assert query_event.node_path == "target.md"
+
+        proposed = asyncio.run(
+            server.call_tool(
+                "propose_write", {"path": "created.md", "content": "# Created"}
+            )
+        )
+        proposal = json.loads(proposed.content[0].text)
+        asyncio.run(server.call_tool("approve_proposal", {"proposal_id": proposal["id"]}))
+        write_event = subscription.get(timeout=1)
+        while write_event.mode != "write":
+            write_event = subscription.get(timeout=1)
+        assert write_event.mode == "write"
+        assert write_event.node_path == "created.md"
+    finally:
+        subscription.close()
+        hlm_mcp_token.reset(token)
+        hlm_internal_request.reset(internal)
+        token_service.close()
         activity.close()
 
 
