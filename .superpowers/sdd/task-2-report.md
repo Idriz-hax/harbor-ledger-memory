@@ -38,6 +38,22 @@ Validation owner: reviewer. No unrelated files were changed.
 - `npm run build` — passed; Vite emitted the existing large-chunk warning.
 - Validation owner: reviewer.
 
+## Final quality fix: bound sequence tombstones
+
+- Split completed/evicted sequence watermarks into bounded tombstones instead
+  of retaining every trace in the active sequence map.
+- Tombstones are capped at 256 entries and expire after an explicit 30-second
+  stale-suppression window; newer sequences still replace older watermarks.
+- Added regression coverage for stale suppression during the window, expiry
+  after the window, and the bounded tombstone collection under sustained
+  unresolved traffic.
+
+### Quality-fix validation
+
+- `npm test -- --run src/__tests__/liveTraversal.test.ts src/__tests__/TideAtlas.test.tsx` — passed (49 passed, 6 skipped).
+- `npm run build` — passed; Vite emitted the existing large-chunk warning.
+- Validation owner: reviewer.
+
 ## Final review fix: bound unresolved pending state
 
 - Added a global cap of `MAX_PENDING_EVENTS` (32) across unresolved traces.
