@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { LiveTraversalController } from '../liveTraversal'
+import { LiveTraversalController, MAX_PENDING_EVENTS } from '../liveTraversal'
 import { createMockCore, cytoscapeMock } from '../test/cytoscape-mock'
 
 describe('LiveTraversalController', () => {
@@ -212,6 +212,32 @@ describe('LiveTraversalController', () => {
 
     expect(cytoscapeMock.classesFor('first')).not.toContain('traversal-read')
     expect(cytoscapeMock.classesFor('latest-renderable')).toContain('traversal-read')
+    controller.dispose()
+    vi.useRealTimers()
+  })
+
+  it('evicts oldest unresolved events globally and never replays their stale entries', () => {
+    vi.useFakeTimers()
+    const traceIds = Array.from({ length: MAX_PENDING_EVENTS + 1 }, (_, index) => `pending-${index}`)
+    const core = createMockCore({ elements: traceIds.map(id => ({ data: { id: `node-${id}` } })) })
+    let mapped = false
+    const controller = new LiveTraversalController(core as never, {
+      reducedMotion: true,
+      nodeIdForPath: path => mapped ? `node-${path}` : undefined,
+    })
+
+    traceIds.forEach((traceId, sequence) => controller.apply({ trace_id: traceId, sequence: 1, mode: 'read', node_path: traceId }))
+    vi.advanceTimersByTime(350 * (traceIds.length + 5))
+    expect(controller.activeTraceCount()).toBe(0)
+
+    // The projection resolves all remaining pending traces; the oldest one was evicted.
+    mapped = true
+    controller.flush()
+    expect(controller.activeTraceCount()).toBe(MAX_PENDING_EVENTS)
+    vi.advanceTimersByTime(350)
+    expect(controller.activeTraceCount()).toBe(MAX_PENDING_EVENTS)
+    controller.apply({ trace_id: traceIds[0], sequence: 1, mode: 'read', node_path: traceIds[0] })
+    expect(controller.activeTraceCount()).toBe(MAX_PENDING_EVENTS)
     controller.dispose()
     vi.useRealTimers()
   })
