@@ -23,7 +23,7 @@ describe('LiveTraversalController', () => {
   it('round-robins traces and collapses bounded overflow to newest event', () => {
     vi.useFakeTimers()
     const core = createMockCore({ elements: [
-      { data: { id: 'a1' } }, { data: { id: 'a2' } }, { data: { id: 'a3' } },
+      { data: { id: 'a1' } }, { data: { id: 'a2' } }, { data: { id: 'a3' } }, { data: { id: 'newest' } },
       { data: { id: 'b1' } },
     ] })
     const controller = new LiveTraversalController(core as never)
@@ -33,19 +33,18 @@ describe('LiveTraversalController', () => {
     vi.advanceTimersByTime(350)
     expect(cytoscapeMock.classesFor('a1')).toContain('traversal-read')
     controller.apply({ trace_id: 'a', sequence: 2, mode: 'read', node_path: 'a2' })
-    controller.apply({ trace_id: 'a', sequence: 3, mode: 'read', node_path: 'a3' })
-    controller.apply({ trace_id: 'a', sequence: 4, mode: 'read', node_path: 'a1' })
     vi.advanceTimersByTime(350)
     expect(cytoscapeMock.classesFor('b1')).toContain('traversal-write')
     vi.advanceTimersByTime(350)
     expect(cytoscapeMock.classesFor('a2')).toContain('traversal-read')
     controller.apply({ trace_id: 'a', sequence: 3, mode: 'read', node_path: 'a3' })
-    controller.apply({ trace_id: 'a', sequence: 4, mode: 'read', node_path: 'a1' })
-    controller.apply({ trace_id: 'a', sequence: 5, mode: 'read', node_path: 'a1' })
-    controller.apply({ trace_id: 'a', sequence: 6, mode: 'read', node_path: 'a1' })
-    vi.advanceTimersByTime(350)
+    controller.apply({ trace_id: 'a', sequence: 4, mode: 'read', node_path: 'newest' })
+    controller.apply({ trace_id: 'a', sequence: 5, mode: 'read', node_path: 'newest' })
+    controller.apply({ trace_id: 'a', sequence: 6, mode: 'read', node_path: 'newest' })
+    vi.advanceTimersByTime(500)
     expect(cytoscapeMock.classesFor('a3')).not.toContain('traversal-read')
-    expect(cytoscapeMock.classesFor('a1')).toContain('traversal-read')
+    expect(cytoscapeMock.classesFor('a1')).not.toContain('traversal-read')
+    expect(cytoscapeMock.classesFor('newest')).toContain('traversal-read')
     controller.dispose()
     vi.useRealTimers()
   })
@@ -120,6 +119,7 @@ describe('LiveTraversalController', () => {
   })
 
   it('does not light an edge when an aggregate path maps ambiguously', () => {
+    vi.useFakeTimers()
     const core = createMockCore({ elements: [
       { data: { id: 'cluster-a' } }, { data: { id: 'cluster-b' } },
       { data: { id: 'edge', source: 'cluster-a', target: 'cluster-b', edge_type: 'links_to' } },
@@ -130,7 +130,11 @@ describe('LiveTraversalController', () => {
       reducedMotion: true,
     })
     controller.apply({ trace_id: 'aggregate', sequence: 1, mode: 'read', node_path: 'AI/one.md', source_path: 'AI/one.md', target_path: 'AI/two.md', edge_type: 'links_to' })
+    vi.advanceTimersByTime(350)
+    expect(cytoscapeMock.classesFor('cluster-a')).not.toContain('traversal-read')
     expect(cytoscapeMock.classesFor('edge')).not.toContain('traversal-forward')
+    controller.dispose()
+    vi.useRealTimers()
   })
 
   it('buffers an event until its node mapping becomes available', () => {
