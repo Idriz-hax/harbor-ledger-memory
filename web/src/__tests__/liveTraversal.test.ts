@@ -152,6 +152,31 @@ describe('LiveTraversalController', () => {
     vi.useRealTimers()
   })
 
+  it('expires missing and ambiguous pending events so live status cannot stick', () => {
+    vi.useFakeTimers()
+    const core = createMockCore({ elements: [
+      { data: { id: 'cluster-a' } }, { data: { id: 'cluster-b' } },
+      { data: { id: 'edge', source: 'cluster-a', target: 'cluster-b', edge_type: 'links_to' } },
+    ] })
+    const activity = vi.fn()
+    const controller = new LiveTraversalController(core as never, {
+      onActivityChange: activity,
+      nodeIdForPath: path => path === 'AI/one.md' ? 'cluster-a' : undefined,
+      edgeIdForEvent: () => undefined,
+      reducedMotion: true,
+    })
+
+    controller.apply({ trace_id: 'missing', sequence: 1, mode: 'read', node_path: 'missing.md' })
+    controller.apply({ trace_id: 'ambiguous', sequence: 1, mode: 'read', node_path: 'AI/one.md', source_path: 'AI/one.md', target_path: 'AI/two.md', edge_type: 'links_to' })
+    vi.advanceTimersByTime(350)
+    expect(controller.activeTraceCount()).toBe(2)
+    vi.advanceTimersByTime(2500)
+    expect(controller.activeTraceCount()).toBe(0)
+    expect(activity).toHaveBeenLastCalledWith(0)
+    controller.dispose()
+    vi.useRealTimers()
+  })
+
   it('buffers an event until its node mapping becomes available', () => {
     vi.useFakeTimers()
     const core = createMockCore({ elements: [{ data: { id: 'resolved' } }] })
