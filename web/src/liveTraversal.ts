@@ -15,6 +15,7 @@ export type LiveTraversalOptions = {
   duration?: number
   nodeIdForPath?: (path: string) => string | undefined
   edgeIdForEvent?: (event: LiveTraversalEvent) => string | undefined
+  onActivityChange?: (activeTraceCount: number) => void
 }
 
 type Pulse = {
@@ -41,6 +42,7 @@ export class LiveTraversalController {
   private traceCursor = 0
   private pulseId = 0
   private disposed = false
+  private lastReportedActivityCount = 0
 
   constructor(private readonly core: Core, private readonly options: LiveTraversalOptions = {}) {}
 
@@ -56,6 +58,7 @@ export class LiveTraversalController {
     if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - 1)
     this.queues.set(event.trace_id, queue)
     this.addTrace(event.trace_id)
+    this.reportActivityChange()
     this.startPump()
   }
 
@@ -70,6 +73,13 @@ export class LiveTraversalController {
   activeTraceCount() {
     const active = new Set([...this.traces.keys(), ...this.queues.keys(), ...this.pending.keys()])
     return active.size
+  }
+
+  private reportActivityChange() {
+    const count = this.activeTraceCount()
+    if (count === this.lastReportedActivityCount) return
+    this.lastReportedActivityCount = count
+    this.options.onActivityChange?.(count)
   }
 
   private addTrace(traceId: string) {
@@ -204,6 +214,7 @@ export class LiveTraversalController {
     if (!trace.pulses.size) {
       this.traces.delete(traceId)
       this.pruneTraceOrder()
+      this.reportActivityChange()
     }
   }
 

@@ -260,6 +260,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
   const [fullScreen, setFullScreen] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [traversalConnected, setTraversalConnected] = useState(false)
+  const [activeTraversalCount, setActiveTraversalCount] = useState(0)
   const [islands, setIslands] = useState<Island[]>([])
   const [layoutRevision, setLayoutRevision] = useState(0)
   const viewRef = useRef(view)
@@ -382,6 +383,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
     coreRef.current = instance
     const traversalController = new LiveTraversalController(instance, {
       reducedMotion,
+      onActivityChange: setActiveTraversalCount,
       nodeIdForPath: path => {
         const current = viewRef.current
         if (!current) return undefined
@@ -686,7 +688,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
       <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
         <Box className="live-indicator">
           <Box className={!traversalConnected ? 'live-dot disconnected' : 'live-dot'} />
-          <span>{traversalConnected ? 'LIVE' : 'RECONNECTING'}</span>
+          <span>{traversalConnected ? `LIVE • ${activeTraversalCount} active` : 'RECONNECTING'}</span>
         </Box>
         <Chip icon={<Terrain />} label={scanning ? 'scanning' : 'active'} color="primary" variant="outlined" sx={{ borderColor: 'rgba(118, 163, 174, .3)', color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }} />
         <Button startIcon={<Refresh />} onClick={handleRescan} disabled={scanning} sx={{ color: 'text.secondary', border: 1, borderColor: 'rgba(118, 163, 174, .3)', borderRadius: 6, '&:hover': { borderColor: 'rgba(230, 191, 105, .5)', background: 'rgba(230, 191, 105, .06)' } }}>

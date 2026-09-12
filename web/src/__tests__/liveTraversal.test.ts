@@ -66,6 +66,21 @@ describe('LiveTraversalController', () => {
     vi.useRealTimers()
   })
 
+  it('notifies the live status when a trace starts and its halo clears', () => {
+    vi.useFakeTimers()
+    const core = createMockCore({ elements: [{ data: { id: 'one' } }] })
+    const activity = vi.fn()
+    const controller = new LiveTraversalController(core as never, { onActivityChange: activity })
+
+    controller.apply({ trace_id: 'a', sequence: 1, mode: 'read', node_path: 'one' })
+    expect(activity).toHaveBeenLastCalledWith(1)
+    vi.advanceTimersByTime(1550)
+    expect(activity).toHaveBeenLastCalledWith(0)
+    expect(activity).toHaveBeenCalledTimes(2)
+    controller.dispose()
+    vi.useRealTimers()
+  })
+
   it('keeps reduced-motion color sequencing while disabling edge animation', () => {
     vi.useFakeTimers()
     const core = createMockCore({ elements: [
