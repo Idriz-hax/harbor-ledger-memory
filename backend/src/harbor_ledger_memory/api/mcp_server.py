@@ -28,6 +28,7 @@ from harbor_ledger_memory.domain.retrieval import QueryRequest
 from harbor_ledger_memory.graph.builder import GraphBuilder
 from harbor_ledger_memory.services.access import AccessPolicy
 from harbor_ledger_memory.services.activity import ActivityService
+from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
 from harbor_ledger_memory.services.adaptive import (
     AdaptiveService,
     FeedbackValidationError,
@@ -64,6 +65,7 @@ def build_mcp_server(
     settings: Settings,
     activity_service: ActivityService,
     token_service: TokenService | None = None,
+    live_traversal: LiveTraversalPublisher | None = None,
 ):
     """Build the MCP server and its streamable-HTTP transport.
 
@@ -143,6 +145,7 @@ def build_mcp_server(
                 memory_settings=settings.memory,
                 path_filter=VaultBoundary(settings).is_admitted,
                 activity_service=activity_service,
+                live_traversal=live_traversal,
             )
             result = service.query(
                 QueryRequest(query=text, active_project=active_project)
@@ -281,7 +284,7 @@ def build_mcp_server(
         policy = _policy()
         if not policy.has_any_write():
             raise ToolError("token has no write access")
-        scanner = ScanService.from_settings(settings)
+        scanner = ScanService.from_settings(settings, live_traversal=live_traversal)
         set_activity = getattr(scanner, "set_activity_service", None)
         if callable(set_activity):
             set_activity(activity_service)
@@ -310,7 +313,10 @@ def build_mcp_server(
             preflight_engine, preflight_session = _open_session()
             try:
                 preflight_service = VaultMutationService.from_settings(
-                    preflight_session, settings, activity_service=activity_service
+                    preflight_session,
+                    settings,
+                    activity_service=activity_service,
+                    live_traversal=live_traversal,
                 )
                 for affected in _mutation_affected_paths(preflight_service, path):
                     if not policy.can_propose(affected.as_posix()):
@@ -327,7 +333,10 @@ def build_mcp_server(
                 if existing is None:
                     raise ToolError(f"proposal {proposal_id} not found")
                 service = VaultMutationService.from_settings(
-                    session, settings, activity_service=activity_service
+                    session,
+                    settings,
+                    activity_service=activity_service,
+                    live_traversal=live_traversal,
                 )
                 for affected in _mutation_affected_paths(
                     service, existing.path, existing.affected_paths
@@ -351,7 +360,10 @@ def build_mcp_server(
         engine, session = _open_session()
         try:
             service = VaultMutationService.from_settings(
-                session, settings, activity_service=activity_service
+                session,
+                settings,
+                activity_service=activity_service,
+                live_traversal=live_traversal,
             )
             if operation == "request":
                 assert path is not None and content is not None
