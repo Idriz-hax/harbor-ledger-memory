@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { LiveTraversalController, MAX_PENDING_EVENTS } from '../liveTraversal'
+import { LiveTraversalController, MAX_PENDING_EVENTS, MAX_SEQUENCE_TOMBSTONES, SEQUENCE_TOMBSTONE_TTL } from '../liveTraversal'
 import { createMockCore, cytoscapeMock } from '../test/cytoscape-mock'
 
 describe('LiveTraversalController', () => {
@@ -149,6 +149,24 @@ describe('LiveTraversalController', () => {
     vi.useRealTimers()
   })
 
+  it('suppresses stale completed traces within a bounded tombstone window', () => {
+    vi.useFakeTimers()
+    const core = createMockCore({ elements: [{ data: { id: 'one' } }] })
+    const controller = new LiveTraversalController(core as never)
+
+    controller.apply({ trace_id: 'completed', sequence: 2, mode: 'read', node_path: 'one' })
+    vi.advanceTimersByTime(1550)
+    controller.apply({ trace_id: 'completed', sequence: 1, mode: 'read', node_path: 'one' })
+    expect(controller.activeTraceCount()).toBe(0)
+
+    vi.advanceTimersByTime(SEQUENCE_TOMBSTONE_TTL)
+    controller.apply({ trace_id: 'completed', sequence: 1, mode: 'read', node_path: 'one' })
+    expect(controller.activeTraceCount()).toBe(1)
+    expect((controller as unknown as { tombstones: Map<string, unknown> }).tombstones.size).toBeLessThanOrEqual(MAX_SEQUENCE_TOMBSTONES)
+    controller.dispose()
+    vi.useRealTimers()
+  })
+
   it('does not light an edge when an aggregate path maps ambiguously', () => {
     vi.useFakeTimers()
     const core = createMockCore({ elements: [
@@ -218,7 +236,7 @@ describe('LiveTraversalController', () => {
 
   it('evicts oldest unresolved events globally and never replays their stale entries', () => {
     vi.useFakeTimers()
-    const traceIds = Array.from({ length: MAX_PENDING_EVENTS + 1 }, (_, index) => `pending-${index}`)
+    const traceIds = Array.from({ length: MAX_PENDING_EVENTS + MAX_SEQUENCE_TOMBSTONES + 1 }, (_, index) => `pending-${index}`)
     const core = createMockCore({ elements: traceIds.map(id => ({ data: { id: `node-${id}` } })) })
     let mapped = false
     const controller = new LiveTraversalController(core as never, {
@@ -229,6 +247,7 @@ describe('LiveTraversalController', () => {
     traceIds.forEach((traceId, sequence) => controller.apply({ trace_id: traceId, sequence: 1, mode: 'read', node_path: traceId }))
     vi.advanceTimersByTime(350 * (traceIds.length + 5))
     expect(controller.activeTraceCount()).toBe(0)
+    expect((controller as unknown as { tombstones: Map<string, unknown> }).tombstones.size).toBeLessThanOrEqual(MAX_SEQUENCE_TOMBSTONES)
 
     // The projection resolves all remaining pending traces; the oldest one was evicted.
     mapped = true
@@ -236,7 +255,7 @@ describe('LiveTraversalController', () => {
     expect(controller.activeTraceCount()).toBe(MAX_PENDING_EVENTS)
     vi.advanceTimersByTime(350)
     expect(controller.activeTraceCount()).toBe(MAX_PENDING_EVENTS)
-    controller.apply({ trace_id: traceIds[0], sequence: 1, mode: 'read', node_path: traceIds[0] })
+    controller.apply({ trace_id: traceIds[MAX_SEQUENCE_TOMBSTONES], sequence: 1, mode: 'read', node_path: traceIds[MAX_SEQUENCE_TOMBSTONES] })
     expect(controller.activeTraceCount()).toBe(MAX_PENDING_EVENTS)
     controller.dispose()
     vi.useRealTimers()
