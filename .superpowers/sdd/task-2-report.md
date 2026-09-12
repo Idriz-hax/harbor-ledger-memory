@@ -37,3 +37,22 @@ Validation owner: reviewer. No unrelated files were changed.
 - `npm test -- --run src/__tests__/liveTraversal.test.ts src/__tests__/TideAtlas.test.tsx` — passed (45 passed, 6 skipped).
 - `npm run build` — passed; Vite emitted the existing large-chunk warning.
 - Validation owner: reviewer.
+
+## Re-review fixes
+
+- Superseded the earlier expiry-only behavior so slow projections can still
+  recover their early events.
+- Unresolved early events are retained in the pending buffer until a graph
+  projection calls `flush()`; pending events are excluded from the displayed
+  active count rather than expiring before a slow projection can resolve them.
+- Write traversal edges now use a separate amber
+  `traversal-forward-write` class and style; read edges retain the cyan class.
+- Queue overflow now keeps the newest renderable event when the newest raw
+  event cannot be mapped, while still bounding the queue.
+- Added slow-projection, amber-edge, and unmappable-newest overflow tests.
+
+### Re-review validation
+
+- `npm test -- --run src/__tests__/liveTraversal.test.ts src/__tests__/TideAtlas.test.tsx` — passed (47 passed, 6 skipped).
+- `npm run build` — passed; Vite emitted the existing large-chunk warning.
+- Validation owner: reviewer.

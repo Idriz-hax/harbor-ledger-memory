@@ -128,6 +128,10 @@ const computeStyles = (): StylesheetJson => [
     'line-color': '#62e8f2', 'target-arrow-color': '#62e8f2', 'target-arrow-shape': 'triangle', 'arrow-scale': 1.2,
     opacity: 1, width: '3', 'line-style': 'dashed', 'line-dash-pattern': [8, 5], 'line-dash-offset': 0, 'z-index': 124,
   }},
+  { selector: 'edge.traversal-forward-write', style: {
+    'line-color': '#f4bd62', 'target-arrow-color': '#f4bd62', 'target-arrow-shape': 'triangle', 'arrow-scale': 1.2,
+    opacity: 1, width: '3', 'line-style': 'dashed', 'line-dash-pattern': [8, 5], 'line-dash-offset': 0, 'z-index': 124,
+  }},
   { selector: 'node.activity-glow', style: {
     'border-color': '#f5d889',
     'border-width': '4',

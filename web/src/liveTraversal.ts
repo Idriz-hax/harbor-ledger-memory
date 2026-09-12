@@ -28,7 +28,6 @@ type TraceState = { pulses: Set<Pulse> }
 
 const DISPATCH_INTERVAL = 350
 const HALO_DURATION = 1200
-const PENDING_EXPIRY = 2000
 const MAX_QUEUE = 3
 
 /** Owns only the visual classes introduced by one live trace. */
@@ -36,7 +35,6 @@ export class LiveTraversalController {
   private readonly traces = new Map<string, TraceState>()
   private readonly sequences = new Map<string, number>()
   private readonly pending = new Map<string, LiveTraversalEvent>()
-  private readonly pendingTimers = new Map<string, number>()
   private readonly queues = new Map<string, LiveTraversalEvent[]>()
   private readonly traceOrder: string[] = []
   private readonly classOwners = new Map<string, Set<string>>()
@@ -57,7 +55,10 @@ export class LiveTraversalController {
       || (this.queues.get(event.trace_id)?.[this.queues.get(event.trace_id)!.length - 1]?.sequence ?? -1) >= event.sequence) return
     const queue = this.queues.get(event.trace_id) ?? []
     queue.push(event)
-    if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - 1)
+    if (queue.length > MAX_QUEUE) {
+      const latestRenderable = [...queue].reverse().find(candidate => this.isRenderable(candidate))
+      queue.splice(0, queue.length, latestRenderable ?? event)
+    }
     this.queues.set(event.trace_id, queue)
     this.addTrace(event.trace_id)
     this.reportActivityChange()
@@ -68,12 +69,12 @@ export class LiveTraversalController {
   flush() {
     if (this.disposed || !this.pending.size) return
     const pending = [...this.pending.values()]
-    pending.forEach(event => this.clearPending(event.trace_id))
+    this.pending.clear()
     pending.forEach(event => this.apply(event))
   }
 
   activeTraceCount() {
-    const active = new Set([...this.traces.keys(), ...this.queues.keys(), ...this.pending.keys()])
+    const active = new Set([...this.traces.keys(), ...this.queues.keys()])
     return active.size
   }
 
@@ -103,7 +104,10 @@ export class LiveTraversalController {
       const queue = this.queues.get(traceId)!
       const event = queue.shift()!
       if (!queue.length) this.queues.delete(traceId)
-      if (!this.render(event)) this.deferPending(event)
+      if (!this.render(event)) {
+        this.pending.set(event.trace_id, event)
+        this.reportActivityChange()
+      }
       this.pruneTraceOrder()
     }
     if (this.queues.size) this.startPump()
@@ -136,9 +140,36 @@ export class LiveTraversalController {
 
   private render(event: LiveTraversalEvent) {
     if ((this.sequences.get(event.trace_id) ?? -1) >= event.sequence) return true
+    const resolved = this.resolveElements(event)
+    if (!resolved) return false
+    const { node, edge } = resolved
+    const pulse: Pulse = { id: ++this.pulseId, timer: null, elements: new Map() }
+    const trace = this.traces.get(event.trace_id) ?? { pulses: new Set<Pulse>() }
+    trace.pulses.add(pulse)
+    this.traces.set(event.trace_id, trace)
+    this.sequences.set(event.trace_id, event.sequence)
+    this.addOwned(event.trace_id, pulse, node, event.mode === 'write' ? 'traversal-write' : 'traversal-read')
+
+    if (edge) {
+      const edgeClass = event.mode === 'write' ? 'traversal-forward-write' : 'traversal-forward'
+      this.addOwned(event.trace_id, pulse, edge, edgeClass)
+      if (!this.options.reducedMotion && edge.length) {
+        edge.animate({ style: { 'line-dash-offset': -13 }, duration: this.options.duration ?? 900 })
+      }
+    }
+
+    pulse.timer = window.setTimeout(() => this.clearPulse(event.trace_id, pulse), HALO_DURATION)
+    return true
+  }
+
+  private isRenderable(event: LiveTraversalEvent) {
+    return Boolean(this.resolveElements(event))
+  }
+
+  private resolveElements(event: LiveTraversalEvent) {
     const nodeId = this.options.nodeIdForPath?.(event.node_path) ?? event.node_path
     const node = this.core.getElementById(nodeId)
-    if (!node.length) return false
+    if (!node.length) return undefined
     let edge: { length: number; forEach: (fn: (element: any) => void) => unknown; animate: (options: { style: Record<string, unknown>; duration: number }) => unknown } | undefined
     if (event.source_path && event.target_path) {
       const edgeId = this.options.edgeIdForEvent?.(event)
@@ -148,46 +179,10 @@ export class LiveTraversalController {
           && String(candidate.data('target') ?? '') === event.target_path
           && (!event.edge_type || String(candidate.data('edge_type') ?? candidate.data('type') ?? '') === event.edge_type))
       if (!edge.length) {
-        return false
+        return undefined
       }
     }
-
-    const pulse: Pulse = { id: ++this.pulseId, timer: null, elements: new Map() }
-    const trace = this.traces.get(event.trace_id) ?? { pulses: new Set<Pulse>() }
-    trace.pulses.add(pulse)
-    this.traces.set(event.trace_id, trace)
-    this.sequences.set(event.trace_id, event.sequence)
-    this.addOwned(event.trace_id, pulse, node, event.mode === 'write' ? 'traversal-write' : 'traversal-read')
-
-    if (event.source_path && event.target_path) {
-      this.addOwned(event.trace_id, pulse, edge!, 'traversal-forward')
-      if (!this.options.reducedMotion && edge!.length) {
-        edge!.animate({ style: { 'line-dash-offset': -13 }, duration: this.options.duration ?? 900 })
-      }
-    }
-
-    pulse.timer = window.setTimeout(() => this.clearPulse(event.trace_id, pulse), HALO_DURATION)
-    return true
-  }
-
-  private deferPending(event: LiveTraversalEvent) {
-    this.pending.set(event.trace_id, event)
-    const previous = this.pendingTimers.get(event.trace_id)
-    if (previous !== undefined) window.clearTimeout(previous)
-    const timer = window.setTimeout(() => {
-      if (this.pending.get(event.trace_id) !== event) return
-      this.clearPending(event.trace_id)
-      this.pruneTraceOrder()
-      this.reportActivityChange()
-    }, PENDING_EXPIRY)
-    this.pendingTimers.set(event.trace_id, timer)
-  }
-
-  private clearPending(traceId: string) {
-    this.pending.delete(traceId)
-    const timer = this.pendingTimers.get(traceId)
-    if (timer !== undefined) window.clearTimeout(timer)
-    this.pendingTimers.delete(traceId)
+    return { node, edge }
   }
 
   dispose() {
@@ -199,8 +194,6 @@ export class LiveTraversalController {
     this.traces.clear()
     this.queues.clear()
     this.sequences.clear()
-    for (const timer of this.pendingTimers.values()) window.clearTimeout(timer)
-    this.pendingTimers.clear()
     this.pending.clear()
     this.traceOrder.length = 0
   }
