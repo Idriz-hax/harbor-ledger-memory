@@ -1132,6 +1132,7 @@ def create_app(
                     source=edge.source,
                     target=edge.target,
                     weight=edge.weight,
+                    edge_type=edge.edge_type,
                 )
                 for edge in view.edges
             ],

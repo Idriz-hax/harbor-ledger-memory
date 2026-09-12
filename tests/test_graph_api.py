@@ -93,6 +93,27 @@ def test_graph_contains_wikilink_edges(tmp_path: Path) -> None:
         assert isinstance(link_edge[0]["id"], str)
 
 
+def test_graph_view_level_two_returns_edge_type(tmp_path: Path) -> None:
+    """Authenticated level-two graph views include the edge type field."""
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    (ai / "a.md").write_text("# A\n[[b]]", encoding="utf-8")
+    (ai / "b.md").write_text("# B", encoding="utf-8")
+    settings = _settings(tmp_path)
+
+    with authed_client(settings) as client:
+        resp = client.get("/api/v1/graph/view?level=2&page_size=500")
+
+    assert resp.status_code == 200
+    edges = resp.json()["edges"]
+    link_edge = next(
+        edge
+        for edge in edges
+        if edge["source"] != edge["target"]
+    )
+    assert link_edge["edge_type"] == "links_to"
+
+
 def test_graph_contains_parent_edges(tmp_path: Path) -> None:
     """Frontmatter parent field produces parent_of edges."""
     ai = tmp_path / "AI"
