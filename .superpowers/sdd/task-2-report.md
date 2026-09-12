@@ -20,3 +20,20 @@ The brief's literal `npm test -- --run web/src/__tests__/TideAtlas.test.tsx` pat
 ## Review note
 
 Validation owner: reviewer. No unrelated files were changed.
+
+## Review fix: expire unresolved traversal pending state
+
+- Added a 2-second expiry timer for events deferred because their node or edge
+  mapping is missing or ambiguous.
+- Pending timers are cancelled when `flush()` retries an event or when the
+  controller is disposed, so resolved playback and teardown remain unchanged.
+- Added regression coverage proving missing and ambiguous events return the
+  controller activity count to zero instead of leaving the live indicator stuck.
+- Existing Tide Atlas coverage continues to exercise scan/status separation,
+  stable Cytoscape instance state, and unchanged viewport/drag behavior.
+
+### Review-fix validation
+
+- `npm test -- --run src/__tests__/liveTraversal.test.ts src/__tests__/TideAtlas.test.tsx` — passed (45 passed, 6 skipped).
+- `npm run build` — passed; Vite emitted the existing large-chunk warning.
+- Validation owner: reviewer.
