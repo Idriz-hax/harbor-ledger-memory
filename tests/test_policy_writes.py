@@ -29,6 +29,7 @@ from harbor_ledger_memory.config import (
 )
 from harbor_ledger_memory.services.access import AccessPolicy
 from harbor_ledger_memory.services.activity import ActivityService
+from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
 from harbor_ledger_memory.services.tokens import TokenService
 from harbor_ledger_memory.services.vault_mutations import VaultMutationService, VaultWriteDenied
 
@@ -249,7 +250,9 @@ def test_mcp_propose_write_follows_token_policy(tmp_path: Path) -> None:
     activity = ActivityService(settings.database_url)
     service = TokenService(settings.database_url)
     try:
-        transport, _ = build_mcp_server(settings, activity, service)
+        transport, _ = build_mcp_server(
+            settings, activity, service, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         auto, _ = service.create(
             "auto",
