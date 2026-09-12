@@ -99,6 +99,22 @@ describe('LiveTraversalController', () => {
     vi.useRealTimers()
   })
 
+  it('colors write traversal edges amber independently from read edges', () => {
+    vi.useFakeTimers()
+    const core = createMockCore({ elements: [
+      { data: { id: 'one' } }, { data: { id: 'two' } },
+      { data: { id: 'edge', source: 'one', target: 'two', edge_type: 'links_to' } },
+    ] })
+    const controller = new LiveTraversalController(core as never, { reducedMotion: true })
+
+    controller.apply({ trace_id: 'write', sequence: 1, mode: 'write', node_path: 'two', source_path: 'one', target_path: 'two', edge_type: 'links_to' })
+    vi.advanceTimersByTime(350)
+    expect(cytoscapeMock.classesFor('edge')).toContain('traversal-forward-write')
+    expect(cytoscapeMock.classesFor('edge')).not.toContain('traversal-forward-read')
+    controller.dispose()
+    vi.useRealTimers()
+  })
+
   it('keeps concurrent read and write traces independent', () => {
     vi.useFakeTimers()
     const sourceId = 'c_965a365f830b12ad'
@@ -118,7 +134,7 @@ describe('LiveTraversalController', () => {
     vi.advanceTimersByTime(700)
     expect(cytoscapeMock.classesFor(sourceId)).toContain('traversal-read')
     expect(cytoscapeMock.classesFor(targetId)).toContain('traversal-write')
-    expect(cytoscapeMock.classesFor(edgeId)).toContain('traversal-forward')
+    expect(cytoscapeMock.classesFor(edgeId)).toContain('traversal-forward-write')
   })
 
   it('ignores stale sequences and removes only the disposed trace classes', () => {
@@ -152,27 +168,50 @@ describe('LiveTraversalController', () => {
     vi.useRealTimers()
   })
 
-  it('expires missing and ambiguous pending events so live status cannot stick', () => {
+  it('keeps unresolved events for a slow projection without counting them as active', () => {
     vi.useFakeTimers()
-    const core = createMockCore({ elements: [
-      { data: { id: 'cluster-a' } }, { data: { id: 'cluster-b' } },
-      { data: { id: 'edge', source: 'cluster-a', target: 'cluster-b', edge_type: 'links_to' } },
-    ] })
     const activity = vi.fn()
+    const core = createMockCore({ elements: [{ data: { id: 'resolved' } }] })
+    let mapped = false
     const controller = new LiveTraversalController(core as never, {
       onActivityChange: activity,
-      nodeIdForPath: path => path === 'AI/one.md' ? 'cluster-a' : undefined,
-      edgeIdForEvent: () => undefined,
       reducedMotion: true,
+      nodeIdForPath: () => mapped ? 'resolved' : undefined,
     })
 
-    controller.apply({ trace_id: 'missing', sequence: 1, mode: 'read', node_path: 'missing.md' })
-    controller.apply({ trace_id: 'ambiguous', sequence: 1, mode: 'read', node_path: 'AI/one.md', source_path: 'AI/one.md', target_path: 'AI/two.md', edge_type: 'links_to' })
+    controller.apply({ trace_id: 'early', sequence: 1, mode: 'read', node_path: 'AI/one.md' })
     vi.advanceTimersByTime(350)
-    expect(controller.activeTraceCount()).toBe(2)
-    vi.advanceTimersByTime(2500)
     expect(controller.activeTraceCount()).toBe(0)
     expect(activity).toHaveBeenLastCalledWith(0)
+
+    mapped = true
+    controller.flush()
+    expect(controller.activeTraceCount()).toBe(1)
+    vi.advanceTimersByTime(350)
+    expect(cytoscapeMock.classesFor('resolved')).toContain('traversal-read')
+    expect(controller.activeTraceCount()).toBe(1)
+    vi.advanceTimersByTime(1200)
+    expect(controller.activeTraceCount()).toBe(0)
+    expect(activity).toHaveBeenLastCalledWith(0)
+    controller.dispose()
+    vi.useRealTimers()
+  })
+
+  it('retains the latest renderable event when overflow ends with an unmappable event', () => {
+    vi.useFakeTimers()
+    const core = createMockCore({ elements: [
+      { data: { id: 'first' } }, { data: { id: 'latest-renderable' } },
+    ] })
+    const controller = new LiveTraversalController(core as never, { reducedMotion: true })
+
+    controller.apply({ trace_id: 'overflow', sequence: 1, mode: 'read', node_path: 'first' })
+    controller.apply({ trace_id: 'overflow', sequence: 2, mode: 'read', node_path: 'latest-renderable' })
+    controller.apply({ trace_id: 'overflow', sequence: 3, mode: 'read', node_path: 'missing-a' })
+    controller.apply({ trace_id: 'overflow', sequence: 4, mode: 'read', node_path: 'missing-b' })
+    vi.advanceTimersByTime(350)
+
+    expect(cytoscapeMock.classesFor('first')).not.toContain('traversal-read')
+    expect(cytoscapeMock.classesFor('latest-renderable')).toContain('traversal-read')
     controller.dispose()
     vi.useRealTimers()
   })
