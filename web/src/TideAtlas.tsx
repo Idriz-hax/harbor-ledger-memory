@@ -122,8 +122,8 @@ const computeStyles = (): StylesheetJson => [
     opacity: 0.9,
     width: '1.5',
   }},
-  { selector: 'node.traversal-read', style: { 'border-color': '#62e8f2', 'border-width': '4', 'z-index': 125 }},
-  { selector: 'node.traversal-write', style: { 'border-color': '#f4bd62', 'border-width': '4', 'z-index': 125 }},
+  { selector: 'node.traversal-read', style: ({ 'border-color': '#62e8f2', 'border-width': '3.5', 'shadow-color': '#62e8f2', 'shadow-blur': 16, 'shadow-opacity': 0.72, 'shadow-offset-x': 0, 'shadow-offset-y': 0, 'z-index': 125 } as any) },
+  { selector: 'node.traversal-write', style: ({ 'border-color': '#f4bd62', 'border-width': '3.5', 'shadow-color': '#f4bd62', 'shadow-blur': 16, 'shadow-opacity': 0.72, 'shadow-offset-x': 0, 'shadow-offset-y': 0, 'z-index': 125 } as any) },
   { selector: 'edge.traversal-forward', style: {
     'line-color': '#62e8f2', 'target-arrow-color': '#62e8f2', 'target-arrow-shape': 'triangle', 'arrow-scale': 1.2,
     opacity: 1, width: '3', 'line-style': 'dashed', 'line-dash-pattern': [8, 5], 'line-dash-offset': 0, 'z-index': 124,
@@ -527,6 +527,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
     const instance = coreRef.current
     if (!instance || !view) return
     const { placement, generation } = applyView(instance, view)
+    traversalControllerRef.current?.flush()
     if (!initialWholeVaultLayoutRef.current) {
       /* The first view is the only automatic viewport adjustment. Cytoscape's
          fit emits pan/zoom events, so keep those events out of LOD handling. */
