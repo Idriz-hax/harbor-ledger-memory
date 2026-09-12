@@ -23,6 +23,7 @@ type Trace = { timer: number | null; elements: Map<string, Set<string>> }
 export class LiveTraversalController {
   private readonly traces = new Map<string, Trace>()
   private readonly sequences = new Map<string, number>()
+  private readonly pending = new Map<string, LiveTraversalEvent>()
   private readonly classOwners = new Map<string, Set<string>>()
   private disposed = false
 
@@ -32,7 +33,21 @@ export class LiveTraversalController {
 
   apply(event: LiveTraversalEvent) {
     if (this.disposed || !event.trace_id || !Number.isFinite(event.sequence)) return
-    if ((this.sequences.get(event.trace_id) ?? -1) >= event.sequence) return
+    if ((this.sequences.get(event.trace_id) ?? -1) >= event.sequence
+      || (this.pending.get(event.trace_id)?.sequence ?? -1) >= event.sequence) return
+    if (!this.render(event)) this.pending.set(event.trace_id, event)
+  }
+
+  /** Retry events that arrived while the current graph view was still resolving. */
+  flush() {
+    if (this.disposed || !this.pending.size) return
+    const pending = [...this.pending.values()]
+    this.pending.clear()
+    pending.forEach(event => this.apply(event))
+  }
+
+  private render(event: LiveTraversalEvent) {
+    if ((this.sequences.get(event.trace_id) ?? -1) >= event.sequence) return true
     this.sequences.set(event.trace_id, event.sequence)
     this.clearTrace(event.trace_id)
 
@@ -40,6 +55,10 @@ export class LiveTraversalController {
     this.traces.set(event.trace_id, trace)
     const nodeId = this.options.nodeIdForPath?.(event.node_path) ?? event.node_path
     const node = this.core.getElementById(nodeId)
+    if (!node.length) {
+      this.sequences.delete(event.trace_id)
+      return false
+    }
     const nodeClass = event.mode === 'write' ? 'traversal-write' : 'traversal-read'
     this.addOwned(trace, node, nodeClass)
 
@@ -50,6 +69,11 @@ export class LiveTraversalController {
         : this.core.edges().filter(candidate => String(candidate.data('source') ?? '') === event.source_path
           && String(candidate.data('target') ?? '') === event.target_path
           && (!event.edge_type || String(candidate.data('edge_type') ?? candidate.data('type') ?? '') === event.edge_type))
+      if (!edge.length) {
+        this.clearTrace(event.trace_id)
+        this.sequences.delete(event.trace_id)
+        return false
+      }
       this.addOwned(trace, edge, 'traversal-forward')
       if (!this.options.reducedMotion && edge.length) {
         edge.animate({ style: { 'line-dash-offset': -13 }, duration: this.options.duration ?? 900 })
@@ -57,6 +81,7 @@ export class LiveTraversalController {
     }
 
     trace.timer = window.setTimeout(() => this.clearTrace(event.trace_id), this.options.reducedMotion ? 0 : (this.options.duration ?? 900))
+    return true
   }
 
   dispose() {
@@ -65,6 +90,7 @@ export class LiveTraversalController {
     for (const traceId of this.traces.keys()) this.clearTrace(traceId)
     this.traces.clear()
     this.sequences.clear()
+    this.pending.clear()
   }
 
   private addOwned(trace: Trace, elements: { length: number; forEach: (fn: (element: any) => void) => unknown }, className: string) {

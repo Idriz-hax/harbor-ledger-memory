@@ -48,4 +48,20 @@ describe('LiveTraversalController', () => {
     controller.apply({ trace_id: 'aggregate', sequence: 1, mode: 'read', node_path: 'AI/one.md', source_path: 'AI/one.md', target_path: 'AI/two.md', edge_type: 'links_to' })
     expect(cytoscapeMock.classesFor('edge')).not.toContain('traversal-forward')
   })
+
+  it('buffers an event until its node mapping becomes available', () => {
+    const core = createMockCore({ elements: [{ data: { id: 'resolved' } }] })
+    let mapped = false
+    const controller = new LiveTraversalController(core as never, {
+      reducedMotion: true,
+      nodeIdForPath: () => mapped ? 'resolved' : undefined,
+    })
+
+    controller.apply({ trace_id: 'early', sequence: 1, mode: 'read', node_path: 'AI/Harbor.md' })
+    expect(cytoscapeMock.classesFor('resolved')).not.toContain('traversal-read')
+
+    mapped = true
+    controller.flush()
+    expect(cytoscapeMock.classesFor('resolved')).toContain('traversal-read')
+  })
 })

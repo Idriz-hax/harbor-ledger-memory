@@ -27,6 +27,7 @@ class MockTraversalEventSource {
   constructor(readonly url: string) { MockTraversalEventSource.current = this }
   addEventListener(type: string, listener: EventListener) { this.listeners[type] = listener }
   removeEventListener(type: string) { delete this.listeners[type] }
+  emit(data: unknown) { this.listeners.traversal?.({ data: JSON.stringify(data) } as MessageEvent) }
   close() {}
 }
 
@@ -98,6 +99,23 @@ describe('TideAtlas controls and viewport', () => {
     expect(cytoscapeMock.layoutCalls).toHaveLength(0)
     await new Promise(resolve => setTimeout(resolve, 450))
     expect(fetchMock.mock.calls.filter(call => String(call[0]).includes('/api/v1/graph/view'))).toHaveLength(1)
+  })
+
+  it('applies a traversal event emitted before the view resolves', async () => {
+    vi.stubGlobal('EventSource', MockTraversalEventSource)
+    let resolveView!: (response: Response) => void
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes('/api/v1/graph/view')) return new Promise<Response>(resolve => { resolveView = resolve })
+      return Promise.resolve({ ok: true, json: async () => ({}) } as Response)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<TideAtlas events={[]} />)
+
+    MockTraversalEventSource.current?.emit({ trace_id: 'early', sequence: 1, mode: 'read', node_path: 'AI' })
+    expect(cytoscapeMock.classesFor('harbor')).not.toContain('traversal-read')
+
+    resolveView({ ok: true, json: async () => view(2, null) } as Response)
+    await waitFor(() => expect(cytoscapeMock.classesFor('harbor')).toContain('traversal-read'))
   })
 
   it('does not autonomously change node positions while idle', async () => {
