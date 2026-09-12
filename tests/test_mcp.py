@@ -5,6 +5,7 @@ import json
 from pathlib import Path, PurePosixPath
 
 import pytest
+from fastapi.testclient import TestClient
 from mcp.server.mcpserver.exceptions import ToolError
 
 from harbor_ledger_memory.api.app import create_app
@@ -39,7 +40,9 @@ def test_mcp_exposes_status_and_write_lifecycle_tools(tmp_path: Path) -> None:
     )
     token = hlm_mcp_token.set(caller)
     try:
-        transport, manager = build_mcp_server(settings, activity, token_service)
+        transport, manager = build_mcp_server(
+            settings, activity, token_service, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         names = {tool.name for tool in asyncio.run(server.list_tools())}
         assert {
@@ -111,7 +114,9 @@ def test_mcp_status_policy_shape(tmp_path: Path) -> None:
     activity = ActivityService(settings.database_url)
     internal = hlm_internal_request.set(True)
     try:
-        transport, manager = build_mcp_server(settings, activity)
+        transport, manager = build_mcp_server(
+            settings, activity, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         status = asyncio.run(server.call_tool("status", {}))
         assert json.loads(status.content[0].text)["write_policy"] == {
@@ -190,7 +195,9 @@ def test_mcp_neighbours_rejects_out_of_scope_paths(tmp_path: Path) -> None:
     internal = hlm_internal_request.set(True)
     try:
         ScanService.from_settings(settings).full_scan()
-        transport, _ = build_mcp_server(settings, activity)
+        transport, _ = build_mcp_server(
+            settings, activity, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         with pytest.raises(ToolError):
             asyncio.run(server.call_tool("neighbours", {"path": "outside.md"}))
@@ -214,7 +221,9 @@ def test_mcp_feedback_applies_to_query_trace_and_rejects_invalid_paths(
     internal = hlm_internal_request.set(True)
     try:
         ScanService.from_settings(settings).full_scan()
-        transport, _ = build_mcp_server(settings, activity)
+        transport, _ = build_mcp_server(
+            settings, activity, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         names = {tool.name for tool in asyncio.run(server.list_tools())}
         assert "feedback" in names
@@ -302,3 +311,35 @@ def test_mounted_mcp_http_lifecycle_uses_app_lifespan(tmp_path: Path) -> None:
         )
         assert response.status_code == 200
         assert response.headers.get("mcp-session-id")
+
+
+def test_mounted_mcp_uses_app_live_traversal_for_scan(tmp_path: Path) -> None:
+    (tmp_path / "scan.md").write_text("# Scan target", encoding="utf-8")
+    settings = Settings(
+        HLM_VAULT_PATH=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'mounted-live.db'}",
+        mcp=McpSettings(enabled=True),
+    )
+    application = create_app(settings)
+    publisher = application.state.live_traversal
+    subscription = publisher.subscribe()
+    internal = hlm_internal_request.set(True)
+    try:
+        with TestClient(application):
+            # The MCP transport attached at /mcp closes over the same publisher
+            # held by the application, rather than a process-global fallback.
+            mounted = next(
+                route.app for route in application.routes if route.path == "/mcp"
+            )
+            server = mounted.state.mcp_server
+            while subscription.get(timeout=1).node_path != "scan.md":
+                pass
+
+            asyncio.run(server.call_tool("scan", {}))
+            event = subscription.get(timeout=1)
+            while event.node_path != "scan.md":
+                event = subscription.get(timeout=1)
+            assert event.mode == "read"
+    finally:
+        subscription.close()
+        hlm_internal_request.reset(internal)
