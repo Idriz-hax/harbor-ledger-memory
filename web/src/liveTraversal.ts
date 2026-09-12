@@ -30,11 +30,16 @@ const DISPATCH_INTERVAL = 350
 const HALO_DURATION = 1200
 const MAX_QUEUE = 3
 export const MAX_PENDING_EVENTS = 32
+export const MAX_SEQUENCE_TOMBSTONES = 256
+export const SEQUENCE_TOMBSTONE_TTL = 30_000
+
+type SequenceTombstone = { sequence: number; expiresAt: number }
 
 /** Owns only the visual classes introduced by one live trace. */
 export class LiveTraversalController {
   private readonly traces = new Map<string, TraceState>()
   private readonly sequences = new Map<string, number>()
+  private readonly tombstones = new Map<string, SequenceTombstone>()
   private readonly pending = new Map<string, LiveTraversalEvent>()
   private readonly queues = new Map<string, LiveTraversalEvent[]>()
   private readonly traceOrder: string[] = []
@@ -51,7 +56,9 @@ export class LiveTraversalController {
 
   apply(event: LiveTraversalEvent) {
     if (this.disposed || !event.trace_id || !Number.isFinite(event.sequence)) return
+    this.pruneTombstones()
     if ((this.sequences.get(event.trace_id) ?? -1) >= event.sequence
+      || (this.tombstones.get(event.trace_id)?.sequence ?? -1) >= event.sequence
       || (this.pending.get(event.trace_id)?.sequence ?? -1) >= event.sequence
       || (this.queues.get(event.trace_id)?.[this.queues.get(event.trace_id)!.length - 1]?.sequence ?? -1) >= event.sequence) return
     const queue = this.queues.get(event.trace_id) ?? []
@@ -144,6 +151,7 @@ export class LiveTraversalController {
     const resolved = this.resolveElements(event)
     if (!resolved) return false
     const { node, edge } = resolved
+    this.tombstones.delete(event.trace_id)
     const pulse: Pulse = { id: ++this.pulseId, timer: null, elements: new Map() }
     const trace = this.traces.get(event.trace_id) ?? { pulses: new Set<Pulse>() }
     trace.pulses.add(pulse)
@@ -174,7 +182,7 @@ export class LiveTraversalController {
       if (oldestTraceId === undefined) break
       const evicted = this.pending.get(oldestTraceId)
       this.pending.delete(oldestTraceId)
-      if (evicted) this.sequences.set(oldestTraceId, Math.max(this.sequences.get(oldestTraceId) ?? -1, evicted.sequence))
+      if (evicted) this.recordTombstone(oldestTraceId, evicted.sequence)
     }
     this.pruneTraceOrder()
   }
@@ -198,6 +206,28 @@ export class LiveTraversalController {
     return { node, edge }
   }
 
+  private recordTombstone(traceId: string, sequence: number) {
+    this.pruneTombstones()
+    const current = this.tombstones.get(traceId)?.sequence ?? -1
+    this.tombstones.delete(traceId)
+    this.tombstones.set(traceId, {
+      sequence: Math.max(current, sequence),
+      expiresAt: Date.now() + SEQUENCE_TOMBSTONE_TTL,
+    })
+    while (this.tombstones.size > MAX_SEQUENCE_TOMBSTONES) {
+      const oldest = this.tombstones.keys().next().value as string | undefined
+      if (oldest === undefined) break
+      this.tombstones.delete(oldest)
+    }
+  }
+
+  private pruneTombstones() {
+    const now = Date.now()
+    for (const [traceId, tombstone] of this.tombstones) {
+      if (tombstone.expiresAt <= now) this.tombstones.delete(traceId)
+    }
+  }
+
   dispose() {
     if (this.disposed) return
     this.disposed = true
@@ -207,6 +237,7 @@ export class LiveTraversalController {
     this.traces.clear()
     this.queues.clear()
     this.sequences.clear()
+    this.tombstones.clear()
     this.pending.clear()
     this.traceOrder.length = 0
   }
@@ -243,6 +274,9 @@ export class LiveTraversalController {
     }
     if (!trace.pulses.size) {
       this.traces.delete(traceId)
+      const sequence = this.sequences.get(traceId)
+      this.sequences.delete(traceId)
+      if (sequence !== undefined) this.recordTombstone(traceId, sequence)
       this.pruneTraceOrder()
       this.reportActivityChange()
     }
