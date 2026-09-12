@@ -17,14 +17,29 @@ export type LiveTraversalOptions = {
   edgeIdForEvent?: (event: LiveTraversalEvent) => string | undefined
 }
 
-type Trace = { timer: number | null; elements: Map<string, Set<string>> }
+type Pulse = {
+  id: number
+  timer: number | null
+  elements: Map<string, Set<string>>
+}
+
+type TraceState = { pulses: Set<Pulse> }
+
+const DISPATCH_INTERVAL = 350
+const HALO_DURATION = 1200
+const MAX_QUEUE = 3
 
 /** Owns only the visual classes introduced by one live trace. */
 export class LiveTraversalController {
-  private readonly traces = new Map<string, Trace>()
+  private readonly traces = new Map<string, TraceState>()
   private readonly sequences = new Map<string, number>()
   private readonly pending = new Map<string, LiveTraversalEvent>()
+  private readonly queues = new Map<string, LiveTraversalEvent[]>()
+  private readonly traceOrder: string[] = []
   private readonly classOwners = new Map<string, Set<string>>()
+  private pump: number | null = null
+  private traceCursor = 0
+  private pulseId = 0
   private disposed = false
 
   constructor(private readonly core: Core, private readonly options: LiveTraversalOptions = {}) {}
@@ -34,8 +49,14 @@ export class LiveTraversalController {
   apply(event: LiveTraversalEvent) {
     if (this.disposed || !event.trace_id || !Number.isFinite(event.sequence)) return
     if ((this.sequences.get(event.trace_id) ?? -1) >= event.sequence
-      || (this.pending.get(event.trace_id)?.sequence ?? -1) >= event.sequence) return
-    if (!this.render(event)) this.pending.set(event.trace_id, event)
+      || (this.pending.get(event.trace_id)?.sequence ?? -1) >= event.sequence
+      || (this.queues.get(event.trace_id)?.[this.queues.get(event.trace_id)!.length - 1]?.sequence ?? -1) >= event.sequence) return
+    const queue = this.queues.get(event.trace_id) ?? []
+    queue.push(event)
+    if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - 1)
+    this.queues.set(event.trace_id, queue)
+    this.addTrace(event.trace_id)
+    this.startPump()
   }
 
   /** Retry events that arrived while the current graph view was still resolving. */
@@ -46,90 +67,149 @@ export class LiveTraversalController {
     pending.forEach(event => this.apply(event))
   }
 
+  activeTraceCount() {
+    const active = new Set([...this.traces.keys(), ...this.queues.keys(), ...this.pending.keys()])
+    return active.size
+  }
+
+  private addTrace(traceId: string) {
+    if (!this.traceOrder.includes(traceId)) this.traceOrder.push(traceId)
+  }
+
+  private startPump() {
+    if (this.pump !== null || this.disposed) return
+    this.pump = window.setTimeout(() => {
+      this.pump = null
+      this.dispatchNext()
+    }, DISPATCH_INTERVAL)
+  }
+
+  private dispatchNext() {
+    if (this.disposed) return
+    const traceId = this.nextQueuedTrace()
+    if (traceId) {
+      const queue = this.queues.get(traceId)!
+      const event = queue.shift()!
+      if (!queue.length) this.queues.delete(traceId)
+      if (!this.render(event)) this.pending.set(traceId, event)
+      this.pruneTraceOrder()
+    }
+    if (this.queues.size) this.startPump()
+  }
+
+  private nextQueuedTrace() {
+    if (!this.traceOrder.length) return undefined
+    for (let offset = 0; offset < this.traceOrder.length; offset++) {
+      const index = (this.traceCursor + offset) % this.traceOrder.length
+      const traceId = this.traceOrder[index]
+      if (this.queues.has(traceId)) {
+        this.traceCursor = (index + 1) % this.traceOrder.length
+        return traceId
+      }
+    }
+    return undefined
+  }
+
+  private pruneTraceOrder() {
+    for (let index = this.traceOrder.length - 1; index >= 0; index--) {
+      const traceId = this.traceOrder[index]
+      if (!this.queues.has(traceId) && !this.pending.has(traceId) && !this.traces.has(traceId)) {
+        this.traceOrder.splice(index, 1)
+        if (index < this.traceCursor) this.traceCursor--
+      }
+    }
+    if (this.traceOrder.length) this.traceCursor %= this.traceOrder.length
+    else this.traceCursor = 0
+  }
+
   private render(event: LiveTraversalEvent) {
     if ((this.sequences.get(event.trace_id) ?? -1) >= event.sequence) return true
-    this.sequences.set(event.trace_id, event.sequence)
-    this.clearTrace(event.trace_id)
-
-    const trace: Trace = { timer: null, elements: new Map() }
-    this.traces.set(event.trace_id, trace)
     const nodeId = this.options.nodeIdForPath?.(event.node_path) ?? event.node_path
     const node = this.core.getElementById(nodeId)
-    if (!node.length) {
-      this.sequences.delete(event.trace_id)
-      return false
-    }
-    const nodeClass = event.mode === 'write' ? 'traversal-write' : 'traversal-read'
-    this.addOwned(trace, node, nodeClass)
-
+    if (!node.length) return false
+    let edge: { length: number; forEach: (fn: (element: any) => void) => unknown; animate: (options: { style: Record<string, unknown>; duration: number }) => unknown } | undefined
     if (event.source_path && event.target_path) {
       const edgeId = this.options.edgeIdForEvent?.(event)
-      const edge = this.options.edgeIdForEvent
+      edge = this.options.edgeIdForEvent
         ? edgeId ? this.core.getElementById(edgeId) : this.core.edges().filter(() => false)
         : this.core.edges().filter(candidate => String(candidate.data('source') ?? '') === event.source_path
           && String(candidate.data('target') ?? '') === event.target_path
           && (!event.edge_type || String(candidate.data('edge_type') ?? candidate.data('type') ?? '') === event.edge_type))
       if (!edge.length) {
-        this.clearTrace(event.trace_id)
-        this.sequences.delete(event.trace_id)
         return false
-      }
-      this.addOwned(trace, edge, 'traversal-forward')
-      if (!this.options.reducedMotion && edge.length) {
-        edge.animate({ style: { 'line-dash-offset': -13 }, duration: this.options.duration ?? 900 })
       }
     }
 
-    trace.timer = window.setTimeout(() => this.clearTrace(event.trace_id), this.options.reducedMotion ? 0 : (this.options.duration ?? 900))
+    const pulse: Pulse = { id: ++this.pulseId, timer: null, elements: new Map() }
+    const trace = this.traces.get(event.trace_id) ?? { pulses: new Set<Pulse>() }
+    trace.pulses.add(pulse)
+    this.traces.set(event.trace_id, trace)
+    this.sequences.set(event.trace_id, event.sequence)
+    this.addOwned(event.trace_id, pulse, node, event.mode === 'write' ? 'traversal-write' : 'traversal-read')
+
+    if (event.source_path && event.target_path) {
+      this.addOwned(event.trace_id, pulse, edge!, 'traversal-forward')
+      if (!this.options.reducedMotion && edge!.length) {
+        edge!.animate({ style: { 'line-dash-offset': -13 }, duration: this.options.duration ?? 900 })
+      }
+    }
+
+    pulse.timer = window.setTimeout(() => this.clearPulse(event.trace_id, pulse), HALO_DURATION)
     return true
   }
 
   dispose() {
     if (this.disposed) return
     this.disposed = true
+    if (this.pump !== null) window.clearTimeout(this.pump)
+    this.pump = null
     for (const traceId of this.traces.keys()) this.clearTrace(traceId)
     this.traces.clear()
+    this.queues.clear()
     this.sequences.clear()
     this.pending.clear()
+    this.traceOrder.length = 0
   }
 
-  private addOwned(trace: Trace, elements: { length: number; forEach: (fn: (element: any) => void) => unknown }, className: string) {
+  private addOwned(traceId: string, pulse: Pulse, elements: { length: number; forEach: (fn: (element: any) => void) => unknown }, className: string) {
     elements.forEach(element => {
       const id = String(element.id())
       const key = `${id}:${className}`
       const owners = this.classOwners.get(key) ?? new Set<string>()
-      owners.add(this.traceKey(trace, key))
+      owners.add(`${traceId}:${pulse.id}`)
       this.classOwners.set(key, owners)
-      const classes = trace.elements.get(id) ?? new Set<string>()
+      const classes = pulse.elements.get(id) ?? new Set<string>()
       classes.add(className)
-      trace.elements.set(id, classes)
+      pulse.elements.set(id, classes)
       element.addClass(className)
     })
   }
 
-  private traceKey(trace: Trace, key: string) { return `${this.traceIdFor(trace)}:${key}` }
-
-  private traceIdFor(trace: Trace) {
-    for (const [id, value] of this.traces) if (value === trace) return id
-    return ''
-  }
-
-  private clearTrace(traceId: string) {
+  private clearPulse(traceId: string, pulse: Pulse) {
     const trace = this.traces.get(traceId)
-    if (!trace) return
-    if (trace.timer !== null) window.clearTimeout(trace.timer)
-    for (const [id, classes] of trace.elements) {
+    if (!trace || !trace.pulses.delete(pulse)) return
+    if (pulse.timer !== null) window.clearTimeout(pulse.timer)
+    for (const [id, classes] of pulse.elements) {
       const element = this.core.getElementById(id)
       classes.forEach(className => {
         const key = `${id}:${className}`
         const owners = this.classOwners.get(key)
-        owners?.delete(this.traceKey(trace, key))
+        owners?.delete(`${traceId}:${pulse.id}`)
         if (!owners || owners.size === 0) {
           element.removeClass(className)
           this.classOwners.delete(key)
         }
       })
     }
-    this.traces.delete(traceId)
+    if (!trace.pulses.size) {
+      this.traces.delete(traceId)
+      this.pruneTraceOrder()
+    }
+  }
+
+  private clearTrace(traceId: string) {
+    const trace = this.traces.get(traceId)
+    if (!trace) return
+    for (const pulse of [...trace.pulses]) this.clearPulse(traceId, pulse)
   }
 }
