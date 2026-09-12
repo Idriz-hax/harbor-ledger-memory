@@ -38,6 +38,22 @@ Validation owner: reviewer. No unrelated files were changed.
 - `npm run build` — passed; Vite emitted the existing large-chunk warning.
 - Validation owner: reviewer.
 
+## Final review fix: bound unresolved pending state
+
+- Added a global cap of `MAX_PENDING_EVENTS` (32) across unresolved traces.
+- When the cap is exceeded, the oldest pending event is evicted and its
+  sequence is retained as a watermark so stale or evicted events cannot be
+  replayed later.
+- Slow-projection buffering remains intact for entries within the cap.
+- Added regression coverage for global oldest-first eviction and stale replay
+  suppression.
+
+### Final-fix validation
+
+- `npm test -- --run src/__tests__/liveTraversal.test.ts src/__tests__/TideAtlas.test.tsx` — passed (48 passed, 6 skipped).
+- `npm run build` — passed; Vite emitted the existing large-chunk warning.
+- Validation owner: reviewer.
+
 ## Re-review fixes
 
 - Superseded the earlier expiry-only behavior so slow projections can still
