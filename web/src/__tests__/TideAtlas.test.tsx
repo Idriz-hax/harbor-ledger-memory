@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { TideAtlas, activityTarget, folderGroupColor, idleFloatOffset, nodeMotionPhase, readableActivityType, relativeActivityTime, topLevelFolder } from '../TideAtlas'
 import { cytoscapeMock, emitMockEvent, setMockZoom } from '../test/cytoscape-mock'
 
@@ -39,9 +39,26 @@ describe('TideAtlas controls and viewport', () => {
     MockTraversalEventSource.current?.onerror?.()
     expect(screen.getByText('RECONNECTING')).toBeInTheDocument()
     MockTraversalEventSource.current?.onopen?.()
-    await waitFor(() => expect(screen.getByText('LIVE')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/LIVE.*0 active/)).toBeInTheDocument())
     MockTraversalEventSource.current?.onerror?.()
     await waitFor(() => expect(screen.getByText('RECONNECTING')).toBeInTheDocument())
+  })
+
+  it('shows live activity while a traversal trace is draining', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', MockTraversalEventSource)
+    mockAtlas([view(2, null)])
+    render(<TideAtlas events={[]} />)
+    await act(async () => {})
+    await act(async () => {
+      MockTraversalEventSource.current?.onopen?.()
+      MockTraversalEventSource.current?.emit({ trace_id: 'trace', sequence: 1, mode: 'read', node_path: 'AI' })
+    })
+
+    expect(screen.getByText(/LIVE.*1 active/)).toBeInTheDocument()
+    await act(async () => { vi.advanceTimersByTime(1550) })
+    expect(screen.getByText(/LIVE.*0 active/)).toBeInTheDocument()
+    vi.useRealTimers()
   })
 
   it('updates reduced-motion behavior without rebuilding chart state', async () => {
