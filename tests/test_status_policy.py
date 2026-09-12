@@ -26,6 +26,7 @@ from harbor_ledger_memory.config import (
     Settings,
 )
 from harbor_ledger_memory.services.activity import ActivityService
+from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
 from harbor_ledger_memory.services.tokens import TokenService
 
 
@@ -97,7 +98,9 @@ def test_mcp_status_reports_each_tokens_own_policy(tmp_path: Path) -> None:
             "none",
             rules=[FolderRule(path=PurePosixPath("Data"), access=FolderAccess.NONE)],
         )
-        transport, _ = build_mcp_server(settings, activity, service)
+        transport, _ = build_mcp_server(
+            settings, activity, service, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
 
         token = hlm_mcp_token.set(auto)

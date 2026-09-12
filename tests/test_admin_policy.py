@@ -28,6 +28,7 @@ from harbor_ledger_memory.config import (
     Settings,
 )
 from harbor_ledger_memory.services.activity import ActivityService
+from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
 from harbor_ledger_memory.services.tokens import TokenService
 
 _NO_WRITE = {"detail": "token has no write access"}
@@ -95,7 +96,9 @@ def test_mcp_admin_without_rules_denied_on_mutation_tools(tmp_path: Path) -> Non
     activity = ActivityService(settings.database_url)
     service = TokenService(settings.database_url)
     try:
-        transport, _ = build_mcp_server(settings, activity, service)
+        transport, _ = build_mcp_server(
+            settings, activity, service, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         record, _ = service.create("boss", rules=(), admin=True)
         token = hlm_mcp_token.set(record)

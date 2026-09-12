@@ -65,7 +65,8 @@ def build_mcp_server(
     settings: Settings,
     activity_service: ActivityService,
     token_service: TokenService | None = None,
-    live_traversal: LiveTraversalPublisher | None = None,
+    *,
+    live_traversal: LiveTraversalPublisher,
 ):
     """Build the MCP server and its streamable-HTTP transport.
 

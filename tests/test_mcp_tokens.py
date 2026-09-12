@@ -31,6 +31,7 @@ from harbor_ledger_memory.config import (
     Settings,
 )
 from harbor_ledger_memory.services.activity import ActivityService
+from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
 from harbor_ledger_memory.services.scan import ScanService
 from harbor_ledger_memory.services.tokens import TokenService
 
@@ -139,7 +140,9 @@ def test_mcp_read_sweeps_hide_unreadable_paths(tmp_path: Path) -> None:
     service = TokenService(settings.database_url)
     ScanService.from_settings(settings).full_scan()
     try:
-        transport, _ = build_mcp_server(settings, activity, service)
+        transport, _ = build_mcp_server(
+            settings, activity, service, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         # reader can read the default (AI) but explicitly denies Secret.
         reader, _ = service.create(
@@ -208,7 +211,9 @@ def test_mcp_propose_write_path_check(tmp_path: Path) -> None:
     activity = ActivityService(settings.database_url)
     service = TokenService(settings.database_url)
     try:
-        transport, _ = build_mcp_server(settings, activity, service)
+        transport, _ = build_mcp_server(
+            settings, activity, service, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         reader, _ = service.create(
             "reader",
@@ -285,7 +290,9 @@ def test_mcp_propose_folder_denies_unwritable_missing_parent_before_persisting(
     activity = ActivityService(settings.database_url)
     service = TokenService(settings.database_url)
     try:
-        transport, _ = build_mcp_server(settings, activity, service)
+        transport, _ = build_mcp_server(
+            settings, activity, service, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         writer, _ = service.create(
             "writer",
@@ -326,7 +333,9 @@ def test_mcp_approve_reject_check_proposal_path(tmp_path: Path) -> None:
     activity = ActivityService(settings.database_url)
     service = TokenService(settings.database_url)
     try:
-        transport, _ = build_mcp_server(settings, activity, service)
+        transport, _ = build_mcp_server(
+            settings, activity, service, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         reader, _ = service.create(
             "reader",
@@ -401,7 +410,9 @@ def test_mcp_approval_requires_opt_in_and_creator_match(tmp_path: Path) -> None:
     activity = ActivityService(settings.database_url)
     service = TokenService(settings.database_url)
     try:
-        transport, _ = build_mcp_server(settings, activity, service)
+        transport, _ = build_mcp_server(
+            settings, activity, service, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         rules = [
             FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)
@@ -468,7 +479,9 @@ def test_mcp_scan_and_feedback_require_write_access(tmp_path: Path) -> None:
     service = TokenService(settings.database_url)
     ScanService.from_settings(settings).full_scan()
     try:
-        transport, _ = build_mcp_server(settings, activity, service)
+        transport, _ = build_mcp_server(
+            settings, activity, service, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         read_only, _ = service.create("read-only", rules=())
 
@@ -533,7 +546,9 @@ def test_mcp_internal_bypass_and_unauthenticated(tmp_path: Path) -> None:
     activity = ActivityService(settings.database_url)
     service = TokenService(settings.database_url)
     try:
-        transport, _ = build_mcp_server(settings, activity, service)
+        transport, _ = build_mcp_server(
+            settings, activity, service, live_traversal=LiveTraversalPublisher()
+        )
         server = transport.state.mcp_server
         service.create("someone", rules=())
 
