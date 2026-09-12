@@ -223,10 +223,11 @@ everywhere.
 Tokens are immutable — to change a rule or the admin flag, create a new token
 and revoke the old one.
 
-Tokens may also be created with `approve_own_proposals: true` (or the matching
-CLI/API option). This explicitly permits that token to approve proposals it
-created itself; without it, own-proposal approval is rejected even when the
-token can otherwise write to the path.
+The authenticated Web UI and REST token-creation API expose the
+`approve_own_proposals` boolean field. Set it to `true` to explicitly permit
+that token to approve proposals it created itself; without it, own-proposal
+approval is rejected even when the token can otherwise write to the path. The
+CLI does not currently expose this field.
 
 It prints the plaintext `hlm_…` token **once** (only its SHA-256 hash is
 stored). Send it as `Authorization: Bearer hlm_…` on external REST/MCP calls;

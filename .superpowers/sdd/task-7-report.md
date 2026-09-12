@@ -40,3 +40,15 @@ Only Task 7 release metadata, documentation, artifact verification, the release
 version test, lock metadata, and this report were changed. Frontend package
 version remains independent as required. No credentials or generated release
 archives were added.
+
+## Review-fix follow-up
+
+Validation owner: Task 7 reviewer.
+
+- Corrected the README to identify `approve_own_proposals` as an authenticated
+  Web UI and REST token-creation API field; it no longer claims CLI support.
+- Source-mode artifact verification now checks supplied `--version`/`--tag`
+  values against `pyproject.toml` metadata and rejects mismatches.
+- Focused tests: `2 passed, 16 deselected`.
+- Focused artifact checks passed for no arguments, matching `--version`, and
+  matching `--tag`; mismatched version and tag values were both rejected.

@@ -147,6 +147,16 @@ def main() -> None:
         with (project / "pyproject.toml").open("rb") as handle:
             metadata = tomllib.load(handle)
         version = metadata["project"]["version"]
+        requested_version = args.version
+        if args.tag is not None:
+            if not args.tag.startswith("v") or len(args.tag) == 1:
+                parser.error("release tag must be v<version>")
+            requested_version = args.tag[1:]
+        if requested_version is not None and requested_version != version:
+            parser.error(
+                f"requested release version {requested_version} does not match "
+                f"project metadata {version}"
+            )
         web_dist = project / "web" / "dist"
         if not (web_dist / "index.html").is_file() or not (web_dist / "assets").is_dir():
             parser.error("built Web UI is missing from web/dist")
