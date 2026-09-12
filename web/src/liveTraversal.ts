@@ -29,6 +29,7 @@ type TraceState = { pulses: Set<Pulse> }
 const DISPATCH_INTERVAL = 350
 const HALO_DURATION = 1200
 const MAX_QUEUE = 3
+export const MAX_PENDING_EVENTS = 32
 
 /** Owns only the visual classes introduced by one live trace. */
 export class LiveTraversalController {
@@ -105,7 +106,7 @@ export class LiveTraversalController {
       const event = queue.shift()!
       if (!queue.length) this.queues.delete(traceId)
       if (!this.render(event)) {
-        this.pending.set(event.trace_id, event)
+        this.retainPending(event)
         this.reportActivityChange()
       }
       this.pruneTraceOrder()
@@ -164,6 +165,18 @@ export class LiveTraversalController {
 
   private isRenderable(event: LiveTraversalEvent) {
     return Boolean(this.resolveElements(event))
+  }
+
+  private retainPending(event: LiveTraversalEvent) {
+    this.pending.set(event.trace_id, event)
+    while (this.pending.size > MAX_PENDING_EVENTS) {
+      const oldestTraceId = this.pending.keys().next().value as string | undefined
+      if (oldestTraceId === undefined) break
+      const evicted = this.pending.get(oldestTraceId)
+      this.pending.delete(oldestTraceId)
+      if (evicted) this.sequences.set(oldestTraceId, Math.max(this.sequences.get(oldestTraceId) ?? -1, evicted.sequence))
+    }
+    this.pruneTraceOrder()
   }
 
   private resolveElements(event: LiveTraversalEvent) {
