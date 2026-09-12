@@ -915,6 +915,7 @@ def test_write_listing_returns_pending_and_recent_resolved_newest_first(
             "failure_reason",
             "affected_paths",
             "created_paths",
+            "creator_token_id",
         }
         assert item["rule_access"] == "propose-write"
         assert item["requested_at"]

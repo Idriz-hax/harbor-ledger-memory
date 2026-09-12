@@ -558,11 +558,17 @@ def create_app(
                 is_real_scanner = callable(set_activity_service)
                 if is_real_scanner:
                     set_activity_service(activity_service)
-                scanner.set_live_traversal(live_traversal)
+                set_live_traversal = getattr(scanner, "set_live_traversal", None)
+                if callable(set_live_traversal):
+                    set_live_traversal(live_traversal)
                 scan_result = scanner.full_scan()
                 if not is_real_scanner:
                     activity_service.record("scan", _scan_activity_payload(scan_result))
-                watcher = VaultWatchService(scanner.boundary, scanner, live_traversal=live_traversal)
+                # Preserve compatibility with watcher doubles and integrations
+                # that predate the optional live-traversal argument.
+                watcher = VaultWatchService(scanner.boundary, scanner)
+                if callable(set_live_traversal):
+                    set_live_traversal(live_traversal)
                 watcher.start()
                 application.state.vault_watcher = watcher
                 application.state.activity_service = activity_service
@@ -803,7 +809,9 @@ def create_app(
         set_activity_service = getattr(scanner, "set_activity_service", None)
         if callable(set_activity_service):
             set_activity_service(activity_service)
-        scanner.set_live_traversal(live_traversal)
+        set_live_traversal = getattr(scanner, "set_live_traversal", None)
+        if callable(set_live_traversal):
+            set_live_traversal(live_traversal)
         scan_result = scanner.full_scan()
         return ScanResponse(
             files_indexed=scan_result.files_indexed,

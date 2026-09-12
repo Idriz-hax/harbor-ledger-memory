@@ -8,7 +8,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
 from harbor_ledger_memory.api.app import create_app
-from harbor_ledger_memory.api.auth import hlm_internal_request
+from harbor_ledger_memory.api.auth import hlm_internal_request, hlm_mcp_token
 from harbor_ledger_memory.api.mcp_server import build_mcp_server
 from harbor_ledger_memory.config import (
     FolderAccess,
@@ -18,6 +18,7 @@ from harbor_ledger_memory.config import (
 )
 from harbor_ledger_memory.services.activity import ActivityService
 from harbor_ledger_memory.services.scan import ScanService
+from harbor_ledger_memory.services.tokens import TokenService
 
 
 def test_mcp_exposes_status_and_write_lifecycle_tools(tmp_path: Path) -> None:
@@ -29,9 +30,15 @@ def test_mcp_exposes_status_and_write_lifecycle_tools(tmp_path: Path) -> None:
         database_url=f"sqlite:///{tmp_path / 'mcp.db'}",
     )
     activity = ActivityService(settings.database_url)
-    internal = hlm_internal_request.set(True)
+    token_service = TokenService(settings.database_url)
+    caller, _ = token_service.create(
+        "lifecycle",
+        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)],
+        approve_own_proposals=True,
+    )
+    token = hlm_mcp_token.set(caller)
     try:
-        transport, manager = build_mcp_server(settings, activity)
+        transport, manager = build_mcp_server(settings, activity, token_service)
         server = transport.state.mcp_server
         names = {tool.name for tool in asyncio.run(server.list_tools())}
         assert {
@@ -80,9 +87,8 @@ def test_mcp_exposes_status_and_write_lifecycle_tools(tmp_path: Path) -> None:
         )
         assert json.loads(rejected_result.content[0].text)["status"] == "rejected"
         assert not (tmp_path / "Public" / "other.md").exists()
-        # The internal bypass resolves to full access, so a path outside
-        # the draft rules still queues a pending proposal: the draft rules
-        # never deny (the token's own policy drives the decision).
+        # The caller token has full access, so a path outside the draft rules
+        # still queues a pending proposal: draft rules never deny.
         private = asyncio.run(
             server.call_tool(
                 "propose_write", {"path": "Private/no.md", "content": "# No"}
@@ -91,7 +97,8 @@ def test_mcp_exposes_status_and_write_lifecycle_tools(tmp_path: Path) -> None:
         assert json.loads(private.content[0].text)["status"] == "pending"
         assert manager is not None
     finally:
-        hlm_internal_request.reset(internal)
+        hlm_mcp_token.reset(token)
+        token_service.close()
         activity.close()
 
 

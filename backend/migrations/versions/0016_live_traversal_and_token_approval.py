@@ -42,14 +42,9 @@ def upgrade() -> None:
             "memory_write_proposals",
             sa.Column("creator_token_id", sa.Integer(), nullable=True),
         )
-        with op.batch_alter_table("memory_write_proposals") as batch_op:
-            batch_op.create_foreign_key(
-                _CREATOR_FK,
-                "api_tokens",
-                ["creator_token_id"],
-                ["id"],
-                ondelete="SET NULL",
-            )
+        # SQLite cannot ALTER a table to add a foreign key, and batch mode
+        # would require reflection. The columns are emitted here; the online
+        # migration below adds the constraint using SQLite's copy strategy.
         return
     if "approve_own_proposals" not in _columns("api_tokens"):
         op.add_column(
