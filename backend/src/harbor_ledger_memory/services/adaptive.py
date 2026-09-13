@@ -160,8 +160,7 @@ class AdaptiveService:
                         totals.get(edge.target_path, 0.0) + edge.weight_delta
                     )
             return {
-                target: max(-0.9, min(1.0, totals[target]))
-                for target in sorted(totals)
+                target: max(-0.9, min(1.0, totals[target])) for target in sorted(totals)
             }
 
         return {edge.target_path: edge.weight_delta for edge in edges}

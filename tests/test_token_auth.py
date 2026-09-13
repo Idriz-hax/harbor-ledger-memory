@@ -115,16 +115,22 @@ def test_ui_get_issues_cookie_and_cookie_session_is_propose_only(
         assert client.get("/api/v1/settings").status_code == 200
         csrf = client.cookies.get(UI_CSRF_COOKIE)
         assert csrf is not None
-        assert client.post(
-            "/api/v1/writes",
-            json={"path": "AI/new.md", "content": "# New"},
-            headers={"Origin": origin, "X-HLM-CSRF": csrf},
-        ).json()["status"] == "pending"
-        assert client.post(
-            "/api/v1/tokens",
-            json={"name": "ui-token", "rules": []},
-            headers={"Origin": origin, "X-HLM-CSRF": csrf},
-        ).status_code == 201
+        assert (
+            client.post(
+                "/api/v1/writes",
+                json={"path": "AI/new.md", "content": "# New"},
+                headers={"Origin": origin, "X-HLM-CSRF": csrf},
+            ).json()["status"]
+            == "pending"
+        )
+        assert (
+            client.post(
+                "/api/v1/tokens",
+                json={"name": "ui-token", "rules": []},
+                headers={"Origin": origin, "X-HLM-CSRF": csrf},
+            ).status_code
+            == 201
+        )
 
 
 def test_missing_and_invalid_token_yield_401(tmp_path: Path) -> None:
@@ -154,17 +160,13 @@ def test_path_403_matrix(tmp_path: Path) -> None:
         _, writer = service.create(
             "writer",
             rules=[
-                FolderRule(
-                    path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE
-                )
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)
             ],
         )
         _, admin = service.create("admin", rules=(), admin=True)
 
         # reader: read works, propose to AI (read-only for it) is a path 403.
-        assert (
-            client.get("/api/v1/status", headers=_headers(reader)).status_code == 200
-        )
+        assert client.get("/api/v1/status", headers=_headers(reader)).status_code == 200
         resp = client.post(
             "/api/v1/writes",
             json={"path": "AI/x.md", "content": "# X"},
@@ -188,8 +190,9 @@ def test_path_403_matrix(tmp_path: Path) -> None:
         assert resp.status_code == 403
         assert resp.json() == {"detail": "path 'AI/x.md' not writable by this token"}
         assert (
-            client.post("/api/v1/writes/1/approve", headers=_headers(writer))
-            .status_code
+            client.post(
+                "/api/v1/writes/1/approve", headers=_headers(writer)
+            ).status_code
             == 200
         )
         # admin: management-only — a bare admin flag no longer implies
@@ -220,9 +223,7 @@ def test_auto_write_requires_token_auto_access(tmp_path: Path) -> None:
     """Auto-apply follows the token's own grant; the global draft never does."""
     app, db = _make_app(
         tmp_path,
-        rules=(
-            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.AUTO_WRITE),
-        ),
+        rules=(FolderRule(path=PurePosixPath("AI"), access=FolderAccess.AUTO_WRITE),),
     )
     original = "---\nmanaged_by: harbor-ledger-memory\n---\n# Managed\nv1\n"
     (tmp_path / "AI" / "managed.md").write_text(original, encoding="utf-8")
@@ -231,17 +232,13 @@ def test_auto_write_requires_token_auto_access(tmp_path: Path) -> None:
         _, writer = service.create(
             "writer",
             rules=[
-                FolderRule(
-                    path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE
-                )
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)
             ],
         )
         _, auto = service.create(
             "auto",
             rules=[
-                FolderRule(
-                    path=PurePosixPath("AI"), access=FolderAccess.AUTO_WRITE
-                )
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.AUTO_WRITE)
             ],
         )
         _, admin = service.create("admin", rules=(), admin=True)
@@ -285,8 +282,7 @@ def test_revoking_last_token_stays_locked(tmp_path: Path) -> None:
         service = TokenService(db)
         _, plaintext = service.create("solo")
         assert (
-            client.get("/api/v1/status", headers=_headers(plaintext)).status_code
-            == 200
+            client.get("/api/v1/status", headers=_headers(plaintext)).status_code == 200
         )
         service.revoke("solo")
         # No active tokens remain -> locked, even with a stale bearer.
@@ -384,9 +380,7 @@ def test_activity_stream_accepts_token_query_param(tmp_path: Path) -> None:
 
         assert stream_status([], urlencode({"token": plaintext}).encode()) == 401
         assert (
-            stream_status(
-                [(b"authorization", f"Bearer {plaintext}".encode())], b""
-            )
+            stream_status([(b"authorization", f"Bearer {plaintext}".encode())], b"")
             == 200
         )
         # All other endpoints stay header-only: the query param is ignored there.
@@ -459,9 +453,7 @@ def test_token_endpoints_and_settings_put_require_admin(tmp_path: Path) -> None:
         _, writer = service.create(
             "writer",
             rules=[
-                FolderRule(
-                    path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE
-                )
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)
             ],
         )
         headers = _headers(writer)
@@ -476,8 +468,7 @@ def test_token_endpoints_and_settings_put_require_admin(tmp_path: Path) -> None:
         assert client.delete("/api/v1/tokens/x", headers=headers).status_code == 403
         # Partial settings update is a valid empty body; admin is still required.
         assert (
-            client.put("/api/v1/settings", json={}, headers=headers).status_code
-            == 403
+            client.put("/api/v1/settings", json={}, headers=headers).status_code == 403
         )
 
 
@@ -514,9 +505,7 @@ def test_status_reports_the_calling_tokens_own_rules(tmp_path: Path) -> None:
         tmp_path,
         rules=(
             FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),
-            FolderRule(
-                path=PurePosixPath("Secret"), access=FolderAccess.PROPOSE_WRITE
-            ),
+            FolderRule(path=PurePosixPath("Secret"), access=FolderAccess.PROPOSE_WRITE),
         ),
     )
     with TestClient(app) as client:
@@ -529,9 +518,7 @@ def test_status_reports_the_calling_tokens_own_rules(tmp_path: Path) -> None:
         _, admin = service.create("admin", rules=(), admin=True)
 
         # reader: write_policy lists only this token's own rule (Secret: none).
-        reader_status = (
-            client.get("/api/v1/status", headers=_headers(reader)).json()
-        )
+        reader_status = client.get("/api/v1/status", headers=_headers(reader)).json()
         assert reader_status["write_policy"]["rules"] == [
             {"path": "Secret", "access": "none"},
         ]
@@ -556,9 +543,7 @@ def test_graph_read_sweep_hides_unreadable_nodes(tmp_path: Path) -> None:
         tmp_path,
         rules=(
             FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),
-            FolderRule(
-                path=PurePosixPath("Secret"), access=FolderAccess.PROPOSE_WRITE
-            ),
+            FolderRule(path=PurePosixPath("Secret"), access=FolderAccess.PROPOSE_WRITE),
         ),
     )
     _seed_vault_files(tmp_path)

@@ -163,12 +163,8 @@ async def authenticated(request: Request) -> AuthContext:
     record = service.verify(bearer or "")
     if record is None:
         if bearer is None and _cookie_session(request):
-            if (
-                request.method not in {"GET", "HEAD", "OPTIONS"}
-                and (
-                    not _cookie_origin_allowed(request)
-                    or not _cookie_csrf_allowed(request)
-                )
+            if request.method not in {"GET", "HEAD", "OPTIONS"} and (
+                not _cookie_origin_allowed(request) or not _cookie_csrf_allowed(request)
             ):
                 raise _unauthenticated()
             return AuthContext(

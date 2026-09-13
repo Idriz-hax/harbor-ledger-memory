@@ -33,9 +33,12 @@ from harbor_ledger_memory.graph.builder import GraphBuilder
 from harbor_ledger_memory.services.activity import ActivityService, graph_refs
 from harbor_ledger_memory.services.adaptive import AdaptiveService
 from harbor_ledger_memory.services.context import ContextBuilder
+from harbor_ledger_memory.services.live_traversal import (
+    NullLiveTraversalPublisher,
+    TraversalEvent,
+)
 from harbor_ledger_memory.services.memory import MemoryService
 from harbor_ledger_memory.services.retrieval import HybridRetrievalService
-from harbor_ledger_memory.services.live_traversal import NullLiveTraversalPublisher, TraversalEvent
 
 _TRACE_SCHEMA_VERSION = 1
 
@@ -207,11 +210,18 @@ class QueryService:
 
         self._session.commit()
 
-        for sequence, node in enumerate(sorted(activated, key=lambda item: (item.hop, item.path)), 1):
+        for sequence, node in enumerate(
+            sorted(activated, key=lambda item: (item.hop, item.path)), 1
+        ):
             self._live_traversal.publish(
                 TraversalEvent(
-                    str(trace_uuid), sequence, "read", node.path,
-                    node.edge_source, node.edge_target, node.edge_type,
+                    str(trace_uuid),
+                    sequence,
+                    "read",
+                    node.path,
+                    node.edge_source,
+                    node.edge_target,
+                    node.edge_type,
                 )
             )
 

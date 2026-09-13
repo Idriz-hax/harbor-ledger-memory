@@ -4,8 +4,8 @@ from pathlib import Path
 from threading import Event, Thread
 
 from harbor_ledger_memory.config import FolderRule, Settings
-from harbor_ledger_memory.services.scan import ScanResult
 from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
+from harbor_ledger_memory.services.scan import ScanResult
 from harbor_ledger_memory.vault.boundary import VaultBoundary
 from harbor_ledger_memory.watcher import VaultWatchService
 

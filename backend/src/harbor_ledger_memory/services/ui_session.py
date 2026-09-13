@@ -98,9 +98,7 @@ class UiSessionService:
     def policy() -> AccessPolicy:
         return AccessPolicy(
             rules=(
-                FolderRule(
-                    path=PurePosixPath("."), access=FolderAccess.PROPOSE_WRITE
-                ),
+                FolderRule(path=PurePosixPath("."), access=FolderAccess.PROPOSE_WRITE),
             ),
             admin=True,
         )

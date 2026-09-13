@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-from uuid import uuid4
 import posixpath
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
@@ -27,11 +27,14 @@ from harbor_ledger_memory.catalog.models import (
 )
 from harbor_ledger_memory.domain.models import ParseDiagnostic, ParsedNote
 from harbor_ledger_memory.services.activity import ActivityService, graph_refs
-from harbor_ledger_memory.services.live_traversal import NullLiveTraversalPublisher, TraversalEvent
 from harbor_ledger_memory.services.embeddings import (
     EmbeddingService,
     effective_embedding_model,
     embeddable_text,
+)
+from harbor_ledger_memory.services.live_traversal import (
+    NullLiveTraversalPublisher,
+    TraversalEvent,
 )
 from harbor_ledger_memory.vault.boundary import VaultBoundary
 from harbor_ledger_memory.vault.parser import parse_note_bytes
@@ -110,7 +113,9 @@ class ScanService:
             live_traversal=live_traversal,
         )
 
-    def full_scan(self, trace_id: str | None = None, sequence_start: int = 0) -> ScanResult:
+    def full_scan(
+        self, trace_id: str | None = None, sequence_start: int = 0
+    ) -> ScanResult:
         """Replace the catalog with a deterministic snapshot of admitted files."""
         snapshots = tuple(self.boundary.iter_admitted_snapshots())
         known_paths = tuple(snapshot.path.as_posix() for snapshot in snapshots)
@@ -283,7 +288,9 @@ class ScanService:
             scan_run.completed_at = _timestamp()
             scan_run.notes_indexed = len(parsed_files)
             scan_run.diagnostics_count = len(diagnostics)
-            from harbor_ledger_memory.services.graph_materialization import materialize_graph
+            from harbor_ledger_memory.services.graph_materialization import (
+                materialize_graph,
+            )
 
             materialize_graph(session, created_at=scan_run.completed_at)
             session.commit()
@@ -315,8 +322,12 @@ class ScanService:
             deleted_paths=deleted_paths,
             topology_paths=topology_paths,
         )
-        for sequence, path in enumerate(sorted(result.indexed_paths), sequence_start + 1):
-            self._live_traversal.publish(TraversalEvent(traversal_trace, sequence, "read", path))
+        for sequence, path in enumerate(
+            sorted(result.indexed_paths), sequence_start + 1
+        ):
+            self._live_traversal.publish(
+                TraversalEvent(traversal_trace, sequence, "read", path)
+            )
         self._activity_service.record(
             "scan",
             {

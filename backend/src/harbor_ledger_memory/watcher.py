@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
-import inspect
-from uuid import uuid4
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-from harbor_ledger_memory.services.scan import ScanResult, ScanService
 from harbor_ledger_memory.services.live_traversal import NullLiveTraversalPublisher
+from harbor_ledger_memory.services.scan import ScanResult, ScanService
 from harbor_ledger_memory.vault.boundary import VaultBoundary, VaultPathError
 
 

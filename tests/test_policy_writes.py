@@ -31,7 +31,10 @@ from harbor_ledger_memory.services.access import AccessPolicy
 from harbor_ledger_memory.services.activity import ActivityService
 from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
 from harbor_ledger_memory.services.tokens import TokenService
-from harbor_ledger_memory.services.vault_mutations import VaultMutationService, VaultWriteDenied
+from harbor_ledger_memory.services.vault_mutations import (
+    VaultMutationService,
+    VaultWriteDenied,
+)
 
 _MANAGED = "---\nmanaged_by: harbor-ledger-memory\n---\n# Note\nv1\n"
 
@@ -39,9 +42,7 @@ _MANAGED = "---\nmanaged_by: harbor-ledger-memory\n---\n# Note\nv1\n"
 def _settings(tmp_path: Path, draft: tuple[FolderRule, ...] | None = None) -> Settings:
     """Build settings whose global folder rules act only as a UI draft."""
     if draft is None:
-        draft = (
-            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),
-        )
+        draft = (FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),)
     for rule in draft:
         (tmp_path / rule.path.as_posix()).mkdir(parents=True, exist_ok=True)
     return Settings(
@@ -60,17 +61,13 @@ def test_token_auto_write_beats_draft_read(tmp_path: Path) -> None:
     """A token with AUTO_WRITE auto-applies even when the draft is read-only."""
     settings = _settings(
         tmp_path,
-        draft=(
-            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),
-        ),
+        draft=(FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),),
     )
     (tmp_path / "AI" / "note.md").write_text(_MANAGED, encoding="utf-8")
     app = create_app(settings)
     _, plaintext = app.state.token_service.create(
         "auto",
-        rules=[
-            FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)
-        ],
+        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)],
     )
     with TestClient(app) as client:
         resp = client.post(
@@ -89,16 +86,12 @@ def test_token_propose_write_beats_draft_auto(tmp_path: Path) -> None:
     """A propose-only token queues pending even when the draft auto-writes."""
     settings = _settings(
         tmp_path,
-        draft=(
-            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.AUTO_WRITE),
-        ),
+        draft=(FolderRule(path=PurePosixPath("AI"), access=FolderAccess.AUTO_WRITE),),
     )
     app = create_app(settings)
     _, plaintext = app.state.token_service.create(
         "writer",
-        rules=[
-            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)
-        ],
+        rules=[FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)],
     )
     with TestClient(app) as client:
         resp = client.post(
@@ -118,9 +111,7 @@ def test_approver_policy_blocks_approval(tmp_path: Path) -> None:
     token_service = app.state.token_service
     _, writer = token_service.create(
         "writer",
-        rules=[
-            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)
-        ],
+        rules=[FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)],
     )
     _, reader = token_service.create(
         "reader",
@@ -204,7 +195,9 @@ def test_token_policy_revalidates_pending_approval_after_parent_denied(
         service = VaultMutationService.from_settings(session, settings)
         initial_policy = AccessPolicy(
             (
-                FolderRule(path=PurePosixPath("AI/new"), access=FolderAccess.PROPOSE_WRITE),
+                FolderRule(
+                    path=PurePosixPath("AI/new"), access=FolderAccess.PROPOSE_WRITE
+                ),
                 FolderRule(
                     path=PurePosixPath("AI/new/deep.md"),
                     access=FolderAccess.PROPOSE_WRITE,
@@ -242,9 +235,7 @@ def test_mcp_propose_write_follows_token_policy(tmp_path: Path) -> None:
     """MCP propose_write auto-applies per token policy, ignoring the draft."""
     settings = _settings(
         tmp_path,
-        draft=(
-            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),
-        ),
+        draft=(FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),),
     )
     (tmp_path / "AI" / "note.md").write_text(_MANAGED, encoding="utf-8")
     activity = ActivityService(settings.database_url)
@@ -256,9 +247,7 @@ def test_mcp_propose_write_follows_token_policy(tmp_path: Path) -> None:
         server = transport.state.mcp_server
         auto, _ = service.create(
             "auto",
-            rules=[
-                FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)
-            ],
+            rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)],
         )
         reader, _ = service.create(
             "reader",
@@ -293,9 +282,7 @@ def test_mcp_propose_write_follows_token_policy(tmp_path: Path) -> None:
                         "content": _MANAGED.replace("v1", "v3"),
                     },
                 )
-            assert "path 'AI/note.md' not writable by this token" in str(
-                exc_info.value
-            )
+            assert "path 'AI/note.md' not writable by this token" in str(exc_info.value)
         finally:
             hlm_mcp_token.reset(token)
     finally:

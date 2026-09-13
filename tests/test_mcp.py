@@ -70,9 +70,7 @@ def test_mcp_exposes_status_and_write_lifecycle_tools(tmp_path: Path) -> None:
         folder_proposal = json.loads(folder.content[0].text)
         assert folder_proposal["operation"] == "mkdir"
         folder_approved = asyncio.run(
-            server.call_tool(
-                "approve_proposal", {"proposal_id": folder_proposal["id"]}
-            )
+            server.call_tool("approve_proposal", {"proposal_id": folder_proposal["id"]})
         )
         assert json.loads(folder_approved.content[0].text)["created_paths"] == [
             "Public/Inbox"
@@ -130,9 +128,7 @@ def test_mcp_status_policy_shape(tmp_path: Path) -> None:
 
 
 def test_mcp_query_and_write_publish_to_supplied_live_traversal(tmp_path: Path) -> None:
-    (tmp_path / "source.md").write_text(
-        "# Source\n\n[[target]]", encoding="utf-8"
-    )
+    (tmp_path / "source.md").write_text("# Source\n\n[[target]]", encoding="utf-8")
     (tmp_path / "target.md").write_text(
         "# Target\n\ntelemetry target phrase", encoding="utf-8"
     )
@@ -168,7 +164,9 @@ def test_mcp_query_and_write_publish_to_supplied_live_traversal(tmp_path: Path) 
             )
         )
         proposal = json.loads(proposed.content[0].text)
-        asyncio.run(server.call_tool("approve_proposal", {"proposal_id": proposal["id"]}))
+        asyncio.run(
+            server.call_tool("approve_proposal", {"proposal_id": proposal["id"]})
+        )
         write_event = subscription.get(timeout=1)
         while write_event.mode != "write":
             write_event = subscription.get(timeout=1)
@@ -259,12 +257,12 @@ def test_mcp_feedback_applies_to_query_trace_and_rejects_invalid_paths(
             asyncio.run(
                 server.call_tool(
                     "feedback",
-                {
-                    "trace_id": result["trace_id"],
-                    "relevant_paths": ["not-selected.md"],
-                },
+                    {
+                        "trace_id": result["trace_id"],
+                        "relevant_paths": ["not-selected.md"],
+                    },
+                )
             )
-        )
     finally:
         hlm_internal_request.reset(internal)
         activity.close()

@@ -243,15 +243,11 @@ def test_full_scan_degrades_gracefully_when_embedding_runtime_missing(
 ) -> None:
     """A configured model with a missing runtime skips embeddings, no exception."""
     embeddings_module.reset_runtime_warning_flag()
-    monkeypatch.setattr(
-        embeddings_module, "embedding_runtime_available", lambda: False
-    )
+    monkeypatch.setattr(embeddings_module, "embedding_runtime_available", lambda: False)
     monkeypatch.setattr(
         scan_module, "EmbeddingService", ConstructionFailingEmbeddingService
     )
-    settings = fixture_settings(
-        tmp_path, MemorySettings(embedding_model="test-model")
-    )
+    settings = fixture_settings(tmp_path, MemorySettings(embedding_model="test-model"))
     service = ScanService.from_settings(settings)
     try:
         result = service.full_scan()
@@ -308,9 +304,7 @@ def test_full_scan_rolls_back_notes_and_embeddings_when_encoding_fails(
 def test_full_scan_preserves_previous_catalog_when_rescan_encoding_fails(
     tmp_path: Path, monkeypatch, mock_embedding_runtime: None
 ) -> None:
-    settings = fixture_settings(
-        tmp_path, MemorySettings(embedding_model="test-model")
-    )
+    settings = fixture_settings(tmp_path, MemorySettings(embedding_model="test-model"))
     monkeypatch.setattr(scan_module, "EmbeddingService", FakeEmbeddingService)
     initial_service = ScanService.from_settings(settings)
     try:
@@ -405,9 +399,7 @@ def test_full_scan_preserves_previous_embeddings_when_batch_cardinality_is_inval
     encoder: type[FakeEmbeddingService],
     actual_count: int,
 ) -> None:
-    settings = fixture_settings(
-        tmp_path, MemorySettings(embedding_model="test-model")
-    )
+    settings = fixture_settings(tmp_path, MemorySettings(embedding_model="test-model"))
     monkeypatch.setattr(scan_module, "EmbeddingService", FakeEmbeddingService)
     initial_service = ScanService.from_settings(settings)
     try:
