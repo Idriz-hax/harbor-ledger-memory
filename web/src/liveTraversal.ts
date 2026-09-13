@@ -28,6 +28,7 @@ type TraceState = { pulses: Set<Pulse> }
 
 const DISPATCH_INTERVAL = 350
 const HALO_DURATION = 1200
+const NODE_PULSE_DURATION = 175
 const MAX_QUEUE = 3
 export const MAX_PENDING_EVENTS = 32
 export const MAX_SEQUENCE_TOMBSTONES = 256
@@ -158,6 +159,7 @@ export class LiveTraversalController {
     this.traces.set(event.trace_id, trace)
     this.sequences.set(event.trace_id, event.sequence)
     this.addOwned(event.trace_id, pulse, node, event.mode === 'write' ? 'traversal-write' : 'traversal-read')
+    this.animateNodePulse(node)
 
     if (edge) {
       const edgeClass = event.mode === 'write' ? 'traversal-forward-write' : 'traversal-forward'
@@ -169,6 +171,20 @@ export class LiveTraversalController {
 
     pulse.timer = window.setTimeout(() => this.clearPulse(event.trace_id, pulse), HALO_DURATION)
     return true
+  }
+
+  /** Re-trigger the node halo for every hop, even when the visible node is unchanged. */
+  private animateNodePulse(node: { length: number; stop: () => unknown; animate: (options: { style: Record<string, unknown>; duration: number; complete?: () => void }) => unknown }) {
+    if (this.options.reducedMotion || !node.length) return
+    node.stop()
+    node.animate({
+      style: { 'shadow-blur': 28, 'shadow-opacity': 1 },
+      duration: NODE_PULSE_DURATION,
+      complete: () => node.animate({
+        style: { 'shadow-blur': 16, 'shadow-opacity': 0.72 },
+        duration: NODE_PULSE_DURATION,
+      }),
+    })
   }
 
   private isRenderable(event: LiveTraversalEvent) {
