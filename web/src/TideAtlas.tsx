@@ -124,6 +124,7 @@ const computeStyles = (): StylesheetJson => [
   }},
   { selector: 'node.traversal-read', style: ({ 'border-color': '#62e8f2', 'border-width': '3.5', 'shadow-color': '#62e8f2', 'shadow-blur': 16, 'shadow-opacity': 0.72, 'shadow-offset-x': 0, 'shadow-offset-y': 0, 'z-index': 125 } as any) },
   { selector: 'node.traversal-write', style: ({ 'border-color': '#f4bd62', 'border-width': '3.5', 'shadow-color': '#f4bd62', 'shadow-blur': 16, 'shadow-opacity': 0.72, 'shadow-offset-x': 0, 'shadow-offset-y': 0, 'z-index': 125 } as any) },
+  { selector: 'node.traversal-pulse', style: ({ 'shadow-blur': 28, 'shadow-opacity': 1 } as any) },
   { selector: 'edge.traversal-forward', style: {
     'line-color': '#62e8f2', 'target-arrow-color': '#62e8f2', 'target-arrow-shape': 'triangle', 'arrow-scale': 1.2,
     opacity: 1, width: '3', 'line-style': 'dashed', 'line-dash-pattern': [8, 5], 'line-dash-offset': 0, 'z-index': 124,

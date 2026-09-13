@@ -28,14 +28,40 @@ describe('LiveTraversalController', () => {
     controller.apply({ trace_id: 'same-group', sequence: 2, mode: 'read', node_path: 'leaf-b' })
 
     vi.advanceTimersByTime(350)
-    expect(cytoscapeMock.animations).toHaveLength(2)
-    expect(cytoscapeMock.animations[0]).toMatchObject({ ids: ['group'], duration: 175 })
+    expect(cytoscapeMock.classesFor('group')).toContain('traversal-pulse')
+    vi.advanceTimersByTime(175)
+    expect(cytoscapeMock.classesFor('group')).not.toContain('traversal-pulse')
 
-    vi.advanceTimersByTime(350)
-    expect(cytoscapeMock.animations).toHaveLength(4)
-    expect(cytoscapeMock.animations[2]).toMatchObject({ ids: ['group'], duration: 175 })
+    vi.advanceTimersByTime(175)
+    expect(cytoscapeMock.classesFor('group')).toContain('traversal-pulse')
+    vi.advanceTimersByTime(175)
+    expect(cytoscapeMock.classesFor('group')).not.toContain('traversal-pulse')
 
     controller.dispose()
+    vi.useRealTimers()
+  })
+
+  it('cleans trace-owned pulse state without removing a concurrent trace on one node', () => {
+    vi.useFakeTimers()
+    const core = createMockCore({ elements: [{ data: { id: 'group' } }] })
+    const controller = new LiveTraversalController(core as never, { nodeIdForPath: () => 'group' })
+    controller.apply({ trace_id: 'read-trace', sequence: 1, mode: 'read', node_path: 'leaf-a' })
+    controller.apply({ trace_id: 'write-trace', sequence: 1, mode: 'write', node_path: 'leaf-b' })
+
+    vi.advanceTimersByTime(350)
+    expect(cytoscapeMock.classesFor('group')).toEqual(expect.arrayContaining(['traversal-read', 'traversal-pulse']))
+    vi.advanceTimersByTime(350)
+    expect(cytoscapeMock.classesFor('group')).toEqual(expect.arrayContaining(['traversal-read', 'traversal-write', 'traversal-pulse']))
+
+    vi.advanceTimersByTime(550)
+    expect(cytoscapeMock.classesFor('group')).toEqual(expect.arrayContaining(['traversal-read', 'traversal-write']))
+    expect(cytoscapeMock.classesFor('group')).not.toContain('traversal-pulse')
+    vi.advanceTimersByTime(350)
+    expect(cytoscapeMock.classesFor('group')).toContain('traversal-write')
+    vi.advanceTimersByTime(350)
+    expect(cytoscapeMock.classesFor('group')).toEqual([])
+    controller.dispose()
+    expect(cytoscapeMock.classesFor('group')).toEqual([])
     vi.useRealTimers()
   })
 
