@@ -199,9 +199,7 @@ export class LiveTraversalController {
         : this.core.edges().filter(candidate => String(candidate.data('source') ?? '') === event.source_path
           && String(candidate.data('target') ?? '') === event.target_path
           && (!event.edge_type || String(candidate.data('edge_type') ?? candidate.data('type') ?? '') === event.edge_type))
-      if (!edge.length) {
-        return undefined
-      }
+      if (!edge.length) edge = undefined
     }
     return { node, edge }
   }

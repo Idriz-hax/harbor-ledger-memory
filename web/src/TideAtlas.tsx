@@ -391,19 +391,17 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
       nodeIdForPath: path => {
         const current = viewRef.current
         if (!current) return undefined
-        const matches = current.clusters.filter(cluster => current.level === 2
-          ? cluster.scope === path
-          : path === cluster.scope || path.startsWith(`${cluster.scope}/`))
-        return matches.length === 1 ? matches[0].id : undefined
+        return current.clusters
+          .filter(cluster => path === cluster.scope || path.startsWith(`${cluster.scope}/`))
+          .sort((left, right) => right.scope.length - left.scope.length)[0]?.id
       },
       edgeIdForEvent: event => {
         const current = viewRef.current
         if (!current || !event.source_path || !event.target_path || !event.edge_type) return undefined
         const resolve = (path: string) => {
-          const matches = current.clusters.filter(cluster => current.level === 2
-            ? cluster.scope === path
-            : path === cluster.scope || path.startsWith(`${cluster.scope}/`))
-          return matches.length === 1 ? matches[0].id : undefined
+          return current.clusters
+            .filter(cluster => path === cluster.scope || path.startsWith(`${cluster.scope}/`))
+            .sort((left, right) => right.scope.length - left.scope.length)[0]?.id
         }
         const source = resolve(event.source_path)
         const target = resolve(event.target_path)

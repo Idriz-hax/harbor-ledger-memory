@@ -180,7 +180,7 @@ describe('LiveTraversalController', () => {
     })
     controller.apply({ trace_id: 'aggregate', sequence: 1, mode: 'read', node_path: 'AI/one.md', source_path: 'AI/one.md', target_path: 'AI/two.md', edge_type: 'links_to' })
     vi.advanceTimersByTime(350)
-    expect(cytoscapeMock.classesFor('cluster-a')).not.toContain('traversal-read')
+    expect(cytoscapeMock.classesFor('cluster-a')).toContain('traversal-read')
     expect(cytoscapeMock.classesFor('edge')).not.toContain('traversal-forward')
     controller.dispose()
     vi.useRealTimers()
