@@ -20,6 +20,25 @@ describe('LiveTraversalController', () => {
     vi.useRealTimers()
   })
 
+  it('re-pulses successive events that resolve to the same visible node', () => {
+    vi.useFakeTimers()
+    const core = createMockCore({ elements: [{ data: { id: 'group' } }] })
+    const controller = new LiveTraversalController(core as never, { nodeIdForPath: () => 'group' })
+    controller.apply({ trace_id: 'same-group', sequence: 1, mode: 'read', node_path: 'leaf-a' })
+    controller.apply({ trace_id: 'same-group', sequence: 2, mode: 'read', node_path: 'leaf-b' })
+
+    vi.advanceTimersByTime(350)
+    expect(cytoscapeMock.animations).toHaveLength(2)
+    expect(cytoscapeMock.animations[0]).toMatchObject({ ids: ['group'], duration: 175 })
+
+    vi.advanceTimersByTime(350)
+    expect(cytoscapeMock.animations).toHaveLength(4)
+    expect(cytoscapeMock.animations[2]).toMatchObject({ ids: ['group'], duration: 175 })
+
+    controller.dispose()
+    vi.useRealTimers()
+  })
+
   it('round-robins traces and collapses bounded overflow to newest event', () => {
     vi.useFakeTimers()
     const core = createMockCore({ elements: [
