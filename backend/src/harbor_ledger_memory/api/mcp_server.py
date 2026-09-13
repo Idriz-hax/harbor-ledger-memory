@@ -28,11 +28,11 @@ from harbor_ledger_memory.domain.retrieval import QueryRequest
 from harbor_ledger_memory.graph.builder import GraphBuilder
 from harbor_ledger_memory.services.access import AccessPolicy
 from harbor_ledger_memory.services.activity import ActivityService
-from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
 from harbor_ledger_memory.services.adaptive import (
     AdaptiveService,
     FeedbackValidationError,
 )
+from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
 from harbor_ledger_memory.services.query import QueryService
 from harbor_ledger_memory.services.scan import ScanService
 from harbor_ledger_memory.services.status import (
@@ -230,9 +230,7 @@ def build_mcp_server(
         policy = _policy()
         payload = config_payload(settings)
         payload["folder_rules"] = [
-            rule
-            for rule in payload["folder_rules"]
-            if policy.can_read(rule["path"])
+            rule for rule in payload["folder_rules"] if policy.can_read(rule["path"])
         ]
         payload["effective_read_scope"] = effective_read_scope_for_policy(
             policy, settings.index_root.as_posix()
@@ -266,9 +264,7 @@ def build_mcp_server(
                 ) from exc
             graph = GraphBuilder(session, path_filter=boundary.is_admitted).build()
             result = GraphService(graph).neighbours(candidate.as_posix())
-            kept = [
-                asdict(item) for item in result if policy.can_read(item.path)
-            ]
+            kept = [asdict(item) for item in result if policy.can_read(item.path)]
             return json.dumps(kept, indent=2, default=str)
         finally:
             session.close()
@@ -348,9 +344,7 @@ def build_mcp_server(
                         )
                 if operation == "approve":
                     if caller is None:
-                        raise ToolError(
-                            "token lacks approve-own-proposals permission"
-                        )
+                        raise ToolError("token lacks approve-own-proposals permission")
                     if not caller.approve_own_proposals:
                         raise ToolError("token lacks approve-own-proposals permission")
                     if existing.creator_token_id != caller.id:
@@ -398,9 +392,7 @@ def build_mcp_server(
     @mcp.tool()
     def propose_folder(path: str) -> str:  # pyright: ignore[reportUnusedFunction]
         """Propose a policy-checked vault folder creation."""
-        return _mutation_call(
-            "request", path=path, content="", write_operation="mkdir"
-        )
+        return _mutation_call("request", path=path, content="", write_operation="mkdir")
 
     @mcp.tool()
     def approve_proposal(proposal_id: int) -> str:  # pyright: ignore[reportUnusedFunction]
@@ -443,8 +435,8 @@ def _mutation_affected_paths(
     stored_paths: list[str] | None = None,
 ) -> tuple[PurePosixPath, ...]:
     """Return current and persisted identities covered by a mutation."""
-    identity = service._validate_path(path)
-    paths = list(service._affected_paths(identity))
+    identity = service.validate_path(path)
+    paths = list(service.affected_paths(identity))
     for stored in stored_paths or []:
         candidate = PurePosixPath(stored)
         if candidate not in paths:

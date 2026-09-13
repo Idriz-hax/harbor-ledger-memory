@@ -49,9 +49,7 @@ _INITIALIZE = {
 def _settings(tmp_path: Path, mcp_enabled: bool = True) -> Settings:
     return Settings(
         vault_path=tmp_path,
-        folder_rules=(
-            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),
-        ),
+        folder_rules=(FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),),
         database_url=f"sqlite:///{tmp_path / 'mcp_disable.db'}",
         mcp=McpSettings(enabled=mcp_enabled),
     )

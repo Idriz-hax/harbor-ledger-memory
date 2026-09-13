@@ -1,9 +1,10 @@
 """Ephemeral, bounded fan-out for live vault traversal events."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from queue import Full, Queue
 from threading import RLock
-from typing import Callable, Literal
+from typing import Literal
 
 
 @dataclass(frozen=True)

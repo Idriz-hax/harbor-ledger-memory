@@ -5,9 +5,9 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import tempfile
 import tomllib
-import re
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
@@ -169,8 +169,11 @@ class FrontendSettings(BaseModel):
 
 class ThemeSettings(BaseModel):
     """Strict, server-owned visual theme configuration."""
+
     model_config = ConfigDict(extra="forbid")
-    preset: Literal["daylight", "dusk", "deepwater", "low-tide", "moonlit", "salt-marsh"] = "dusk"
+    preset: Literal[
+        "daylight", "dusk", "deepwater", "low-tide", "moonlit", "salt-marsh"
+    ] = "dusk"
     palette: dict[str, str] = Field(default_factory=dict)
     grid_size: int = Field(default=24, ge=4, le=128)
     grid_opacity: float = Field(default=0.18, ge=0.0, le=1.0)
@@ -497,8 +500,14 @@ def _environment_values() -> dict[str, Any]:
         "api": ("enabled",),
         "mcp": ("enabled",),
         "network": (
-            "enabled", "external", "host", "port", "allowed_cidrs", "tls_cert",
-            "tls_key", "insecure_http",
+            "enabled",
+            "external",
+            "host",
+            "port",
+            "allowed_cidrs",
+            "tls_cert",
+            "tls_key",
+            "insecure_http",
         ),
     }.items():
         section_values: dict[str, Any] = {}
@@ -610,9 +619,12 @@ def _toml_document(values: dict[str, Any]) -> str:
                     continue
                 lines.append("")
                 lines.append(f"[{section}.{key}]")
-                for nested_key, nested_value in sorted(value.items()):
+                nested_values = cast(dict[str, Any], value)
+                for nested_key, nested_value in sorted(nested_values.items()):
                     if not isinstance(nested_value, (dict, list, tuple)):
-                        lines.append(f"{nested_key} = {_toml_string(str(nested_value))}")
+                        lines.append(
+                            f"{nested_key} = {_toml_string(str(nested_value))}"
+                        )
     return "\n".join(lines) + "\n"
 
 

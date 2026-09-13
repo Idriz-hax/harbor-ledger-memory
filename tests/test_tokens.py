@@ -138,9 +138,7 @@ def test_create_rejects_retired_deny_level(tmp_path: Path) -> None:
         with pytest.raises(InvalidTokenRequestError) as excinfo:
             service.create(
                 "deny",
-                (
-                    FolderRule(path=PurePosixPath("AI"), access=FolderAccess.DENY),
-                ),
+                (FolderRule(path=PurePosixPath("AI"), access=FolderAccess.DENY),),
             )
         message = str(excinfo.value)
         assert "AI" in message
@@ -150,9 +148,7 @@ def test_create_rejects_retired_deny_level(tmp_path: Path) -> None:
         # The canonical equivalent is accepted.
         created = service.create(
             "none",
-            (
-                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.NONE),
-            ),
+            (FolderRule(path=PurePosixPath("AI"), access=FolderAccess.NONE),),
         )
         assert created.rules[0].access is FolderAccess.NONE
     finally:
@@ -162,8 +158,7 @@ def test_create_rejects_retired_deny_level(tmp_path: Path) -> None:
 def test_create_with_folder_rules_and_admin(tmp_path: Path) -> None:
     rules = (
         FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),
-        FolderRule(path=PurePosixPath("AI/Public"),
-                   access=FolderAccess.PROPOSE_WRITE),
+        FolderRule(path=PurePosixPath("AI/Public"), access=FolderAccess.PROPOSE_WRITE),
     )
     service = _service(tmp_path)
     try:
@@ -261,9 +256,7 @@ def test_revoke_after_name_reuse_revokes_active_row(tmp_path: Path) -> None:
 
 
 def test_backfill_legacy_tokens_is_idempotent(tmp_path: Path) -> None:
-    rules = (
-        FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
-    )
+    rules = (FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),)
     db = tmp_path / "tokens.db"
     service = TokenService(f"sqlite:///{db}")
     try:

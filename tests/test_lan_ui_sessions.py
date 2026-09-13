@@ -72,9 +72,14 @@ def test_lan_login_flags_failures_and_logout_csrf(tmp_path: Path) -> None:
     with TestClient(app, base_url="http://hlm.local") as client:
         assert client.get("/", follow_redirects=False).status_code == 303
         assert client.get("/login").status_code == 200
-        assert client.post(
-            "/login", data={"password": "wrong"}, headers={"Origin": "http://hlm.local"}
-        ).status_code == 401
+        assert (
+            client.post(
+                "/login",
+                data={"password": "wrong"},
+                headers={"Origin": "http://hlm.local"},
+            ).status_code
+            == 401
+        )
         response = client.post(
             "/login",
             data={"password": "correct horse"},
@@ -87,8 +92,7 @@ def test_lan_login_flags_failures_and_logout_csrf(tmp_path: Path) -> None:
             UI_SESSION_COOKIE in value and "HttpOnly" in value for value in cookies
         )
         assert any(
-            UI_CSRF_COOKIE in value and "SameSite=strict" in value
-            for value in cookies
+            UI_CSRF_COOKIE in value and "SameSite=strict" in value for value in cookies
         )
         csrf = client.cookies.get(UI_CSRF_COOKIE)
         assert csrf is not None
@@ -96,11 +100,14 @@ def test_lan_login_flags_failures_and_logout_csrf(tmp_path: Path) -> None:
             client.post("/logout", headers={"Origin": "http://hlm.local"}).status_code
             == 403
         )
-        assert client.post(
-            "/logout",
-            headers={"Origin": "http://hlm.local", "X-HLM-CSRF": csrf},
-            follow_redirects=False,
-        ).status_code == 303
+        assert (
+            client.post(
+                "/logout",
+                headers={"Origin": "http://hlm.local", "X-HLM-CSRF": csrf},
+                follow_redirects=False,
+            ).status_code
+            == 303
+        )
         assert client.get("/", follow_redirects=False).status_code == 303
 
 
@@ -185,12 +192,15 @@ def test_https_trusted_host_and_hsts_only_https(tmp_path: Path) -> None:
         response = client.get("/login")
         assert response.status_code == 200
         assert response.headers["strict-transport-security"]
-        assert "Secure" in client.post(
-            "/login",
-            data={"password": "correct horse"},
-            headers={"Origin": "https://hlm.local"},
-            follow_redirects=False,
-        ).headers["set-cookie"]
+        assert (
+            "Secure"
+            in client.post(
+                "/login",
+                data={"password": "correct horse"},
+                headers={"Origin": "https://hlm.local"},
+                follow_redirects=False,
+            ).headers["set-cookie"]
+        )
         assert client.get("/login", headers={"Host": "evil.local"}).status_code == 400
 
     http_root = tmp_path / "http"
@@ -215,11 +225,14 @@ def test_frontend_disabled_does_not_mint_session(tmp_path: Path) -> None:
 def test_api_and_mcp_enablement_are_independent(tmp_path: Path) -> None:
     disabled = _app(tmp_path, api_enabled=False, mcp_enabled=False)
     with TestClient(disabled, base_url="http://hlm.local") as client:
-        assert client.post(
-            "/login",
-            data={"password": "correct horse"},
-            headers={"Origin": "http://hlm.local"},
-        ).status_code == 200
+        assert (
+            client.post(
+                "/login",
+                data={"password": "correct horse"},
+                headers={"Origin": "http://hlm.local"},
+            ).status_code
+            == 200
+        )
         assert client.get("/api/v1/settings").status_code == 200
         assert client.get("/mcp").status_code == 404
         token = disabled.state.token_service.create("integration").plaintext
@@ -234,12 +247,17 @@ def test_api_and_mcp_enablement_are_independent(tmp_path: Path) -> None:
 
     enabled = _app(tmp_path / "enabled", api_enabled=True, mcp_enabled=True)
     with TestClient(enabled, base_url="http://hlm.local") as client:
-        token = TokenService(
-            f"sqlite:///{tmp_path / 'enabled' / 'lan.db'}"
-        ).create("integration").plaintext
-        assert client.get(
-            "/api/v1/status", headers={"Authorization": f"Bearer {token}"}
-        ).status_code == 200
+        token = (
+            TokenService(f"sqlite:///{tmp_path / 'enabled' / 'lan.db'}")
+            .create("integration")
+            .plaintext
+        )
+        assert (
+            client.get(
+                "/api/v1/status", headers={"Authorization": f"Bearer {token}"}
+            ).status_code
+            == 200
+        )
 
 
 def test_legacy_query_form_obeys_api_gate_and_lan_session(tmp_path: Path) -> None:
@@ -247,11 +265,14 @@ def test_legacy_query_form_obeys_api_gate_and_lan_session(tmp_path: Path) -> Non
     token = app.state.token_service.create("form-integration").plaintext
     with TestClient(app, base_url="http://hlm.local") as client:
         assert client.get("/query", follow_redirects=False).status_code == 303
-        assert client.post(
-            "/query",
-            data={"q": "memory", "token": token},
-            follow_redirects=False,
-        ).status_code == 303
+        assert (
+            client.post(
+                "/query",
+                data={"q": "memory", "token": token},
+                follow_redirects=False,
+            ).status_code
+            == 303
+        )
         login = client.post(
             "/login",
             data={"password": "correct horse"},
@@ -279,11 +300,14 @@ def test_legacy_query_form_obeys_api_gate_and_lan_session(tmp_path: Path) -> Non
 def test_lan_activity_stream_stops_after_session_revocation(tmp_path: Path) -> None:
     app = _app(tmp_path)
     with TestClient(app, base_url="http://hlm.local") as client:
-        assert client.post(
-            "/login",
-            data={"password": "correct horse"},
-            headers={"Origin": "http://hlm.local"},
-        ).status_code == 200
+        assert (
+            client.post(
+                "/login",
+                data={"password": "correct horse"},
+                headers={"Origin": "http://hlm.local"},
+            ).status_code
+            == 200
+        )
         session = client.cookies.get(UI_SESSION_COOKIE)
         assert session
         activity = app.state.activity_service
@@ -303,11 +327,14 @@ def test_lan_activity_stream_stops_after_session_revocation(tmp_path: Path) -> N
 def test_valid_lan_activity_session_still_streams(tmp_path: Path) -> None:
     app = _app(tmp_path)
     with TestClient(app, base_url="http://hlm.local") as client:
-        assert client.post(
-            "/login",
-            data={"password": "correct horse"},
-            headers={"Origin": "http://hlm.local"},
-        ).status_code == 200
+        assert (
+            client.post(
+                "/login",
+                data={"password": "correct horse"},
+                headers={"Origin": "http://hlm.local"},
+            ).status_code
+            == 200
+        )
         activity = app.state.activity_service
         event = activity.record("query", {"query": "visible"})
 
