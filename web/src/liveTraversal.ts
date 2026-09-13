@@ -20,8 +20,10 @@ export type LiveTraversalOptions = {
 
 type Pulse = {
   id: number
-  timer: number | null
+  haloTimer: number | null
+  pulseTimer: number | null
   elements: Map<string, Set<string>>
+  pulseElements: Set<string>
 }
 
 type TraceState = { pulses: Set<Pulse> }
@@ -153,13 +155,17 @@ export class LiveTraversalController {
     if (!resolved) return false
     const { node, edge } = resolved
     this.tombstones.delete(event.trace_id)
-    const pulse: Pulse = { id: ++this.pulseId, timer: null, elements: new Map() }
+    const pulse: Pulse = { id: ++this.pulseId, haloTimer: null, pulseTimer: null, elements: new Map(), pulseElements: new Set() }
     const trace = this.traces.get(event.trace_id) ?? { pulses: new Set<Pulse>() }
     trace.pulses.add(pulse)
     this.traces.set(event.trace_id, trace)
     this.sequences.set(event.trace_id, event.sequence)
     this.addOwned(event.trace_id, pulse, node, event.mode === 'write' ? 'traversal-write' : 'traversal-read')
-    this.animateNodePulse(node)
+    if (!this.options.reducedMotion) {
+      this.addOwned(event.trace_id, pulse, node, 'traversal-pulse')
+      node.forEach(element => { pulse.pulseElements.add(String(element.id())) })
+      pulse.pulseTimer = window.setTimeout(() => this.clearPulseStyle(event.trace_id, pulse), NODE_PULSE_DURATION)
+    }
 
     if (edge) {
       const edgeClass = event.mode === 'write' ? 'traversal-forward-write' : 'traversal-forward'
@@ -169,22 +175,8 @@ export class LiveTraversalController {
       }
     }
 
-    pulse.timer = window.setTimeout(() => this.clearPulse(event.trace_id, pulse), HALO_DURATION)
+    pulse.haloTimer = window.setTimeout(() => this.clearPulse(event.trace_id, pulse), HALO_DURATION)
     return true
-  }
-
-  /** Re-trigger the node halo for every hop, even when the visible node is unchanged. */
-  private animateNodePulse(node: { length: number; stop: () => unknown; animate: (options: { style: Record<string, unknown>; duration: number; complete?: () => void }) => unknown }) {
-    if (this.options.reducedMotion || !node.length) return
-    node.stop()
-    node.animate({
-      style: { 'shadow-blur': 28, 'shadow-opacity': 1 },
-      duration: NODE_PULSE_DURATION,
-      complete: () => node.animate({
-        style: { 'shadow-blur': 16, 'shadow-opacity': 0.72 },
-        duration: NODE_PULSE_DURATION,
-      }),
-    })
   }
 
   private isRenderable(event: LiveTraversalEvent) {
@@ -270,10 +262,28 @@ export class LiveTraversalController {
     })
   }
 
+  private clearPulseStyle(traceId: string, pulse: Pulse) {
+    if (!pulse.pulseElements.size) return
+    for (const id of pulse.pulseElements) this.removeOwned(traceId, pulse, id, 'traversal-pulse')
+    pulse.pulseElements.clear()
+  }
+
+  private removeOwned(traceId: string, pulse: Pulse, id: string, className: string) {
+    const key = `${id}:${className}`
+    const owners = this.classOwners.get(key)
+    owners?.delete(`${traceId}:${pulse.id}`)
+    if (!owners || owners.size === 0) {
+      this.core.getElementById(id).removeClass(className)
+      this.classOwners.delete(key)
+    }
+    pulse.elements.get(id)?.delete(className)
+  }
+
   private clearPulse(traceId: string, pulse: Pulse) {
     const trace = this.traces.get(traceId)
     if (!trace || !trace.pulses.delete(pulse)) return
-    if (pulse.timer !== null) window.clearTimeout(pulse.timer)
+    if (pulse.haloTimer !== null) window.clearTimeout(pulse.haloTimer)
+    if (pulse.pulseTimer !== null) window.clearTimeout(pulse.pulseTimer)
     for (const [id, classes] of pulse.elements) {
       const element = this.core.getElementById(id)
       classes.forEach(className => {
