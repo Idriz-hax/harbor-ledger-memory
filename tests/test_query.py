@@ -1,8 +1,8 @@
 """End-to-end fixture tests for the QueryService orchestration."""
 
 import json
-from queue import Empty
 from pathlib import Path
+from queue import Empty
 
 from sqlalchemy import String, Text, select
 
@@ -22,9 +22,12 @@ from harbor_ledger_memory.domain.retrieval import (
     QueryResult,
     QuerySettings,
 )
+from harbor_ledger_memory.services.live_traversal import (
+    LiveTraversalPublisher,
+    TraversalEvent,
+)
 from harbor_ledger_memory.services.memory import MemoryService
 from harbor_ledger_memory.services.query import QueryService
-from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher, TraversalEvent
 
 
 def _seed_catalog(tmp_path: Path) -> str:
@@ -87,7 +90,9 @@ def _seed_catalog(tmp_path: Path) -> str:
     return db_path
 
 
-def test_query_live_events_apply_the_service_policy_to_nodes_and_edges(tmp_path: Path) -> None:
+def test_query_live_events_apply_the_service_policy_to_nodes_and_edges(
+    tmp_path: Path,
+) -> None:
     db_path = _seed_catalog(tmp_path)
     engine = create_database(f"sqlite:///{db_path}")
     session = CatalogSession(bind=engine)
@@ -107,7 +112,9 @@ def test_query_live_events_apply_the_service_policy_to_nodes_and_edges(tmp_path:
             except Empty:
                 break
         assert events
-        assert all(event.node_path == "AI/Knowledge/memory-systems.md" for event in events)
+        assert all(
+            event.node_path == "AI/Knowledge/memory-systems.md" for event in events
+        )
         assert all(
             endpoint is None or endpoint == "AI/Knowledge/memory-systems.md"
             for event in events

@@ -103,11 +103,14 @@ def test_mcp_http_always_locked(tmp_path: Path) -> None:
         assert bad_resp.status_code == 401
         assert bad_resp.json() == _AUTH_REQUIRED_BODY
         _, plaintext = service.create("agent")
-        assert client.post(
-            "/mcp/",
-            json=_INITIALIZE,
-            headers={**_MCP_HEADERS, "Authorization": f"Bearer {plaintext}"},
-        ).status_code == 200
+        assert (
+            client.post(
+                "/mcp/",
+                json=_INITIALIZE,
+                headers={**_MCP_HEADERS, "Authorization": f"Bearer {plaintext}"},
+            ).status_code
+            == 200
+        )
 
 
 def test_ui_cookie_never_authenticates_mcp(tmp_path: Path) -> None:
@@ -232,12 +235,8 @@ def test_mcp_propose_write_path_check(tmp_path: Path) -> None:
         token = hlm_mcp_token.set(reader)
         try:
             with pytest.raises(ToolError) as exc_info:
-                _call(
-                    server, "propose_write", {"path": "AI/x.md", "content": "# X"}
-                )
-            assert "path 'AI/x.md' not writable by this token" in str(
-                exc_info.value
-            )
+                _call(server, "propose_write", {"path": "AI/x.md", "content": "# X"})
+            assert "path 'AI/x.md' not writable by this token" in str(exc_info.value)
         finally:
             hlm_mcp_token.reset(token)
 
@@ -257,12 +256,8 @@ def test_mcp_propose_write_path_check(tmp_path: Path) -> None:
         token = hlm_mcp_token.set(admin)
         try:
             with pytest.raises(ToolError) as exc_info:
-                _call(
-                    server, "propose_write", {"path": "AI/y.md", "content": "# Y"}
-                )
-            assert "path 'AI/y.md' not writable by this token" in str(
-                exc_info.value
-            )
+                _call(server, "propose_write", {"path": "AI/y.md", "content": "# Y"})
+            assert "path 'AI/y.md' not writable by this token" in str(exc_info.value)
         finally:
             hlm_mcp_token.reset(token)
     finally:
@@ -351,15 +346,13 @@ def test_mcp_approve_reject_check_proposal_path(tmp_path: Path) -> None:
         token = hlm_mcp_token.set(writer)
         try:
             first = json.loads(
-                _call(
-                    server, "propose_write", {"path": "AI/x.md", "content": "# X"}
-                ).content[0]
+                _call(server, "propose_write", {"path": "AI/x.md", "content": "# X"})
+                .content[0]
                 .text
             )
             second = json.loads(
-                _call(
-                    server, "propose_write", {"path": "AI/z.md", "content": "# Z"}
-                ).content[0]
+                _call(server, "propose_write", {"path": "AI/z.md", "content": "# Z"})
+                .content[0]
                 .text
             )
         finally:
@@ -370,14 +363,10 @@ def test_mcp_approve_reject_check_proposal_path(tmp_path: Path) -> None:
         try:
             with pytest.raises(ToolError) as exc_info:
                 _call(server, "approve_proposal", {"proposal_id": first["id"]})
-            assert "path 'AI/x.md' not writable by this token" in str(
-                exc_info.value
-            )
+            assert "path 'AI/x.md' not writable by this token" in str(exc_info.value)
             with pytest.raises(ToolError) as exc_info:
                 _call(server, "reject_proposal", {"proposal_id": second["id"]})
-            assert "path 'AI/z.md' not writable by this token" in str(
-                exc_info.value
-            )
+            assert "path 'AI/z.md' not writable by this token" in str(exc_info.value)
         finally:
             hlm_mcp_token.reset(token)
 
@@ -417,9 +406,7 @@ def test_mcp_approval_requires_opt_in_and_creator_match(tmp_path: Path) -> None:
         rules = [
             FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)
         ]
-        creator, _ = service.create(
-            "creator", rules=rules, approve_own_proposals=True
-        )
+        creator, _ = service.create("creator", rules=rules, approve_own_proposals=True)
         other, _ = service.create("other", rules=rules, approve_own_proposals=True)
         plain, _ = service.create("plain", rules=rules)
 
@@ -430,7 +417,9 @@ def test_mcp_approval_requires_opt_in_and_creator_match(tmp_path: Path) -> None:
                     server,
                     "propose_write",
                     {"path": "AI/owned.md", "content": "# Owned"},
-                ).content[0].text
+                )
+                .content[0]
+                .text
             )
             assert proposal["creator_token_id"] == creator.id
         finally:

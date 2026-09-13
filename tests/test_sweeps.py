@@ -94,8 +94,7 @@ def _seed_vault_files(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (tmp_path / "Secret" / "deep.md").write_text(
-        "---\ntype: knowledge\nstatus: active\n---\n"
-        "# Deep\nDeep private note.\n",
+        "---\ntype: knowledge\nstatus: active\n---\n# Deep\nDeep private note.\n",
         encoding="utf-8",
     )
 
@@ -140,9 +139,7 @@ def test_writes_list_sweeps_unreadable_proposals(tmp_path: Path) -> None:
         }
 
         swept = client.get("/api/v1/writes", headers=_headers(reader)).json()
-        assert [proposal["path"] for proposal in swept["proposals"]] == [
-            _VISIBLE_WRITE
-        ]
+        assert [proposal["path"] for proposal in swept["proposals"]] == [_VISIBLE_WRITE]
 
 
 def test_trace_replay_sweeps_unreadable_paths_and_edges(tmp_path: Path) -> None:
@@ -159,9 +156,7 @@ def test_trace_replay_sweeps_unreadable_paths_and_edges(tmp_path: Path) -> None:
         assert query.status_code == 200
         trace_id = query.json()["trace_id"]
 
-        full = client.get(
-            f"/api/v1/traces/{trace_id}", headers=_headers(admin)
-        ).json()
+        full = client.get(f"/api/v1/traces/{trace_id}", headers=_headers(admin)).json()
         full_selected = {selection["path"] for selection in full["selected_paths"]}
         assert "Secret/hidden.md" in full_selected
         # Sanity: hidden drives activation of both neighbours, so the

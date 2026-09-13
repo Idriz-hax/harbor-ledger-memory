@@ -335,9 +335,11 @@ def test_cli_keeps_running_when_skill_sync_fails(monkeypatch, tmp_path: Path):
 
 
 def test_bundled_skill_documents_read_tools_and_write_semantics() -> None:
-    skill = Path(
-        "backend/src/harbor_ledger_memory/skills/harbor-ledger-memory/SKILL.md"
-    ).read_text(encoding="utf-8").lower()
+    skill = (
+        Path("backend/src/harbor_ledger_memory/skills/harbor-ledger-memory/SKILL.md")
+        .read_text(encoding="utf-8")
+        .lower()
+    )
     for tool in ("status", "settings_snapshot", "query", "neighbours", "scan"):
         assert tool in skill
     for access in ("default", "read", "deny"):
@@ -364,9 +366,7 @@ def test_serve_allows_loopback_hosts(monkeypatch, tmp_path: Path, host: str) -> 
     monkeypatch.setattr(
         cli,
         "_load_settings",
-        lambda: Settings(
-            vault_path=tmp_path, frontend=FrontendSettings(enabled=True)
-        ),
+        lambda: Settings(vault_path=tmp_path, frontend=FrontendSettings(enabled=True)),
     )
     monkeypatch.setattr(cli, "create_app", lambda settings, **kwargs: object())
     monkeypatch.setattr(
@@ -561,7 +561,7 @@ def test_serve_valid_https_lan_wires_tls_transport(
     monkeypatch.setattr(
         cli,
         "create_app",
-        lambda settings, **kwargs: (origins.append(kwargs["ui_origin"]) or object()),
+        lambda settings, **kwargs: origins.append(kwargs["ui_origin"]) or object(),
     )
     monkeypatch.setattr(
         "uvicorn.run", lambda application, **kwargs: calls.append(kwargs)
@@ -592,7 +592,7 @@ def test_serve_valid_insecure_http_lan_omits_ssl_transport(
     monkeypatch.setattr(
         cli,
         "create_app",
-        lambda settings, **kwargs: (origins.append(kwargs["ui_origin"]) or object()),
+        lambda settings, **kwargs: origins.append(kwargs["ui_origin"]) or object(),
     )
     monkeypatch.setattr(
         "uvicorn.run", lambda application, **kwargs: calls.append(kwargs)
@@ -649,9 +649,7 @@ def test_serve_backfills_legacy_tokens_before_serving(
             )
         )
     engine.dispose()
-    expected = FolderRule(
-        path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE
-    )
+    expected = FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)
     monkeypatch.setattr(
         cli,
         "_load_settings",
@@ -661,9 +659,7 @@ def test_serve_backfills_legacy_tokens_before_serving(
     def fake_app(settings: Settings, **kwargs: object) -> object:
         return object()
 
-    def fake_run(
-        application: object, *, host: str, port: int, log_level: str
-    ) -> None:
+    def fake_run(application: object, *, host: str, port: int, log_level: str) -> None:
         return None
 
     monkeypatch.setattr(cli, "create_app", fake_app)

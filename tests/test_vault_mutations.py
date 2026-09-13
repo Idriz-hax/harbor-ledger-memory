@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-from queue import Empty
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
+from queue import Empty
 
 import pytest
 from sqlalchemy import select
@@ -25,7 +25,10 @@ from harbor_ledger_memory.config import (
     Settings,
 )
 from harbor_ledger_memory.services.activity import ActivityService
-from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher, TraversalEvent
+from harbor_ledger_memory.services.live_traversal import (
+    LiveTraversalPublisher,
+    TraversalEvent,
+)
 from harbor_ledger_memory.services.vault_mutations import (
     VaultMutationService,
     VaultWriteDenied,
@@ -77,7 +80,9 @@ def test_approval_and_post_write_scan_share_ordered_trace(tmp_path: Path) -> Non
     settings = _build_settings(
         tmp_path,
         folder_rules=(
-            FolderRule(path=PurePosixPath("AI/proposed"), access=FolderAccess.PROPOSE_WRITE),
+            FolderRule(
+                path=PurePosixPath("AI/proposed"), access=FolderAccess.PROPOSE_WRITE
+            ),
         ),
     )
     note = _write_note(
@@ -91,8 +96,12 @@ def test_approval_and_post_write_scan_share_ordered_trace(tmp_path: Path) -> Non
     engine = create_database(settings.database_url)
     session = CatalogSession(bind=engine)
     try:
-        service = VaultMutationService.from_settings(session, settings, live_traversal=publisher)
-        proposal = service.request(note.relative_to(settings.vault_path).as_posix(), "# New")
+        service = VaultMutationService.from_settings(
+            session, settings, live_traversal=publisher
+        )
+        proposal = service.request(
+            note.relative_to(settings.vault_path).as_posix(), "# New"
+        )
         while True:
             try:
                 subscription.get_nowait()
@@ -117,7 +126,9 @@ def test_saturated_traversal_subscriber_does_not_block_approval(tmp_path: Path) 
     settings = _build_settings(
         tmp_path,
         folder_rules=(
-            FolderRule(path=PurePosixPath("AI/proposed"), access=FolderAccess.PROPOSE_WRITE),
+            FolderRule(
+                path=PurePosixPath("AI/proposed"), access=FolderAccess.PROPOSE_WRITE
+            ),
         ),
     )
     publisher = LiveTraversalPublisher(queue_size=1)
@@ -125,7 +136,9 @@ def test_saturated_traversal_subscriber_does_not_block_approval(tmp_path: Path) 
     engine = create_database(settings.database_url)
     session = CatalogSession(bind=engine)
     try:
-        service = VaultMutationService.from_settings(session, settings, live_traversal=publisher)
+        service = VaultMutationService.from_settings(
+            session, settings, live_traversal=publisher
+        )
         proposal = service.request("AI/proposed/saturated.md", "# New")
         result = service.approve(proposal.id)
         assert result.status == "applied"
@@ -571,6 +584,7 @@ class TestApprovalWorkflow:
             if event.event_type == "vault.mutation.failed"
         )
         assert event.payload["created_paths"] == ["AI/partial"]
+
     def test_approve_writes_and_marks_applied(self, tmp_path: Path) -> None:
         settings = _build_settings(
             tmp_path,

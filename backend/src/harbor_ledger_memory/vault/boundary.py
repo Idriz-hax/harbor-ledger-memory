@@ -35,7 +35,9 @@ def _no_follow_flag() -> int:
     try:
         return os.O_NOFOLLOW
     except AttributeError as exc:
-        raise VaultPathError("secure no-follow directory traversal is unavailable") from exc
+        raise VaultPathError(
+            "secure no-follow directory traversal is unavailable"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -278,7 +280,9 @@ class VaultBoundary:
         finally:
             os.close(fd)
 
-    def missing_parent_paths(self, identity: PurePosixPath) -> tuple[PurePosixPath, ...]:
+    def missing_parent_paths(
+        self, identity: PurePosixPath
+    ) -> tuple[PurePosixPath, ...]:
         """Return missing parent directories without modifying the vault."""
         self._check_index_root_integrity()
         relative = self._relative_within_index(identity)

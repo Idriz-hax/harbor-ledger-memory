@@ -180,6 +180,7 @@ def test_settings_update_does_not_split_live_rest_and_mcp_policy(
             == 200
         )
 
+
 def test_app_lifespan_scans_then_starts_and_stops_watcher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -566,9 +567,7 @@ def _client_with_rules(
     _, plaintext = application.state.token_service.create(
         f"test-token-{uuid4().hex}", rules=rules, admin=admin
     )
-    return TestClient(
-        application, headers={"Authorization": f"Bearer {plaintext}"}
-    )
+    return TestClient(application, headers={"Authorization": f"Bearer {plaintext}"})
 
 
 def test_proposal_requires_approval_then_writes(tmp_path: Path) -> None:
@@ -983,9 +982,7 @@ def test_write_events_reach_preconnected_sse_and_rest_history(tmp_path: Path) ->
     application = create_app(settings)
     _, plaintext = application.state.token_service.create(
         "test-admin",
-        rules=[
-            FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)
-        ],
+        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)],
         admin=True,
     )
 
@@ -1025,9 +1022,7 @@ def test_write_events_reach_preconnected_sse_and_rest_history(tmp_path: Path) ->
         "state": {},
     }
 
-    client = TestClient(
-        application, headers={"Authorization": f"Bearer {plaintext}"}
-    )
+    client = TestClient(application, headers={"Authorization": f"Bearer {plaintext}"})
     with client:  # lifespan records the startup scan before the stream opens
         portal = client.portal
         assert portal is not None
@@ -1190,9 +1185,7 @@ def _managed_vault(tmp_path: Path) -> tuple[Path, Settings, str]:
     return vault, settings, original
 
 
-def _bearer_headers(
-    token_service: Any, names: list[str]
-) -> dict[str, dict[str, str]]:
+def _bearer_headers(token_service: Any, names: list[str]) -> dict[str, dict[str, str]]:
     """Bearer header dicts for freshly created single-rule tokens."""
     access_by_name = {
         "propose": FolderAccess.PROPOSE_WRITE,
@@ -1262,9 +1255,7 @@ def test_approval_revalidates_access_rules_after_changes(tmp_path: Path) -> None
 
     # The approver's grant denies the path: the approval 403s and the
     # proposal stays pending for a caller that can write it.
-    denied = client.post(
-        f"/api/v1/writes/{create_id}/approve", headers=headers["deny"]
-    )
+    denied = client.post(f"/api/v1/writes/{create_id}/approve", headers=headers["deny"])
     assert denied.status_code == 403
     assert denied.json() == {
         "detail": "path 'AI/managed/later.md' not writable by this token"
@@ -1272,9 +1263,9 @@ def test_approval_revalidates_access_rules_after_changes(tmp_path: Path) -> None
 
     listing = {
         proposal["id"]: proposal
-        for proposal in client.get(
-            "/api/v1/writes", headers=headers["propose"]
-        ).json()["proposals"]
+        for proposal in client.get("/api/v1/writes", headers=headers["propose"]).json()[
+            "proposals"
+        ]
     }
     assert listing[create_id]["status"] == "pending"
     assert listing[create_id]["failure_reason"] is None
@@ -1323,9 +1314,7 @@ def test_read_or_deny_rules_before_approval_block_the_write(tmp_path: Path) -> N
     )
     assert second.status_code == 200
     second_id = second.json()["id"]
-    denied = client.post(
-        f"/api/v1/writes/{second_id}/approve", headers=headers["deny"]
-    )
+    denied = client.post(f"/api/v1/writes/{second_id}/approve", headers=headers["deny"])
     assert denied.status_code == 403
     assert denied.json() == {
         "detail": "path 'AI/managed/note.md' not writable by this token"
@@ -1334,9 +1323,9 @@ def test_read_or_deny_rules_before_approval_block_the_write(tmp_path: Path) -> N
     # Both proposals are still pending and neither write touched the vault.
     listing = {
         proposal["id"]: proposal
-        for proposal in client.get(
-            "/api/v1/writes", headers=headers["propose"]
-        ).json()["proposals"]
+        for proposal in client.get("/api/v1/writes", headers=headers["propose"]).json()[
+            "proposals"
+        ]
     }
     assert listing[update_id]["status"] == "pending"
     assert listing[update_id]["failure_reason"] is None
@@ -1419,14 +1408,10 @@ def test_post_write_scan_reaches_application_activity_service(
     application = create_app(settings)
     _, plaintext = application.state.token_service.create(
         "test-admin",
-        rules=[
-            FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)
-        ],
+        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)],
         admin=True,
     )
-    client = TestClient(
-        application, headers={"Authorization": f"Bearer {plaintext}"}
-    )
+    client = TestClient(application, headers={"Authorization": f"Bearer {plaintext}"})
     with client:  # startup scan is recorded before the subscription
         subscriber = application.state.activity_service.subscribe()
         write_path = "AI/proposed/rescan.md"

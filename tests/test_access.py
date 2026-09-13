@@ -115,6 +115,8 @@ def test_readable_paths_filters_in_order() -> None:
         FolderRule(path=PurePosixPath("Private"), access=FolderAccess.NONE)
     )
 
-    assert policy.readable_paths(
-        ["AI/a.md", "Private/a.md", "AI/b.md", "AI/a.md"]
-    ) == ["AI/a.md", "AI/b.md", "AI/a.md"]
+    assert policy.readable_paths(["AI/a.md", "Private/a.md", "AI/b.md", "AI/a.md"]) == [
+        "AI/a.md",
+        "AI/b.md",
+        "AI/a.md",
+    ]

@@ -106,11 +106,7 @@ def test_graph_view_level_two_returns_edge_type(tmp_path: Path) -> None:
 
     assert resp.status_code == 200
     edges = resp.json()["edges"]
-    link_edge = next(
-        edge
-        for edge in edges
-        if edge["source"] != edge["target"]
-    )
+    link_edge = next(edge for edge in edges if edge["source"] != edge["target"])
     assert link_edge["edge_type"] == "links_to"
 
 

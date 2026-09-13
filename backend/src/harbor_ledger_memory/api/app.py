@@ -5,17 +5,17 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
-from dataclasses import asdict
-from queue import Empty
 import secrets
 import subprocess
 import sys
 import time
 from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from importlib import metadata as importlib_metadata
 from importlib import resources
 from pathlib import Path, PurePosixPath
+from queue import Empty
 from typing import Any, Literal, cast
 
 import httpx
@@ -73,14 +73,17 @@ from harbor_ledger_memory.services.adaptive import (
     AdaptiveService,
     FeedbackValidationError,
 )
-from harbor_ledger_memory.services.graph_projection import GraphHandleError, GraphProjectionService
-from harbor_ledger_memory.services.memory import MemoryService
-from harbor_ledger_memory.services.query import QueryService
-from harbor_ledger_memory.services.scan import ScanService
+from harbor_ledger_memory.services.graph_projection import (
+    GraphHandleError,
+    GraphProjectionService,
+)
 from harbor_ledger_memory.services.live_traversal import (
     LiveTraversalPublisher,
     TraversalEvent,
 )
+from harbor_ledger_memory.services.memory import MemoryService
+from harbor_ledger_memory.services.query import QueryService
+from harbor_ledger_memory.services.scan import ScanService
 from harbor_ledger_memory.services.status import (
     CatalogStatusService,
     token_status_payload,
@@ -207,8 +210,12 @@ def _set_ui_cookies(
         secure=secure,
     )
     response.set_cookie(
-        UI_CSRF_COOKIE, service.csrf(session) or "", httponly=False,
-        samesite="strict", path="/", secure=secure,
+        UI_CSRF_COOKIE,
+        service.csrf(session) or "",
+        httponly=False,
+        samesite="strict",
+        path="/",
+        secure=secure,
     )
 
 
@@ -466,6 +473,7 @@ class GraphSnapshotResponse(BaseModel):
 
 class GraphClusterResponse(BaseModel):
     """One bounded cluster. ``scope`` is the stable drill-down scope."""
+
     model_config = ConfigDict(extra="forbid")
     id: str
     label: str
@@ -490,6 +498,7 @@ class GraphViewResponse(BaseModel):
     Level 2 requires an authorized ``scope``; responses never include member
     paths, and ``generation`` hashes only the returned authorized view.
     """
+
     model_config = ConfigDict(extra="forbid")
     level: int
     scope: str | None
@@ -607,7 +616,9 @@ def create_app(
     application.state.frontend_enabled = settings.frontend.enabled
     application.state.api_enabled = settings.api.enabled
     application.state.frontend_mode = settings.frontend.mode
-    application.state.secure_cookies = bool(ui_origin and ui_origin.startswith("https://"))
+    application.state.secure_cookies = bool(
+        ui_origin and ui_origin.startswith("https://")
+    )
     application.state.login_throttle = {}  # type: ignore[attr-defined]
 
     if settings.frontend.mode == "lan":
@@ -712,7 +723,9 @@ def create_app(
             result.set_cookie(
                 UI_CSRF_COOKIE,
                 ui_session_service.csrf(new_session) or "",
-                httponly=False, samesite="strict", path="/",
+                httponly=False,
+                samesite="strict",
+                path="/",
                 secure=application.state.secure_cookies,
             )
         return result
@@ -720,7 +733,7 @@ def create_app(
     @application.get("/login")
     def login_page() -> HTMLResponse:  # pyright: ignore[reportUnusedFunction]
         return HTMLResponse(
-            '<!doctype html><title>Harbor Ledger Memory — Log in</title>'
+            "<!doctype html><title>Harbor Ledger Memory — Log in</title>"
             '<form method="post">'
             '<label>Password <input type="password" name="password" autofocus></label>'
             '<button type="submit">Log in</button></form>'
@@ -763,8 +776,7 @@ def create_app(
         if (
             not ui_session_service.authenticate(session)
             or request.headers.get("origin") != application.state.ui_origin
-            or request.headers.get("X-HLM-CSRF")
-            != ui_session_service.csrf(session)
+            or request.headers.get("X-HLM-CSRF") != ui_session_service.csrf(session)
         ):
             raise HTTPException(status_code=403, detail="logout unavailable")
         ui_session_service.revoke(session)
@@ -838,7 +850,9 @@ def create_app(
         session = CatalogSession(bind=engine)
         try:
             service = VaultMutationService.from_settings(
-                session, settings, activity_service=activity_service,
+                session,
+                settings,
+                activity_service=activity_service,
                 live_traversal=live_traversal,
             )
             _require_mutation_paths_writable(
@@ -915,11 +929,16 @@ def create_app(
             if existing is None:
                 raise HTTPException(status_code=404, detail=f"proposal {id} not found")
             service = VaultMutationService.from_settings(
-                session, settings, activity_service=activity_service,
+                session,
+                settings,
+                activity_service=activity_service,
                 live_traversal=live_traversal,
             )
             _require_mutation_paths_writable(
-                auth, _mutation_affected_paths(service, existing.path, existing.affected_paths)
+                auth,
+                _mutation_affected_paths(
+                    service, existing.path, existing.affected_paths
+                ),
             )
             proposal = service.approve(id, policy=auth.policy)
             return _write_response(proposal)
@@ -947,11 +966,16 @@ def create_app(
             if existing is None:
                 raise HTTPException(status_code=404, detail=f"proposal {id} not found")
             service = VaultMutationService.from_settings(
-                session, settings, activity_service=activity_service,
+                session,
+                settings,
+                activity_service=activity_service,
                 live_traversal=live_traversal,
             )
             _require_mutation_paths_writable(
-                auth, _mutation_affected_paths(service, existing.path, existing.affected_paths)
+                auth,
+                _mutation_affected_paths(
+                    service, existing.path, existing.affected_paths
+                ),
             )
             proposal = service.reject(id)
             return _write_response(proposal)
@@ -1057,7 +1081,7 @@ def create_app(
         )
 
     @application.get("/api/v1/graph/traversal/stream")
-    def traversal_stream(
+    def traversal_stream(  # pyright: ignore[reportUnusedFunction] -- FastAPI registers route decorators.
         auth: AuthContext = Depends(authenticated),
     ) -> StreamingResponse:
         """Stream newly published traversal events visible to this caller.
@@ -1094,9 +1118,11 @@ def create_app(
         )
 
     @application.get("/api/v1/graph/view", response_model=GraphViewResponse)
-    def graph_view(
-        level: int = Query(0), scope: str | None = Query(None),
-        page_size: int = Query(100), cursor: str | None = Query(None),
+    def graph_view(  # pyright: ignore[reportUnusedFunction] -- FastAPI registers route decorators.
+        level: int = Query(0),
+        scope: str | None = Query(None),
+        page_size: int = Query(100),
+        cursor: str | None = Query(None),
         auth: AuthContext = Depends(authenticated),
     ) -> GraphViewResponse:
         engine = create_database(settings.database_url)
@@ -1104,20 +1130,28 @@ def create_app(
         try:
             try:
                 view = GraphProjectionService(session).view(
-                    level, scope=scope, path_filter=auth.policy.can_read,
+                    level,
+                    scope=scope,
+                    path_filter=auth.policy.can_read,
                     policy=auth.policy,
-                    policy_fingerprint=auth.policy.fingerprint(), cursor=cursor,
-                    page_size=page_size, cursor_secret=graph_cursor_secret,
+                    policy_fingerprint=auth.policy.fingerprint(),
+                    cursor=cursor,
+                    page_size=page_size,
+                    cursor_secret=graph_cursor_secret,
                 )
             except GraphHandleError:
-                raise HTTPException(status_code=400, detail="graph view handle invalid or expired; restart the view") from None
+                raise HTTPException(
+                    status_code=400,
+                    detail="graph view handle invalid or expired; restart the view",
+                ) from None
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         finally:
             session.close()
             engine.dispose()
         return GraphViewResponse(
-            level=view.level, scope=view.scope,
+            level=view.level,
+            scope=view.scope,
             clusters=[
                 GraphClusterResponse(
                     id=cluster.id,
@@ -1157,7 +1191,9 @@ def create_app(
                 session,
                 retrieval_settings=settings.retrieval,
                 memory_settings=settings.memory,
-                path_filter=lambda path: boundary.is_admitted(path) and auth.policy.can_read(path),
+                path_filter=lambda path: (
+                    boundary.is_admitted(path) and auth.policy.can_read(path)
+                ),
                 activity_service=activity_service,
                 live_traversal=live_traversal,
             )
@@ -1274,8 +1310,7 @@ def create_app(
                         activation_score=sel.activation_score,
                     )
                     for sel in trace.selections
-                    if boundary.is_admitted(sel.path)
-                    and auth.policy.can_read(sel.path)
+                    if boundary.is_admitted(sel.path) and auth.policy.can_read(sel.path)
                 ],
                 activation_graph=[
                     TraceVisitResponse(
@@ -1288,10 +1323,7 @@ def create_app(
                     for visit in trace.visits
                     if boundary.is_admitted(visit.path)
                     and auth.policy.can_read(visit.path)
-                    and (
-                        visit.via_path is None
-                        or auth.policy.can_read(visit.via_path)
-                    )
+                    and (visit.via_path is None or auth.policy.can_read(visit.via_path))
                 ],
                 created_at=trace.created_at,
             )
@@ -1777,8 +1809,8 @@ def _mutation_affected_paths(
     stored_paths: Sequence[str] = (),
 ) -> tuple[PurePosixPath, ...]:
     """Return current and persisted identities covered by a mutation."""
-    identity = service._validate_path(path)
-    paths = list(service._affected_paths(identity))
+    identity = service.validate_path(path)
+    paths = list(service.affected_paths(identity))
     for stored in stored_paths:
         candidate = PurePosixPath(stored)
         if candidate not in paths:

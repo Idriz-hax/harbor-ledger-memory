@@ -98,9 +98,7 @@ def test_feedback_api_binds_json_body_and_returns_adjustments(tmp_path: Path) ->
     """POST /api/v1/feedback binds JSON to the request model, not query params."""
     settings = _seed_catalog_for_query(tmp_path)
     client = authed_client(settings)
-    query_response = client.post(
-        "/api/v1/queries", json={"query": "memory systems"}
-    )
+    query_response = client.post("/api/v1/queries", json={"query": "memory systems"})
     trace_id = query_response.json()["trace_id"]
     selected_path = query_response.json()["selected_memories"][0]["path"]
 

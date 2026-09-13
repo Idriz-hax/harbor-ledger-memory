@@ -13,8 +13,8 @@ import pytest
 from harbor_ledger_memory.config import Settings
 from harbor_ledger_memory.vault.boundary import (
     AdmittedFileSnapshot,
-    DirectoryWriteResult,
     DirectoryCreationError,
+    DirectoryWriteResult,
     FileVersion,
     VaultBoundary,
     VaultPathError,
@@ -159,6 +159,7 @@ class TestAtomicMkdir:
             PurePosixPath("first/second"),
         )
         assert (vault / "first").is_dir()
+
     def test_atomic_mkdir_closes_returned_fd_in_finally(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -192,7 +193,9 @@ class TestAtomicMkdir:
         real_open = os.open
         reopened = False
 
-        def _mark_mkdir(path: str, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        def _mark_mkdir(
+            path: str, mode: int = 0o777, *, dir_fd: int | None = None
+        ) -> None:
             nonlocal reopened
             real_mkdir(path, mode, dir_fd=dir_fd)
             reopened = True

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import json
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String, Text, text
@@ -129,7 +129,9 @@ class GraphProjectionVersion(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     created_at: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
 
 
 class GraphSnapshotHandle(Base):
@@ -153,8 +155,11 @@ class GraphNodeFact(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     version_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("graph_projection_versions.id", ondelete="CASCADE"),
-        nullable=False, index=True, primary_key=True,
+        String(64),
+        ForeignKey("graph_projection_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        primary_key=True,
     )
     path: Mapped[str] = mapped_column(PosixPathType(), nullable=False, index=True)
     parent_folder: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -170,8 +175,11 @@ class GraphEdgeFact(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     version_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("graph_projection_versions.id", ondelete="CASCADE"),
-        nullable=False, index=True, primary_key=True,
+        String(64),
+        ForeignKey("graph_projection_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        primary_key=True,
     )
     source: Mapped[str] = mapped_column(PosixPathType(), nullable=False, index=True)
     target: Mapped[str] = mapped_column(PosixPathType(), nullable=False, index=True)
@@ -423,7 +431,10 @@ def _decode_path_list(value: str | None) -> list[str]:
     if not value:
         return []
     decoded = json.loads(value)
-    return decoded if isinstance(decoded, list) else []
+    if not isinstance(decoded, list):
+        return []
+    values = cast(list[Any], decoded)
+    return [item for item in values if isinstance(item, str)]
 
 
 class ApiToken(Base):

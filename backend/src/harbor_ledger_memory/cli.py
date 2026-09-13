@@ -166,8 +166,7 @@ def _parse_rule(raw: str) -> FolderRule:
         return FolderRule.model_validate({"path": path_text, "access": level})
     except ValidationError as exc:
         raise typer.BadParameter(
-            f"rule '{raw}' has an invalid path; "
-            f"valid levels: {', '.join(RULE_LEVELS)}"
+            f"rule '{raw}' has an invalid path; valid levels: {', '.join(RULE_LEVELS)}"
         ) from exc
 
 
@@ -380,9 +379,7 @@ def config_set_password() -> None:
     """Interactively set the Argon2id verifier for LAN frontend access."""
     target = config_path()
     if target.exists() and target.stat().st_mode & 0o077:
-        raise typer.BadParameter(
-            f"config file {target} must be owner-only (mode 0600)"
-        )
+        raise typer.BadParameter(f"config file {target} must be owner-only (mode 0600)")
     password = getpass.getpass("Password: ")
     confirmation = getpass.getpass("Confirm password: ")
     if password != confirmation:
@@ -930,6 +927,7 @@ def feedback(
             AdaptiveService,
             FeedbackValidationError,
         )
+
         boundary = VaultBoundary(s)
 
         adaptive = AdaptiveService(session, s.memory)
