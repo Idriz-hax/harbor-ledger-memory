@@ -36,6 +36,8 @@ import '@fontsource/ibm-plex-sans/600.css'
 import '@fontsource/ibm-plex-mono/400.css'
 
 type Screen = 'graph' | 'approvals' | 'settings'
+const RETURN_SCREEN_KEY = 'hlm_ui_return_screen'
+const KEEPALIVE_MS = 25 * 60 * 1000
 const SCREEN_META: Record<Screen, { label: string; icon: string; description: string }> = {
   graph: { label: 'Memory Chart', icon: '⌁', description: 'Explore linked notes and live memory routes' },
   approvals: { label: 'Approvals', icon: '✓', description: 'Review pending vault writes' },
@@ -77,6 +79,7 @@ export const api = async <T,>(url: string, init?: RequestInit) => {
   const response = await fetch(url, requestInit)
   if (!response.ok) {
     const text = await response.text().catch(() => '')
+    if (response.status === 401 && typeof window !== 'undefined') window.dispatchEvent(new Event('hlm-ui-session-expired'))
     throw new APIError(response.status, errorDetail(text) || response.statusText)
   }
   return response.json() as Promise<T>
@@ -102,7 +105,11 @@ const prefersReducedMotion = () => typeof window !== 'undefined' && window.match
 
 /* --- App shell --- */
 export function App() {
-  const [screen, setScreen] = useState<Screen>('graph')
+  const [screen, setScreen] = useState<Screen>(() => {
+    const saved = sessionStorage.getItem(RETURN_SCREEN_KEY)
+    sessionStorage.removeItem(RETURN_SCREEN_KEY)
+    return saved === 'approvals' || saved === 'settings' ? saved : 'graph'
+  })
   const [events, setEvents] = useState<Activity[]>([])
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState('')
@@ -119,6 +126,26 @@ export function App() {
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
+
+  useEffect(() => {
+    const renew = () => { api<Status>('/api/v1/status').catch(() => undefined) }
+    let timer: number | undefined
+    const schedule = () => { if (document.visibilityState === 'visible') timer = window.setInterval(renew, KEEPALIVE_MS) }
+    const visibility = () => {
+      if (timer !== undefined) window.clearInterval(timer)
+      timer = undefined
+      if (document.visibilityState === 'visible') { renew(); schedule() }
+    }
+    schedule()
+    document.addEventListener('visibilitychange', visibility)
+    return () => { if (timer !== undefined) window.clearInterval(timer); document.removeEventListener('visibilitychange', visibility) }
+  }, [])
+
+  useEffect(() => {
+    const expired = () => { sessionStorage.setItem(RETURN_SCREEN_KEY, screen); window.location.assign('/login') }
+    window.addEventListener('hlm-ui-session-expired', expired)
+    return () => window.removeEventListener('hlm-ui-session-expired', expired)
+  }, [screen])
 
   useEffect(() => {
     api<{ theme?: { preset?: string } }>('/api/v1/settings')
