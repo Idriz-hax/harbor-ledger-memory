@@ -4,6 +4,7 @@ import asyncio
 import json
 import queue
 import threading
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import UUID, uuid4
@@ -20,6 +21,8 @@ from harbor_ledger_memory.config import (
     ApiSettings,
     FolderAccess,
     FolderRule,
+    read_persistent_config,
+    update_persistent_config,
 )
 from harbor_ledger_memory.config import Settings as BaseSettings
 from harbor_ledger_memory.graph.builder import GraphBuilder
@@ -194,6 +197,112 @@ def test_settings_folder_rules_update_active_tokens_immediately(
     assert records["revoked"].rules == (
         FolderRule(path=PurePosixPath("Old"), access=FolderAccess.NONE),
     )
+
+
+def test_settings_token_update_failure_leaves_persisted_config_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    settings = Settings(
+        vault_path=tmp_path, database_url=f"sqlite:///{tmp_path / 'db'}"
+    )
+    update_persistent_config({"folder_rules": [{"path": "Old", "access": "read"}]})
+    application = create_app(settings)
+    admin = application.state.token_service.create("admin", admin=True).plaintext
+
+    def fail_replace(rules: object) -> None:
+        raise RuntimeError("token update failed")
+
+    monkeypatch.setattr(
+        application.state.token_service, "replace_active_rules", fail_replace
+    )
+    with (
+        TestClient(application) as client,
+        pytest.raises(RuntimeError, match="token update failed"),
+    ):
+        client.put(
+            "/api/v1/settings",
+            json={"folder_rules": [{"path": "AI", "access": "propose-write"}]},
+            headers={"Authorization": f"Bearer {admin}"},
+        )
+
+    assert read_persistent_config()["folder_rules"] == [
+        {"path": "Old", "access": "read"}
+    ]
+
+
+def test_settings_config_failure_restores_active_token_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    old_rules = [{"path": "Old", "access": "read"}]
+    update_persistent_config({"folder_rules": old_rules})
+    application = create_app(
+        Settings(vault_path=tmp_path, database_url=f"sqlite:///{tmp_path / 'db'}")
+    )
+    service = application.state.token_service
+    admin = service.create(
+        "admin",
+        [FolderRule(path=PurePosixPath("Old"), access=FolderAccess.READ)],
+        admin=True,
+    ).plaintext
+
+    def fail_write(updates: dict[str, object]) -> None:
+        assert service.verify(admin).rules == (
+            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+        )
+        raise OSError("config write failed")
+
+    monkeypatch.setattr(app_module, "update_persistent_config", fail_write)
+    with (
+        TestClient(application) as client,
+        pytest.raises(OSError, match="config write failed"),
+    ):
+        client.put(
+            "/api/v1/settings",
+            json={"folder_rules": [{"path": "AI", "access": "propose-write"}]},
+            headers={"Authorization": f"Bearer {admin}"},
+        )
+
+    assert service.verify(admin).rules == (
+        FolderRule(path=PurePosixPath("Old"), access=FolderAccess.READ),
+    )
+    assert read_persistent_config()["folder_rules"] == old_rules
+
+
+def test_settings_compensation_failure_raises_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    application = create_app(
+        Settings(vault_path=tmp_path, database_url=f"sqlite:///{tmp_path / 'db'}")
+    )
+    service = application.state.token_service
+    admin = service.create("admin", admin=True).plaintext
+    replace = service.replace_active_rules
+    calls = 0
+
+    def fail_restoration(rules: Sequence[FolderRule]) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return replace(rules)
+        raise RuntimeError("restoration failed")
+
+    def fail_write(updates: dict[str, object]) -> None:
+        raise OSError("config write failed")
+
+    monkeypatch.setattr(service, "replace_active_rules", fail_restoration)
+    monkeypatch.setattr(app_module, "update_persistent_config", fail_write)
+    with (
+        TestClient(application) as client,
+        pytest.raises(RuntimeError, match="token-rule restoration failed"),
+    ):
+        client.put(
+            "/api/v1/settings",
+            json={"folder_rules": [{"path": "AI", "access": "propose-write"}]},
+            headers={"Authorization": f"Bearer {admin}"},
+        )
 
 
 def test_app_lifespan_scans_then_starts_and_stops_watcher(
