@@ -4,7 +4,6 @@ import asyncio
 import json
 import queue
 import threading
-from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import UUID, uuid4
@@ -243,14 +242,25 @@ def test_settings_config_failure_restores_active_token_rules(
     service = application.state.token_service
     admin = service.create(
         "admin",
-        [FolderRule(path=PurePosixPath("Old"), access=FolderAccess.READ)],
+        [FolderRule(path=PurePosixPath("Private"), access=FolderAccess.NONE)],
         admin=True,
     ).plaintext
+    other = service.create(
+        "other",
+        [FolderRule(path=PurePosixPath("Public"), access=FolderAccess.AUTO_WRITE)],
+    ).plaintext
+    service.create(
+        "revoked",
+        [FolderRule(path=PurePosixPath("Revoked"), access=FolderAccess.NONE)],
+    )
+    service.revoke("revoked")
 
     def fail_write(updates: dict[str, object]) -> None:
-        assert service.verify(admin).rules == (
+        new_rules = (
             FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
         )
+        assert service.verify(admin).rules == new_rules
+        assert service.verify(other).rules == new_rules
         raise OSError("config write failed")
 
     monkeypatch.setattr(app_module, "update_persistent_config", fail_write)
@@ -265,7 +275,14 @@ def test_settings_config_failure_restores_active_token_rules(
         )
 
     assert service.verify(admin).rules == (
-        FolderRule(path=PurePosixPath("Old"), access=FolderAccess.READ),
+        FolderRule(path=PurePosixPath("Private"), access=FolderAccess.NONE),
+    )
+    assert service.verify(other).rules == (
+        FolderRule(path=PurePosixPath("Public"), access=FolderAccess.AUTO_WRITE),
+    )
+    records = {record.name: record for record in service.list()}
+    assert records["revoked"].rules == (
+        FolderRule(path=PurePosixPath("Revoked"), access=FolderAccess.NONE),
     )
     assert read_persistent_config()["folder_rules"] == old_rules
 
@@ -279,20 +296,14 @@ def test_settings_compensation_failure_raises_loudly(
     )
     service = application.state.token_service
     admin = service.create("admin", admin=True).plaintext
-    replace = service.replace_active_rules
-    calls = 0
 
-    def fail_restoration(rules: Sequence[FolderRule]) -> int:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return replace(rules)
+    def fail_restoration(snapshot: dict[int, str | None]) -> int:
         raise RuntimeError("restoration failed")
 
     def fail_write(updates: dict[str, object]) -> None:
         raise OSError("config write failed")
 
-    monkeypatch.setattr(service, "replace_active_rules", fail_restoration)
+    monkeypatch.setattr(service, "restore_active_rules", fail_restoration)
     monkeypatch.setattr(app_module, "update_persistent_config", fail_write)
     with (
         TestClient(application) as client,

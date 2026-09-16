@@ -61,7 +61,6 @@ from harbor_ledger_memory.config import (
     Settings,
     ThemeSettings,
     config_payload,
-    read_persistent_config,
     update_persistent_config,
 )
 from harbor_ledger_memory.domain.retrieval import QueryRequest, QueryResult
@@ -1465,23 +1464,13 @@ def create_app(
         if not updates:
             raise HTTPException(status_code=400, detail="no settings supplied")
         if request.folder_rules is not None:
-            def persisted_rules() -> tuple[FolderRule, ...]:
-                return tuple(
-                    FolderRule.model_validate(rule)
-                    for rule in read_persistent_config().get("folder_rules", ())
-                )
-
-            previous_rules = persisted_rules()
+            snapshot = token_service.snapshot_active_rules()
             token_service.replace_active_rules(request.folder_rules)
             try:
                 update_persistent_config(updates)
             except Exception:
                 try:
-                    rollback_rules = persisted_rules()
-                except Exception:
-                    rollback_rules = previous_rules
-                try:
-                    token_service.replace_active_rules(rollback_rules)
+                    token_service.restore_active_rules(snapshot)
                 except Exception as compensation_error:
                     raise RuntimeError(
                         "config persistence failed and token-rule restoration failed"

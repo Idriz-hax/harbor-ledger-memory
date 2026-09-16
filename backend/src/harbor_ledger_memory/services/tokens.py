@@ -391,6 +391,31 @@ class TokenService:
                 raise
             return len(rows)
 
+    def snapshot_active_rules(self) -> dict[int, str | None]:
+        """Return the raw rules value for every active token."""
+        with self._lock:
+            rows = self._session.execute(
+                select(ApiToken.id, ApiToken.rules).where(ApiToken.revoked_at.is_(None))
+            ).all()
+            return {id: rules for id, rules in rows}
+
+    def restore_active_rules(self, snapshot: dict[int, str | None]) -> int:
+        """Restore snapshotted rules on their still-active tokens only."""
+        with self._lock:
+            try:
+                rows = self._session.scalars(
+                    select(ApiToken).where(
+                        ApiToken.id.in_(snapshot), ApiToken.revoked_at.is_(None)
+                    )
+                ).all()
+                for row in rows:
+                    row.rules = snapshot[row.id]
+                self._session.commit()
+            except Exception:
+                self._session.rollback()
+                raise
+            return len(rows)
+
     def _touch_last_used(self, row: ApiToken) -> None:
         if row.last_used_at is None:
             row.last_used_at = _timestamp()
