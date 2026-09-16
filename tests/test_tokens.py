@@ -278,6 +278,30 @@ def test_replace_active_rules_leaves_revoked_tokens_unchanged(tmp_path: Path) ->
         service.close()
 
 
+def test_active_rule_snapshot_restores_each_rule_including_legacy_none(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "tokens.db"
+    service = TokenService(f"sqlite:///{db}")
+    original_rules = (
+        FolderRule(path=PurePosixPath("Private"), access=FolderAccess.NONE),
+    )
+    replacement = (FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),)
+    try:
+        active, _ = service.create("active", original_rules)
+        _insert_legacy_row(db, "legacy", "legacy-hash", "[]")
+        snapshot = service.snapshot_active_rules()
+        assert snapshot[active.id] is not None
+        assert None in snapshot.values()
+
+        service.replace_active_rules(replacement)
+        service.restore_active_rules(snapshot)
+
+        assert service.snapshot_active_rules() == snapshot
+    finally:
+        service.close()
+
+
 def test_backfill_legacy_tokens_is_idempotent(tmp_path: Path) -> None:
     rules = (FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),)
     db = tmp_path / "tokens.db"
