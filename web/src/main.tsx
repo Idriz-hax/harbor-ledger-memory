@@ -1545,21 +1545,6 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
               <Typography variant="h6" id="writes-heading">Write proposals</Typography>
               <Typography variant="body2" color="text.secondary">Review changes that need approval before they reach your vault.</Typography>
             </Box>
-            {approvals && <Box component="form" onSubmit={event => { event.preventDefault(); proposeFolder() }} sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, flexWrap: 'wrap', p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1.5, bgcolor: 'background.default' }}>
-              <TextField
-                size="small"
-                label="New folder path"
-                value={newFolderPath}
-                onChange={event => setNewFolderPath(event.target.value)}
-                placeholder="AI/Inbox"
-                inputProps={{ spellCheck: false }}
-                sx={{ flex: '1 1 220px' }}
-              />
-              <Button type="submit" variant="contained" size="small" disabled={creatingFolder} aria-busy={creatingFolder} sx={{ mt: 0.5 }}>
-                {creatingFolder ? 'Creating…' : 'Create folder'}
-              </Button>
-              {folderCreateError && <Alert severity="error" role="alert" sx={{ flexBasis: '100%', py: 0 }}>{folderCreateError}</Alert>}
-            </Box>}
             {writesStale && writes !== null && (
               <Box className="writes-stale" role="status" title={writesStale} sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', p: 1.5, border: 1, borderColor: 'warning.main', bgcolor: 'warning.light', borderRadius: 1.5 }}>
                 <Typography variant="body2">live update failed — the list may be out of date</Typography>

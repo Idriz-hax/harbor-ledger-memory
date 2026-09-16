@@ -67,7 +67,6 @@ function mockWrites(lists: unknown[], options: { getWrites?: Failure; postWrites
     }
     if (options.getWrites && method === 'GET' && /^\/api\/v1\/writes$/.test(url)) return fail(options.getWrites)
     if (url.includes('/api/v1/settings')) return { ok: true, json: async () => SETTINGS_BODY } as Response
-    if (url.includes('/api/v1/activity')) return { ok: true, json: async () => ({ events: [] }) } as Response
     if (method === 'GET' && /^\/api\/v1\/writes$/.test(url)) {
       const body = listCalls < lists.length ? lists[listCalls++] : lists[lists.length - 1]
       return { ok: true, json: async () => body } as Response
@@ -318,6 +317,7 @@ describe('Settings · vault writes', () => {
     mockWrites([{ proposals: [pendingProposal] }])
     const { container } = render(<Approvals />)
     await screen.findByRole('article', { name: 'write proposal for AI/new.md' })
+    expect(screen.queryByLabelText('New folder path')).toBeNull()
     const layout = container.querySelector('.writes-layout')
     expect(layout).toBeTruthy()
     expect(layout?.querySelectorAll('.writes-panel').length).toBe(1)
@@ -380,7 +380,11 @@ describe('Settings · vault writes', () => {
   })
 
   it('places approvals in primary navigation and shows a pending badge', async () => {
-    mockWrites([{ proposals: [pendingProposal] }])
+    const { fetchMock } = mockWrites([{ proposals: [pendingProposal] }])
+    const baseFetch = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((input, init) => String(input).includes('/api/v1/activity')
+      ? Promise.resolve({ ok: true, json: async () => ({ events: [] }) } as Response)
+      : baseFetch(input, init))
     vi.stubGlobal('EventSource', class { close() {} addEventListener() {} removeEventListener() {} })
     render(<App />)
     expect(screen.getByRole('button', { name: /Memory Chart/ })).toBeTruthy()
