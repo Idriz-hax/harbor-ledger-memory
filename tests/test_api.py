@@ -155,30 +155,45 @@ def test_status_exposes_the_calling_tokens_own_write_policy(tmp_path: Path) -> N
     }
 
 
-def test_settings_update_does_not_split_live_rest_and_mcp_policy(
+def test_settings_folder_rules_update_active_tokens_immediately(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    (tmp_path / "Public").mkdir()
+    (tmp_path / "AI").mkdir()
     settings = Settings(
         vault_path=tmp_path,
-        folder_rules=(
-            FolderRule(path=PurePosixPath("Public"), access=FolderAccess.PROPOSE_WRITE),
-        ),
         database_url=f"sqlite:///{tmp_path / 'drift.db'}",
     )
-    with authed_client(settings) as client:
-        saved = client.put("/api/v1/settings", json={"folder_rules": []})
-        assert saved.status_code == 200
-        # Restart is required: live REST and mounted MCP continue using the
-        # same startup policy rather than diverging after a hot rebind.
-        assert client.get("/api/v1/status").json()["read_only"] is False
-        assert (
-            client.post(
-                "/api/v1/writes", json={"path": "Public/a.md", "content": "a"}
-            ).status_code
-            == 200
+    application = create_app(settings)
+    service = application.state.token_service
+    admin = service.create("admin", admin=True).plaintext
+    existing = service.create("existing").plaintext
+    service.create(
+        "revoked",
+        [FolderRule(path=PurePosixPath("Old"), access=FolderAccess.NONE)],
+    )
+    service.revoke("revoked")
+    with TestClient(application) as client:
+        saved = client.put(
+            "/api/v1/settings",
+            json={"folder_rules": [{"path": "AI", "access": "propose-write"}]},
+            headers={"Authorization": f"Bearer {admin}"},
         )
+        assert saved.status_code == 200
+        assert saved.json()["restart_required"] is False
+        assert client.post(
+            "/api/v1/writes",
+            json={"path": "AI/new.md", "content": "new"},
+            headers={"Authorization": f"Bearer {existing}"},
+        ).status_code == 200
+
+    records = {record.name: record for record in service.list()}
+    assert records["existing"].rules == (
+        FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+    )
+    assert records["revoked"].rules == (
+        FolderRule(path=PurePosixPath("Old"), access=FolderAccess.NONE),
+    )
 
 
 def test_app_lifespan_scans_then_starts_and_stops_watcher(

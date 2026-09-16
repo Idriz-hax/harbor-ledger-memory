@@ -375,6 +375,22 @@ class TokenService:
             self._session.commit()
             return len(rows)
 
+    def replace_active_rules(self, rules: Sequence[FolderRule]) -> int:
+        """Replace rules on active tokens only; returns rows updated."""
+        rules_json = _rules_to_json(rules)
+        with self._lock:
+            try:
+                rows = self._session.scalars(
+                    select(ApiToken).where(ApiToken.revoked_at.is_(None))
+                ).all()
+                for row in rows:
+                    row.rules = rules_json
+                self._session.commit()
+            except Exception:
+                self._session.rollback()
+                raise
+            return len(rows)
+
     def _touch_last_used(self, row: ApiToken) -> None:
         if row.last_used_at is None:
             row.last_used_at = _timestamp()
