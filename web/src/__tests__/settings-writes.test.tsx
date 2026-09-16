@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { App, Approvals, Settings } from '../main'
 import type { WriteProposal } from '../main'
 
+vi.mock('../TideAtlas', () => ({ TideAtlas: () => null }))
+
 const SETTINGS_BODY = {
   vault_path: '/tmp/hlm-test-vault',
   index_root: '/tmp/hlm-test-vault',
@@ -380,11 +382,7 @@ describe('Settings · vault writes', () => {
   })
 
   it('places approvals in primary navigation and shows a pending badge', async () => {
-    const { fetchMock } = mockWrites([{ proposals: [pendingProposal] }])
-    const baseFetch = fetchMock.getMockImplementation()!
-    fetchMock.mockImplementation((input, init) => String(input).includes('/api/v1/activity')
-      ? Promise.resolve({ ok: true, json: async () => ({ events: [] }) } as Response)
-      : baseFetch(input, init))
+    mockWrites([{ proposals: [pendingProposal] }])
     vi.stubGlobal('EventSource', class { close() {} addEventListener() {} removeEventListener() {} })
     render(<App />)
     expect(screen.getByRole('button', { name: /Memory Chart/ })).toBeTruthy()
