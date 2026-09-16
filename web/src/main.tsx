@@ -1154,6 +1154,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
   const confirmTimer = useRef<number | null>(null)
 
   useEffect(() => {
+    if (approvals) return
     api<any>('/api/v1/settings').then(r => {
       setSettings(r)
       setRules(r.folder_rules || [])
@@ -1171,7 +1172,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
         }).catch(() => undefined)
       }
     }).catch(e => setSettingsError(e instanceof Error ? e.message : 'vault permissions unavailable'))
-  }, [])
+  }, [approvals])
 
   /* Proposals this session resolved via POST — guards against an older list
      snapshot re-exposing them as pending (and thus actionable) again. */
@@ -1212,7 +1213,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
         setTokenRows([]); setTokenError(e instanceof Error ? e.message : 'failed to load tokens')
       })
 
-  useEffect(() => { refreshTokens() }, [])
+  useEffect(() => { if (!approvals) refreshTokens() }, [approvals])
 
   /* Generate: persist the folder draft as the next token's template, then mint
      the token with that draft as its own rules. */
@@ -1404,7 +1405,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
   return (
     <Box component="section" sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <Box sx={{ mb: 1 }}>
-        <Typography variant="h2">{approvals ? 'Approvals' : 'Settings'}</Typography>
+        {!approvals && <Typography variant="h2">Settings</Typography>}
         <Typography variant="body1" color="text.secondary">{approvals ? 'Review proposed changes before they reach your local vault.' : 'Configure vault access, trusted tokens, and the read-only audit trail.'}</Typography>
       </Box>
       {!approvals && <Paper elevation={0} sx={{ p: { xs: 2, md: 3 }, border: 1, borderColor: 'divider' }}>
@@ -1585,10 +1586,10 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
                   <Box component="time" dateTime={w.requested_at} title={w.requested_at} sx={{ color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }}>{timeAgo(w.requested_at)} · {w.operation === 'mkdir' ? 'folder' : `${w.content.length.toLocaleString()} chars`}</Box>
                   <Box className="write-actions" sx={{ ml: 'auto', display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                     {actionErrors[w.id] ? <span className="write-action-error" role="alert" style={{ color: 'var(--mui-error-main)', fontSize: 12 }}>{actionErrors[w.id]}</span> : null}
-                    <Button size="small" color="success" variant="contained" disabled={busy !== null} aria-label={`Approve ${w.path}`} onClick={() => resolveProposal('approve', w)}>
+                    <Button className="write-btn" size="small" color="success" variant="contained" disabled={busy !== null} aria-label={`Approve ${w.path}`} onClick={() => resolveProposal('approve', w)}>
                       {busy?.id === w.id && busy.action === 'approve' ? 'approving…' : 'approve'}
                     </Button>
-                    <Button size="small" color="error" variant="outlined" disabled={busy !== null} aria-label={`Reject ${w.path}`} onClick={() => resolveProposal('reject', w)}>
+                    <Button className="write-btn" size="small" color="error" variant="outlined" disabled={busy !== null} aria-label={`Reject ${w.path}`} onClick={() => resolveProposal('reject', w)}>
                       {busy?.id === w.id && busy.action === 'reject' ? 'rejecting…' : 'reject'}
                     </Button>
                   </Box>
