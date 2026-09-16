@@ -102,6 +102,8 @@ describe('Settings · vault writes', () => {
     expect(within(card).getByText(/Some body text/)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Approve AI/new.md' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Reject AI/new.md' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Approve AI/new.md' })).toHaveClass('write-btn')
+    expect(screen.getByRole('button', { name: 'Reject AI/new.md' })).toHaveClass('write-btn')
   })
 
   it('approves a pending proposal, then refreshes pending and audit lists', async () => {
@@ -397,5 +399,12 @@ describe('Settings · vault writes', () => {
     mockWrites([{ proposals: [] }])
     render(<Approvals />)
     expect(await screen.findByText('All caught up. Nothing needs review.')).toBeTruthy()
+  })
+
+  it('does not fetch Settings-only data in Approvals mode', async () => {
+    const { calls } = mockWrites([{ proposals: [] }])
+    render(<Approvals />)
+    await screen.findByText('All caught up. Nothing needs review.')
+    expect(calls.some(call => /\/api\/v1\/(settings|graph|tokens)/.test(call.url))).toBe(false)
   })
 })
