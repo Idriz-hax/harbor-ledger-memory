@@ -61,6 +61,7 @@ from harbor_ledger_memory.config import (
     Settings,
     ThemeSettings,
     config_payload,
+    read_persistent_config,
     update_persistent_config,
 )
 from harbor_ledger_memory.domain.retrieval import QueryRequest, QueryResult
@@ -1463,9 +1464,31 @@ def create_app(
         updates = request.model_dump(exclude_none=True, mode="json")
         if not updates:
             raise HTTPException(status_code=400, detail="no settings supplied")
-        update_persistent_config(updates)
         if request.folder_rules is not None:
+            def persisted_rules() -> tuple[FolderRule, ...]:
+                return tuple(
+                    FolderRule.model_validate(rule)
+                    for rule in read_persistent_config().get("folder_rules", ())
+                )
+
+            previous_rules = persisted_rules()
             token_service.replace_active_rules(request.folder_rules)
+            try:
+                update_persistent_config(updates)
+            except Exception:
+                try:
+                    rollback_rules = persisted_rules()
+                except Exception:
+                    rollback_rules = previous_rules
+                try:
+                    token_service.replace_active_rules(rollback_rules)
+                except Exception as compensation_error:
+                    raise RuntimeError(
+                        "config persistence failed and token-rule restoration failed"
+                    ) from compensation_error
+                raise
+        else:
+            update_persistent_config(updates)
         # Keep other operational settings immutable until restart; token rules
         # above are updated immediately for both REST and MCP authentication.
         display_settings = Settings.model_validate(
