@@ -274,6 +274,26 @@ describe('App · automatic local UI session', () => {
     expect(screen.getByRole('heading', { name: 'Approvals', level: 2 })).toBeInTheDocument()
   })
 
+  it('shows a 403 renewal error without leaving the visible Approvals view', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', MockEventSource)
+    sessionStorage.setItem('hlm_ui_return_screen', 'approvals')
+    const { fetchMock } = mockApi()
+    let statusCalls = 0
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const forbidden = String(input) === '/api/v1/status' && ++statusCalls > 1
+      const body = forbidden ? { detail: 'authorization required' } : {}
+      return { ok: !forbidden, status: forbidden ? 403 : 200, statusText: forbidden ? 'Forbidden' : 'OK', text: async () => JSON.stringify(body), json: async () => body } as Response
+    })
+    render(<App />)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(25 * 60 * 1000) })
+
+    expect(screen.getByRole('heading', { name: 'Approvals', level: 2 })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('authorization required')
+    expect(sessionStorage.getItem('hlm_ui_return_screen')).toBeNull()
+  })
+
   it('does not redirect on 403 authorization errors', async () => {
     vi.stubGlobal('EventSource', MockEventSource)
     const { fetchMock } = mockApi(appResponses())
