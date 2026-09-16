@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Settings } from '../main'
+import { App, Approvals, Settings } from '../main'
 import type { WriteProposal } from '../main'
 
 const SETTINGS_BODY = {
@@ -93,7 +93,7 @@ describe('Settings · vault writes', () => {
 
   it('renders pending proposals with path, operation, rule access, and a content preview', async () => {
     mockWrites([{ proposals: [pendingProposal] }])
-    render(<Settings />)
+    render(<Approvals />)
     const card = await screen.findByRole('article', { name: 'write proposal for AI/new.md' })
     expect(within(card).getByText('create')).toBeTruthy()
     expect(within(card).getByText('propose-write')).toBeTruthy()
@@ -105,20 +105,20 @@ describe('Settings · vault writes', () => {
   it('approves a pending proposal, then refreshes pending and audit lists', async () => {
     const applied: WriteProposal = { ...pendingProposal, status: 'applied', resolved_at: minutesAgo(1) }
     const { calls } = mockWrites([{ proposals: [pendingProposal] }, { proposals: [applied] }])
-    render(<Settings />)
+    render(<Approvals />)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Approve AI/new.md' }))
     await waitFor(() => expect(calls.some(c => c.url === '/api/v1/writes/7/approve' && c.method === 'POST')).toBe(true))
     await screen.findByText('applied')
     expect(screen.queryByRole('button', { name: 'Approve AI/new.md' })).toBeNull()
-    expect(screen.getByText(/no pending proposals/)).toBeTruthy()
+    expect(screen.getByText('All caught up. Nothing needs review.')).toBeTruthy()
     await waitFor(() => expect(writesGets(calls).length).toBe(2))
   })
 
   it('rejects a pending proposal, then refreshes pending and audit lists', async () => {
     const rejected: WriteProposal = { ...pendingProposal, status: 'rejected', resolved_at: minutesAgo(1) }
     const { calls } = mockWrites([{ proposals: [pendingProposal] }, { proposals: [rejected] }])
-    render(<Settings />)
+    render(<Approvals />)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Reject AI/new.md' }))
     await waitFor(() => expect(calls.some(c => c.url === '/api/v1/writes/7/reject' && c.method === 'POST')).toBe(true))
@@ -134,7 +134,7 @@ describe('Settings · vault writes', () => {
         { ...pendingProposal, id: 8, path: 'AI/failed.md', status: 'failed', failure_reason: 'vault path disappeared', resolved_at: minutesAgo(12) },
       ],
     }])
-    render(<Settings />)
+    render(<Approvals />)
     expect(await screen.findByText('AI/kept.md')).toBeTruthy()
     expect(screen.getByText('AI/failed.md')).toBeTruthy()
     expect(screen.getByText('applied')).toBeTruthy()
@@ -146,7 +146,7 @@ describe('Settings · vault writes', () => {
     mockWrites([{
       proposals: [{ ...pendingProposal, id: 10, path: 'AI/Rejected', content: '', operation: 'mkdir', status: 'rejected', resolved_at: minutesAgo(3) }],
     }])
-    render(<Settings />)
+    render(<Approvals />)
 
     expect(await screen.findByText('AI/Rejected')).toBeTruthy()
     expect(screen.getByText('folder proposal')).toBeTruthy()
@@ -155,16 +155,15 @@ describe('Settings · vault writes', () => {
 
   it('shows empty states when there are no writes', async () => {
     mockWrites([{ proposals: [] }])
-    render(<Settings />)
-    expect(await screen.findByText(/no pending proposals/)).toBeTruthy()
-    expect(screen.getByText(/no writes yet/)).toBeTruthy()
+    render(<Approvals />)
+    expect(await screen.findByText('All caught up. Nothing needs review.')).toBeTruthy()
   })
 
   it('submits an accessible folder proposal and renders its pending state', async () => {
     const { calls, fetchMock } = mockWrites([{ proposals: [] }, { proposals: [{
       ...pendingProposal, path: 'AI/Inbox', content: '', operation: 'mkdir',
     }] }])
-    render(<Settings />)
+    render(<Approvals />)
     const user = userEvent.setup()
 
     await user.type(await screen.findByLabelText('New folder path'), 'AI/Inbox')
@@ -177,7 +176,7 @@ describe('Settings · vault writes', () => {
 
   it('exposes a folder proposal error and re-enables the form after a forbidden response', async () => {
     mockWrites([{ proposals: [] }], { postWrites: { status: 403, text: 'folder proposals are not allowed' } })
-    render(<Settings />)
+    render(<Approvals />)
     const user = userEvent.setup()
     const input = await screen.findByLabelText('New folder path')
     await user.type(input, 'AI/Private')
@@ -190,7 +189,7 @@ describe('Settings · vault writes', () => {
 
   it('shows an error state with retry when the writes API fails', async () => {
     const { calls } = mockWrites([{ proposals: [pendingProposal] }], { getWrites: { status: 500, text: 'vault is unavailable' } })
-    render(<Settings />)
+    render(<Approvals />)
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain('vault is unavailable')
     const user = userEvent.setup()
@@ -200,7 +199,7 @@ describe('Settings · vault writes', () => {
 
   it('surfaces a per-proposal action error and re-enables the controls', async () => {
     mockWrites([{ proposals: [pendingProposal] }], { postWrites: { status: 400, text: 'proposal 7 is already applied, not pending' } })
-    render(<Settings />)
+    render(<Approvals />)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Approve AI/new.md' }))
     const alert = await screen.findByRole('alert')
@@ -213,7 +212,7 @@ describe('Settings · vault writes', () => {
 
   it('triggers approve from the keyboard', async () => {
     const { calls } = mockWrites([{ proposals: [pendingProposal] }])
-    render(<Settings />)
+    render(<Approvals />)
     const user = userEvent.setup()
     const approve = await screen.findByRole('button', { name: 'Approve AI/new.md' })
     approve.focus()
@@ -224,7 +223,7 @@ describe('Settings · vault writes', () => {
   it('keeps long content previews safe and truncated', async () => {
     const long = { ...pendingProposal, content: 'word '.repeat(120) }
     mockWrites([{ proposals: [long] }])
-    const { container } = render(<Settings />)
+    const { container } = render(<Approvals />)
     await waitFor(() => {
       const preview = container.querySelector('.write-preview')
       expect(preview?.textContent).toContain('…')
@@ -259,7 +258,7 @@ describe('Settings · vault writes', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    render(<Settings />)
+    render(<Approvals />)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Approve AI/new.md' }))
     await waitFor(() => expect(calls.some(c => c.url === '/api/v1/writes/7/approve' && c.method === 'POST')).toBe(true))
@@ -294,7 +293,7 @@ describe('Settings · vault writes', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    render(<Settings />)
+    render(<Approvals />)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Approve AI/new.md' }))
     const stale = await screen.findByText(/live update failed/)
@@ -316,7 +315,7 @@ describe('Settings · vault writes', () => {
 
   it('renders the proposal queue with footer metadata and a separate activity region', async () => {
     mockWrites([{ proposals: [pendingProposal] }])
-    const { container } = render(<Settings />)
+    const { container } = render(<Approvals />)
     await screen.findByRole('article', { name: 'write proposal for AI/new.md' })
     const layout = container.querySelector('.writes-layout')
     expect(layout).toBeTruthy()
@@ -336,11 +335,10 @@ describe('Settings · vault writes', () => {
       resolved_at: minutesAgo(index + 1),
     }))
     mockWrites([{ proposals: audit }])
-    const { container } = render(<Settings />)
+    const { container } = render(<Approvals />)
     await screen.findByText('AI/audit-0.md')
     const workspace = container.querySelector('.settings-workspace-layout')
     expect(workspace).toHaveAttribute('data-layout', 'quiet-split')
-    expect(workspace?.querySelector('.tokens-section')).toBeTruthy()
     expect(workspace?.querySelector('.write-proposals-region')).toBeTruthy()
     expect(workspace?.querySelector('.audit-region')).toBeTruthy()
     expect(workspace?.querySelector('.audit-region')).not.toHaveClass('panel')
@@ -355,5 +353,31 @@ describe('Settings · vault writes', () => {
     expect(media560).toContain('.write-card-foot { flex-direction: column')
     expect(media560).toContain('.write-actions .write-btn { flex: 1 }')
     expect(media560).toContain('.write-actions .write-action-error { width: 100% }')
+  })
+
+  it('keeps write review controls out of Settings', async () => {
+    mockWrites([{ proposals: [pendingProposal] }])
+    render(<Settings />)
+    await screen.findByText('External access')
+    expect(screen.queryByRole('button', { name: 'Approve AI/new.md' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Reject AI/new.md' })).toBeNull()
+  })
+
+  it('places approvals in primary navigation and shows a pending badge', async () => {
+    mockWrites([{ proposals: [pendingProposal] }])
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} removeEventListener() {} })
+    render(<App />)
+    expect(screen.getByRole('button', { name: /Memory Chart/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Approvals/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Settings/ })).toBeTruthy()
+    expect(await screen.findByText('1')).toBeTruthy()
+    await userEvent.setup().click(screen.getByRole('button', { name: /Approvals/ }))
+    expect(await screen.findByRole('article', { name: 'write proposal for AI/new.md' })).toBeTruthy()
+  })
+
+  it('uses the approved empty approvals message', async () => {
+    mockWrites([{ proposals: [] }])
+    render(<Approvals />)
+    expect(await screen.findByText('All caught up. Nothing needs review.')).toBeTruthy()
   })
 })
