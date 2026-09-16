@@ -35,10 +35,11 @@ import '@fontsource/ibm-plex-sans/400.css'
 import '@fontsource/ibm-plex-sans/600.css'
 import '@fontsource/ibm-plex-mono/400.css'
 
-type Screen = 'graph' | 'settings'
+type Screen = 'graph' | 'approvals' | 'settings'
 const SCREEN_META: Record<Screen, { label: string; icon: string; description: string }> = {
   graph: { label: 'Memory Chart', icon: '⌁', description: 'Explore linked notes and live memory routes' },
-  settings: { label: 'Vault Permissions', icon: '⌑', description: 'Control what agents can read and write' },
+  approvals: { label: 'Approvals', icon: '✓', description: 'Review pending vault writes' },
+  settings: { label: 'Settings', icon: '⌑', description: 'Configure access, tokens, and audit' },
 }
 export type Activity = { id: number; event_type: string; created_at: string; payload: Record<string, unknown> }
 type Status = { indexed_notes: number; scan_runs: number; diagnostics: number; broken_links: number; ambiguous_links: number; last_scan_status: string | null; last_scan_completed_at: string | null; effective_read_scope: string }
@@ -108,12 +109,13 @@ export function App() {
   /* The calm-neutral chart preset follows the vault's saved theme so the whole
      shell (not just the canvas) reflects the operator's choice. */
   const [preset, setPreset] = useState<ChartPreset>(DEFAULT_PRESET)
+  const [pendingApprovals, setPendingApprovals] = useState(0)
 
   const refresh = useCallback(() => {
     api<Status>('/api/v1/status')
       .then(() => setError(''))
       .catch(e => setError(e.message))
-    api<{ events: Activity[] }>('/api/v1/activity?limit=40').then(r => setEvents(r.events)).catch(() => undefined)
+    api<{ events?: Activity[] }>('/api/v1/activity?limit=40').then(r => setEvents(r.events ?? [])).catch(() => undefined)
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
@@ -123,6 +125,14 @@ export function App() {
       .then(r => setPreset(presetFor(r?.theme?.preset)))
       .catch(() => undefined)
   }, [])
+
+  const refreshPendingApprovals = useCallback(() => {
+    api<{ proposals: WriteProposal[] }>('/api/v1/writes')
+      .then(r => setPendingApprovals((r.proposals ?? []).filter(proposal => proposal.status === 'pending').length))
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => { refreshPendingApprovals() }, [refreshPendingApprovals])
 
   useEffect(() => {
     const stream = new EventSource('/api/v1/activity/stream')
@@ -149,17 +159,17 @@ export function App() {
           </Box>
           <nav aria-label="Primary navigation">
             <List disablePadding>
-              {(['graph', 'settings'] as Screen[]).map((item, index) => (
+              {(['graph', 'approvals', 'settings'] as Screen[]).map((item, index) => (
                 <ListItemButton
                   key={item}
                   selected={screen === item}
                   onClick={() => setScreen(item)}
-                  aria-label={`0${index + 1} ${item} — ${SCREEN_META[item].description}`}
+                  aria-label={`${SCREEN_META[item].label} — ${SCREEN_META[item].description}`}
                   aria-current={screen === item ? 'page' : undefined}
                   title={SCREEN_META[item].label}
                   sx={{ minHeight: 52, mb: 1, gap: 1.5 }}
                 >
-                  <ListItemText primary={SCREEN_META[item].label} primaryTypographyProps={{ variant: 'subtitle2', fontWeight: 600 }} />
+                  <ListItemText primary={<Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>{SCREEN_META[item].label}{item === 'approvals' && pendingApprovals > 0 && <Chip size="small" color="secondary" label={pendingApprovals} aria-label={`${pendingApprovals} pending approvals`} sx={{ height: 20, minWidth: 20, fontSize: 11 }} />}</Box>} primaryTypographyProps={{ variant: 'subtitle2', fontWeight: 600 }} />
                 </ListItemButton>
               ))}
             </List>
@@ -176,6 +186,7 @@ export function App() {
           </Box>
           {error && <Alert severity="error">{error}</Alert>}
           {screen === 'graph' && <TideAtlas events={events} onRefresh={refresh} />}
+          {screen === 'approvals' && <Approvals onPendingCountChange={setPendingApprovals} />}
           {screen === 'settings' && <Settings />}
         </Box>
       </Box>
@@ -1110,7 +1121,7 @@ const previewContent = (content: string) => {
   return flat.length > 160 ? `${flat.slice(0, 160).trimEnd()}…` : flat
 }
 
-export function Settings() {
+export function Settings({ approvals = false, onPendingCountChange }: { approvals?: boolean; onPendingCountChange?: (count: number) => void } = {}) {
   const [settings, setSettings] = useState<any>(null)
   const [settingsError, setSettingsError] = useState('')
   const [fallbackFolders, setFallbackFolders] = useState<string[]>([])
@@ -1185,7 +1196,11 @@ export function Settings() {
       })
   }
 
-  useEffect(() => { loadWrites() }, [])
+  useEffect(() => { if (approvals) loadWrites() }, [approvals])
+
+  useEffect(() => {
+    if (approvals && writes) onPendingCountChange?.(writes.filter(w => w.status === 'pending').length)
+  }, [approvals, onPendingCountChange, writes])
 
   const refreshTokens = () =>
     api<TokenSummary[]>('/api/v1/tokens')
@@ -1389,10 +1404,10 @@ export function Settings() {
   return (
     <Box component="section" sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <Box sx={{ mb: 1 }}>
-        <Typography variant="h2">Vault Permissions</Typography>
-        <Typography variant="body1" color="text.secondary">Your vault stays local. Choose exactly what trusted agents can read or write, with every change reviewable.</Typography>
+        <Typography variant="h2">{approvals ? 'Approvals' : 'Settings'}</Typography>
+        <Typography variant="body1" color="text.secondary">{approvals ? 'Review proposed changes before they reach your local vault.' : 'Configure vault access, trusted tokens, and the read-only audit trail.'}</Typography>
       </Box>
-      <Paper elevation={0} sx={{ p: { xs: 2, md: 3 }, border: 1, borderColor: 'divider' }}>
+      {!approvals && <Paper elevation={0} sx={{ p: { xs: 2, md: 3 }, border: 1, borderColor: 'divider' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', mb: 2 }}>
           <Box>
             <Typography variant="overline" color="text.secondary">VAULT</Typography>
@@ -1446,9 +1461,9 @@ export function Settings() {
             <Button variant="contained" size="small" sx={{ ml: 'auto' }} disabled={!settings} onClick={saveSettings}>save folder settings</Button>
           </Box>
         </Box>
-      </Paper>
+      </Paper>}
       <div className="settings-workspace-layout" data-layout="quiet-split">
-      <section className="tokens-section" aria-labelledby="tokens-heading">
+      {!approvals && <section className="tokens-section" aria-labelledby="tokens-heading">
         <Box className="tokens-intro" sx={{ mb: 3 }}>
           <Typography variant="overline" color="text.secondary">TRUSTED CONNECTIONS</Typography>
           <Typography variant="h2" id="tokens-heading">External access</Typography>
@@ -1516,8 +1531,8 @@ export function Settings() {
             </Box>}
           </Paper>
         </div>
-      </section>
-      <section className="writes-section" aria-labelledby="writes-heading">
+      </section>}
+      {approvals && <section className="writes-section" aria-labelledby="writes-heading">
         <div className="writes-layout">
           <Paper elevation={0} className="writes-panel write-proposals-region" sx={{ p: { xs: 2, md: 2.5 }, border: 1, borderColor: 'divider', display: 'grid', gap: 2 }}>
             <Box>
@@ -1562,7 +1577,7 @@ export function Settings() {
               </Box>
             )}
             {!writesError && writes !== null && pending.length === 0 && (
-              <Typography variant="body2" color="text.secondary">no pending proposals — writes appear here when the index wants to add or update a note.</Typography>
+              <Typography variant="body2" color="text.secondary">All caught up. Nothing needs review.</Typography>
             )}
             {pending.map(w => {
               const preview = w.operation === 'mkdir' ? 'Folder creation' : previewContent(w.content)
@@ -1624,11 +1639,15 @@ export function Settings() {
           </section>
         </div>
         <span className="sr-only" role="status" aria-live="polite">{liveMessage}</span>
-      </section>
+      </section>}
       </div>
     </Box>
   )
 }
+
+export const Approvals = ({ onPendingCountChange }: { onPendingCountChange?: (count: number) => void } = {}) => (
+  <Settings approvals onPendingCountChange={onPendingCountChange} />
+)
 
 /* Bootstrap only when mounted into a real page shell (skipped under jsdom tests). */
 type RootHost = HTMLElement & { __neuralMemoryReactRoot?: Root }
