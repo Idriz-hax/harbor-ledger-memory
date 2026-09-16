@@ -255,6 +255,29 @@ def test_revoke_after_name_reuse_revokes_active_row(tmp_path: Path) -> None:
         service.close()
 
 
+def test_replace_active_rules_leaves_revoked_tokens_unchanged(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    old_rules = (FolderRule(path=PurePosixPath("Old"), access=FolderAccess.NONE),)
+    new_rules = (
+        FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+    )
+    try:
+        active, _ = service.create("active", old_rules, admin=True)
+        revoked, _ = service.create("revoked", old_rules)
+        service.revoke("revoked")
+
+        assert service.replace_active_rules(new_rules) == 1
+
+        records = {record.name: record for record in service.list()}
+        assert records["active"].rules == new_rules
+        assert records["active"].admin is True
+        assert records["revoked"].rules == old_rules
+        assert records["revoked"].revoked_at is not None
+        assert active.id != revoked.id
+    finally:
+        service.close()
+
+
 def test_backfill_legacy_tokens_is_idempotent(tmp_path: Path) -> None:
     rules = (FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),)
     db = tmp_path / "tokens.db"

@@ -1464,19 +1464,29 @@ def create_app(
         if not updates:
             raise HTTPException(status_code=400, detail="no settings supplied")
         update_persistent_config(updates)
-        # Keep operational settings immutable until restart.  Only the settings
-        # display is refreshed, so REST and MCP continue to share one policy.
+        if request.folder_rules is not None:
+            token_service.replace_active_rules(request.folder_rules)
+        # Keep other operational settings immutable until restart; token rules
+        # above are updated immediately for both REST and MCP authentication.
         display_settings = Settings.model_validate(
             settings.model_dump(mode="json") | updates
         )
+        restart_required = any(key != "folder_rules" for key in updates)
         activity_service.record(
             "config",
-            {"changed_keys": sorted(updates), "restart_required": True},
+            {
+                "changed_keys": sorted(updates),
+                "restart_required": restart_required,
+            },
         )
         return SettingsUpdateResponse(
             saved=True,
-            restart_required=True,
-            message="Settings saved. Restart the service to apply them.",
+            restart_required=restart_required,
+            message=(
+                "Settings saved. Restart the service to apply them."
+                if restart_required
+                else "Settings saved. Folder rules apply immediately."
+            ),
             settings=settings_response(),
         )
 
