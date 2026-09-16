@@ -409,7 +409,6 @@ def update_persistent_config(updates: dict[str, Any], path: Path | None = None) 
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary_name, target)
-        target.chmod(0o600)
     except Exception:
         try:
             os.unlink(temporary_name)

@@ -230,6 +230,39 @@ def test_settings_token_update_failure_leaves_persisted_config_unchanged(
     ]
 
 
+def test_settings_save_does_not_chmod_after_persisting_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    settings = Settings(
+        vault_path=tmp_path, database_url=f"sqlite:///{tmp_path / 'db'}"
+    )
+    application = create_app(settings)
+    service = application.state.token_service
+    admin = service.create("admin", admin=True).plaintext
+    config = tmp_path / "home/.config/harbor-ledger-memory/config.toml"
+    chmod = Path.chmod
+
+    def reject_persisted_chmod(path: Path, mode: int) -> None:
+        if path == config:
+            raise AssertionError("post-replace chmod must not run")
+        chmod(path, mode)
+
+    monkeypatch.setattr(Path, "chmod", reject_persisted_chmod)
+    with TestClient(application) as client:
+        saved = client.put(
+            "/api/v1/settings",
+            json={"folder_rules": [{"path": "AI", "access": "propose-write"}]},
+            headers={"Authorization": f"Bearer {admin}"},
+        )
+
+    assert saved.status_code == 200
+    assert service.verify(admin).rules == (
+        FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+    )
+    assert config.stat().st_mode & 0o777 == 0o600
+
+
 def test_settings_config_failure_restores_active_token_rules(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
