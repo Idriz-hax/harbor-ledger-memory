@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { api, App, Settings } from '../main'
 
@@ -58,8 +58,12 @@ const appResponses = () => ({
 })
 
 afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   localStorage.clear()
+  sessionStorage.clear()
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
   MockEventSource.instances = []
 })
 
@@ -215,8 +219,8 @@ describe('App · automatic local UI session', () => {
       ...appResponses(),
     })
     render(<App />)
-    await waitFor(() => expect(screen.getByRole('button', { name: /02\s*settings/i })).toBeInTheDocument())
-    await user.click(screen.getByRole('button', { name: /02\s*settings/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /settings/i })).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /settings/i }))
     await user.type(screen.getByPlaceholderText(/agent-/), 'external')
     await user.click(screen.getByRole('button', { name: /generate token/i }))
     await waitFor(() => expect(screen.getByText(/shown only once/)).toBeInTheDocument())
@@ -224,5 +228,58 @@ describe('App · automatic local UI session', () => {
     expect(screen.getByText('hlm_new')).toBeInTheDocument()
     const create = calls.find(call => call.method === 'POST' && call.url === '/api/v1/tokens')
     expect(create?.headers?.Authorization).toBeUndefined()
+  })
+
+  it('renews the visible cookie session before its idle expiry without a bearer header', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', MockEventSource)
+    const { calls } = mockApi(appResponses())
+    render(<App />)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(25 * 60 * 1000) })
+
+    const statusCalls = calls.filter(call => call.url === '/api/v1/status')
+    expect(statusCalls).toHaveLength(2)
+    expect(statusCalls[1]?.headers?.Authorization).toBeUndefined()
+    vi.useRealTimers()
+  })
+
+  it('stops renewal while hidden and validates immediately when visible', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', MockEventSource)
+    const { calls } = mockApi(appResponses())
+    render(<App />)
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60 * 1000) })
+    expect(calls.filter(call => call.url === '/api/v1/status')).toHaveLength(1)
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    expect(calls.filter(call => call.url === '/api/v1/status')).toHaveLength(2)
+    vi.useRealTimers()
+  })
+
+  it('remembers Approvals for return when cookie authentication receives 401', async () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    const { fetchMock } = mockApi(appResponses())
+    const view = render(<App />)
+    await userEvent.setup().click(screen.getByRole('button', { name: /approvals/i }))
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 401, statusText: 'Unauthorized', text: async () => JSON.stringify({ detail: 'expired' }) } as Response)
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    await api('/api/v1/status').catch(() => undefined)
+    expect(sessionStorage.getItem('hlm_ui_return_screen')).toBe('approvals')
+    view.unmount()
+    render(<App />)
+    expect(screen.getByRole('heading', { name: 'Approvals', level: 2 })).toBeInTheDocument()
+  })
+
+  it('does not redirect on 403 authorization errors', async () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    const { fetchMock } = mockApi(appResponses())
+    render(<App />)
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 403, statusText: 'Forbidden', text: async () => JSON.stringify({ detail: 'forbidden' }) } as Response)
+    await api('/api/v1/status').catch(() => undefined)
+    expect(sessionStorage.getItem('hlm_ui_return_screen')).toBeNull()
   })
 })
