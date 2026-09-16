@@ -128,7 +128,7 @@ export function App() {
   useEffect(() => { refresh() }, [refresh])
 
   useEffect(() => {
-    const renew = () => { api<Status>('/api/v1/status').catch(() => undefined) }
+    const renew = () => { api<Status>('/api/v1/status').catch(e => setError(e instanceof Error ? e.message : 'status check failed')) }
     let timer: number | undefined
     const schedule = () => { if (document.visibilityState === 'visible') timer = window.setInterval(renew, KEEPALIVE_MS) }
     const visibility = () => {
