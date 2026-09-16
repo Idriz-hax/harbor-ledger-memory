@@ -44,6 +44,7 @@ def _app(
     cidrs: tuple[str, ...] = (),
     api_enabled: bool = False,
     mcp_enabled: bool = True,
+    ui_session_service: UiSessionService | None = None,
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
     verifier = PasswordHasher().hash("correct horse")
@@ -64,7 +65,9 @@ def _app(
         mcp=McpSettings(enabled=mcp_enabled),
         api=ApiSettings(enabled=api_enabled),
     )
-    return create_app(settings, ui_origin=origin)
+    return create_app(
+        settings, ui_origin=origin, ui_session_service=ui_session_service
+    )
 
 
 def test_lan_login_flags_failures_and_logout_csrf(tmp_path: Path) -> None:
@@ -184,6 +187,29 @@ def test_session_expiry_and_revocation() -> None:
     session = service.new_session()
     service.revoke(session)
     assert not service.authenticate(session)
+
+
+def test_status_request_renews_idle_session_without_extending_absolute_expiry(
+    tmp_path: Path,
+) -> None:
+    now = [0.0]
+    service = UiSessionService(
+        idle_seconds=5, absolute_seconds=10, clock=lambda: now[0]
+    )
+    app = _app(tmp_path, ui_session_service=service)
+
+    with TestClient(app, base_url="http://hlm.local") as client:
+        assert client.post(
+            "/login",
+            data={"password": "correct horse"},
+            headers={"Origin": "http://hlm.local"},
+        ).status_code == 200
+        now[0] = 4
+        assert client.get("/api/v1/status").status_code == 200
+        now[0] = 8
+        assert client.get("/api/v1/status").status_code == 200
+        now[0] = 11
+        assert client.get("/api/v1/status").status_code == 401
 
 
 def test_https_trusted_host_and_hsts_only_https(tmp_path: Path) -> None:
