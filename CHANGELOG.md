@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.1 - 2026-09-17
+
+- Added a dedicated Approvals queue with a pending-count badge; Settings now
+  keeps vault configuration, token controls, and completed write audit history.
+- Active browser sessions renew while their tab is visible. Expired sessions now
+  return users to sign-in and restore their prior Settings or Approvals view.
+- Folder-rule changes now update every active token immediately, so a permitted
+  parent folder also permits newly created descendants. Revoked tokens are
+  unchanged.
+- Fixed policy updates so failed or concurrent Settings saves cannot leave the
+  persisted folder rules and active-token permissions out of sync.
+- Released the API and package metadata as version 1.3.1.
+
 ## 1.3.0 - 2026-09-12
 
 - Added authenticated, live-only graph traversal telemetry with bounded,
