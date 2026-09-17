@@ -8,6 +8,7 @@ import logging
 import secrets
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -536,6 +537,7 @@ def create_app(
         mcp_session_manager = None
     display_settings = settings
     graph_cursor_secret = secrets.token_bytes(32)
+    folder_rules_settings_lock = threading.Lock()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
@@ -1464,25 +1466,30 @@ def create_app(
         if not updates:
             raise HTTPException(status_code=400, detail="no settings supplied")
         if request.folder_rules is not None:
-            snapshot = token_service.snapshot_active_rules()
-            token_service.replace_active_rules(request.folder_rules)
-            try:
-                update_persistent_config(updates)
-            except Exception:
+            with folder_rules_settings_lock:
+                snapshot = token_service.snapshot_active_rules()
+                token_service.replace_active_rules(request.folder_rules)
                 try:
-                    token_service.restore_active_rules(snapshot)
-                except Exception as compensation_error:
-                    raise RuntimeError(
-                        "config persistence failed and token-rule restoration failed"
-                    ) from compensation_error
-                raise
+                    update_persistent_config(updates)
+                except Exception:
+                    try:
+                        token_service.restore_active_rules(snapshot)
+                    except Exception as compensation_error:
+                        raise RuntimeError(
+                            "config persistence failed and "
+                            "token-rule restoration failed"
+                        ) from compensation_error
+                    raise
+                display_settings = Settings.model_validate(
+                    settings.model_dump(mode="json") | updates
+                )
         else:
             update_persistent_config(updates)
+            display_settings = Settings.model_validate(
+                settings.model_dump(mode="json") | updates
+            )
         # Keep other operational settings immutable until restart; token rules
         # above are updated immediately for both REST and MCP authentication.
-        display_settings = Settings.model_validate(
-            settings.model_dump(mode="json") | updates
-        )
         restart_required = any(key != "folder_rules" for key in updates)
         activity_service.record(
             "config",
