@@ -349,6 +349,73 @@ def test_settings_compensation_failure_raises_loudly(
         )
 
 
+def test_settings_rule_save_serializes_compensation_before_next_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    application = create_app(
+        Settings(vault_path=tmp_path, database_url=f"sqlite:///{tmp_path / 'db'}")
+    )
+    service = application.state.token_service
+    admin = service.create("admin", admin=True).plaintext
+    original_update = app_module.update_persistent_config
+    a_persisting = threading.Event()
+    release_a = threading.Event()
+    b_started = threading.Event()
+    b_persisted = threading.Event()
+    outcomes: dict[str, object] = {}
+
+    def controlled_update(updates: dict[str, object]) -> None:
+        path = updates["folder_rules"][0]["path"]  # type: ignore[index]
+        if path == "A":
+            a_persisting.set()
+            assert release_a.wait(5)
+            raise OSError("A failed")
+        b_persisted.set()
+        original_update(updates)
+
+    monkeypatch.setattr(app_module, "update_persistent_config", controlled_update)
+
+    def save(name: str) -> None:
+        try:
+            if name == "B":
+                b_started.set()
+            with TestClient(application) as client:
+                outcomes[name] = client.put(
+                    "/api/v1/settings",
+                    json={
+                        "folder_rules": [
+                            {"path": name, "access": "propose-write"}
+                        ]
+                    },
+                    headers={"Authorization": f"Bearer {admin}"},
+                )
+        except Exception as exc:
+            outcomes[name] = exc
+
+    request_a = threading.Thread(target=save, args=("A",))
+    request_b = threading.Thread(target=save, args=("B",))
+    request_a.start()
+    assert a_persisting.wait(5)
+    request_b.start()
+    assert b_started.wait(5)
+    assert not b_persisted.wait(0.2)
+    release_a.set()
+    request_a.join(5)
+    request_b.join(5)
+
+    assert not request_a.is_alive()
+    assert not request_b.is_alive()
+    assert isinstance(outcomes["A"], OSError)
+    assert outcomes["B"].status_code == 200  # type: ignore[union-attr]
+    assert read_persistent_config()["folder_rules"] == [
+        {"path": "B", "access": "propose-write"}
+    ]
+    assert service.verify(admin).rules == (
+        FolderRule(path=PurePosixPath("B"), access=FolderAccess.PROPOSE_WRITE),
+    )
+
+
 def test_app_lifespan_scans_then_starts_and_stops_watcher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
