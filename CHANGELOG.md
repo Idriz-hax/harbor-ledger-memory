@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.2 - 2026-09-19
+
+- Released the API and package metadata as version 1.3.2.
+
 ## 1.3.1 - 2026-09-17
 
 - Added a dedicated Approvals queue with a pending-count badge; Settings now
