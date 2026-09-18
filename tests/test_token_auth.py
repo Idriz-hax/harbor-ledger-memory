@@ -86,7 +86,7 @@ def test_application_version_matches_release(tmp_path: Path) -> None:
         vault_path=tmp_path,
         database_url=f"sqlite:///{tmp_path / 'version.db'}",
     )
-    assert create_app(settings).version == "1.3.1"
+    assert create_app(settings).version == "1.3.2"
 
 
 def test_valid_token_unlocks(tmp_path: Path) -> None:

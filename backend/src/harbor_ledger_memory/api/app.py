@@ -604,7 +604,7 @@ def create_app(
     application = FastAPI(
         title="Harbor Ledger Memory",
         description="Neural memory service for AI agents with local vault controls",
-        version="1.3.1",
+        version="1.3.2",
         lifespan=lifespan,
     )
     application.state.activity_service = activity_service
