@@ -1432,7 +1432,6 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
   return (
     <Box component="section" sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <Box sx={{ mb: 1 }}>
-        {!approvals && <Typography variant="h2">Settings</Typography>}
         <Typography variant="body1" color="text.secondary">{approvals ? 'Review proposed changes before they reach your local vault.' : 'Configure vault access, trusted tokens, and the read-only audit trail.'}</Typography>
       </Box>
       {!approvals && <Paper elevation={0} sx={{ p: { xs: 2, md: 3 }, border: 1, borderColor: 'divider' }}>

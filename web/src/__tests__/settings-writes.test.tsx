@@ -360,6 +360,15 @@ describe('Settings · vault writes', () => {
     expect(media560).toContain('.write-actions .write-action-error { width: 100% }')
   })
 
+  it('does not repeat the page title — the app shell header owns it', async () => {
+    mockWrites([{ proposals: [] }])
+    render(<Settings />)
+    await screen.findByText('External access')
+    expect(screen.queryByRole('heading', { name: 'Settings' })).toBeNull()
+    /* The subtitle below the shell's page title is preserved. */
+    expect(screen.getByText('Configure vault access, trusted tokens, and the read-only audit trail.')).toBeTruthy()
+  })
+
   it('keeps write review controls out of Settings', async () => {
     mockWrites([{ proposals: [pendingProposal] }])
     render(<Settings />)
