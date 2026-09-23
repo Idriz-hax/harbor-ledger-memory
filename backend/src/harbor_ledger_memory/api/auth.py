@@ -20,7 +20,9 @@ from harbor_ledger_memory.config import FolderAccess, FolderRule
 from harbor_ledger_memory.services.access import AccessPolicy
 from harbor_ledger_memory.services.tokens import TokenRecord, TokenService
 from harbor_ledger_memory.services.ui_session import (
+    UI_CSRF_COOKIE,
     UI_SESSION_COOKIE,
+    UiSessionCapacityError,
     UiSessionService,
 )
 
@@ -144,7 +146,33 @@ def _cookie_origin_allowed(request: Request) -> bool:
     return request.headers.get("origin") == request.app.state.ui_origin
 
 
-async def authenticated(request: Request) -> AuthContext:
+def _recover_passwordless_session(request: Request, response: Response) -> str:
+    service: UiSessionService = request.app.state.ui_session_service
+    try:
+        session = service.new_session()
+    except UiSessionCapacityError:
+        raise _unauthenticated() from None
+    secure = bool(getattr(request.app.state, "secure_cookies", False))
+    response.set_cookie(
+        UI_SESSION_COOKIE,
+        session,
+        httponly=True,
+        samesite="strict",
+        path="/",
+        secure=secure,
+    )
+    response.set_cookie(
+        UI_CSRF_COOKIE,
+        service.csrf(session) or "",
+        httponly=False,
+        samesite="strict",
+        path="/",
+        secure=secure,
+    )
+    return session
+
+
+async def authenticated(request: Request, response: Response) -> AuthContext:
     """Resolve the calling token and its policy (always locked).
 
     The in-process internal bypass resolves to full access. Otherwise a valid
@@ -162,6 +190,17 @@ async def authenticated(request: Request) -> AuthContext:
         )
     record = service.verify(bearer or "")
     if record is None:
+        if (
+            bearer is None
+            and request.method in {"GET", "HEAD", "OPTIONS"}
+            and not request.app.state.ui_auth_required
+            and request.cookies.get(UI_SESSION_COOKIE) is not None
+        ):
+            return AuthContext(
+                None,
+                UiSessionService.policy(),
+                _recover_passwordless_session(request, response),
+            )
         if bearer is None and _cookie_session(request):
             if request.method not in {"GET", "HEAD", "OPTIONS"} and (
                 not _cookie_origin_allowed(request) or not _cookie_csrf_allowed(request)

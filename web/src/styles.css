@@ -29,7 +29,17 @@ body {
     #0b1117;
 }
 button, input, select { font: inherit; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:focus-visible,
+.MuiButtonBase-root:focus-visible,
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid #f2d27b !important;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 1px #0b1117, 0 0 0 5px rgba(242, 210, 123, .35);
+}
 
 /* --- Graph card / chart canvas --- */
 .tide-atlas {
@@ -194,17 +204,23 @@ button, input, select { font: inherit; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 /* --- Settings workspace grid --- */
-.settings-workspace-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; margin-top: 32px; }
+.settings-workspace-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: 24px; margin-top: 32px; align-items: start; }
 .settings-workspace-layout > .tokens-section { grid-column: 1; }
 .settings-workspace-layout > .writes-section { grid-column: 2; }
 .settings-workspace-layout > .writes-section, .settings-workspace-layout .writes-layout { display: contents; }
 .tokens-layout { display: grid; gap: 20px; }
 .writes-layout { display: grid; gap: 20px; }
 .writes-panel { grid-column: 2; min-width: 0; }
-.audit-region { grid-column: 1 / -1; margin-top: 24px; border-top: 1px solid var(--line); padding-top: 20px; color: var(--text); }
+/* Approvals-only modifier: the split grid leaves a dead left column when the
+   tokens section is absent, so the approvals view takes the full width. */
+.settings-workspace-layout[data-layout="approvals-full"] { grid-template-columns: 1fr }
+.settings-workspace-layout[data-layout="approvals-full"] > .writes-section { grid-column: auto; }
+.settings-workspace-layout[data-layout="approvals-full"] .writes-panel { grid-column: auto; }
+.audit-region { grid-column: 2; grid-row: 1; margin-top: 0; border-left: 1px solid var(--line); padding-left: 24px; color: var(--text); position: sticky; top: 24px; }
 
 @media (max-width: 1100px) {
   .settings-workspace-layout { grid-template-columns: 1fr; margin-top: 24px; }
+  .audit-region { grid-column: 1; grid-row: auto; position: static; border-left: 0; border-top: 1px solid var(--line); padding: 20px 0 0; }
   .tokens-layout { gap: 16px; }
   .writes-layout { gap: 16px; }
 }
@@ -216,6 +232,20 @@ button, input, select { font: inherit; }
   .write-actions .write-btn { flex: 1 }
   .write-actions .write-action-error { width: 100% }
   .activity-radar { display: none }
+}
+
+@media (max-width: 700px) {
+  .write-proposals-region h2 { font-size: 1.65rem; }
+  .app-shell { flex-direction: column; overflow-x: hidden; }
+  .app-sidebar { width: 100% !important; padding: 16px !important; border-right: 0; border-bottom: 1px solid var(--line); }
+  .app-sidebar > div:first-child { padding-bottom: 12px; margin-bottom: 12px; }
+  .app-sidebar > div:last-child { display: none; }
+  .app-primary-nav ul { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .app-primary-nav li { margin-bottom: 0 !important; min-width: 0; }
+  .app-primary-nav .MuiListItemButton-root { min-height: 44px; justify-content: center; padding-inline: 8px; }
+  .app-primary-nav .MuiListItemText-root { min-width: 0; }
+  .app-primary-nav .MuiListItemText-primary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  main { max-width: 100%; overflow-x: hidden; }
 }
 
 @media (prefers-reduced-motion: reduce) {

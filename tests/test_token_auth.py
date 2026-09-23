@@ -446,6 +446,97 @@ def test_token_lifecycle_over_rest(tmp_path: Path) -> None:
         assert client.delete("/api/v1/tokens/ghost", headers=headers).status_code == 404
 
 
+def test_token_update_over_rest(tmp_path: Path) -> None:
+    app, db = _make_app(tmp_path)
+    with TestClient(app) as client:
+        service = TokenService(db)
+        _, admin = service.create("dash", rules=(), admin=True)
+        _, target = service.create(
+            "worker",
+            rules=[FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ)],
+        )
+        headers = _headers(admin)
+        # Full permission update.
+        resp = client.patch(
+            "/api/v1/tokens/worker",
+            json={
+                "rules": [{"path": "AI", "access": "propose-write"}],
+                "admin": True,
+                "approve_own_proposals": True,
+            },
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "worker"
+        assert data["rules"] == [{"path": "AI", "access": "propose-write"}]
+        assert data["admin"] is True
+        assert data["approve_own_proposals"] is True
+        assert "token" not in data and "token_hash" not in data
+        # The secret is unchanged: the old plaintext still authenticates.
+        assert client.get("/api/v1/status", headers=_headers(target)).status_code == 200
+        # Partial update: only admin changes; rules and approval are kept.
+        resp = client.patch(
+            "/api/v1/tokens/worker", json={"admin": False}, headers=headers
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["admin"] is False
+        assert data["approve_own_proposals"] is True
+        assert data["rules"] == [{"path": "AI", "access": "propose-write"}]
+        # Empty body -> 400 (service-level: nothing to update).
+        assert (
+            client.patch(
+                "/api/v1/tokens/worker", json={}, headers=headers
+            ).status_code
+            == 400
+        )
+        # Malformed rule -> 422 (pydantic FolderRule validation).
+        resp = client.patch(
+            "/api/v1/tokens/worker",
+            json={"rules": [{"path": "AI", "access": "bogus"}]},
+            headers=headers,
+        )
+        assert resp.status_code == 422
+        # Unknown token -> 404, like revoke.
+        ghost = client.patch(
+            "/api/v1/tokens/ghost", json={"admin": True}, headers=headers
+        )
+        assert ghost.status_code == 404
+        assert ghost.json() == {"detail": "unknown token name: ghost"}
+        # Revoked tokens are rejected too.
+        service.revoke("worker")
+        resp = client.patch(
+            "/api/v1/tokens/worker", json={"admin": True}, headers=headers
+        )
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "unknown token name: worker"}
+
+
+def test_token_update_requires_admin(tmp_path: Path) -> None:
+    """Non-admin tokens cannot update any token, not even themselves."""
+    app, db = _make_app(tmp_path)
+    with TestClient(app) as client:
+        service = TokenService(db)
+        _, writer = service.create(
+            "writer",
+            rules=[
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)
+            ],
+        )
+        headers = _headers(writer)
+        resp = client.patch(
+            "/api/v1/tokens/writer", json={"admin": True}, headers=headers
+        )
+        assert resp.status_code == 403
+        assert resp.json() == {"detail": "token missing admin access"}
+        # Unauthenticated callers get the flat 401.
+        assert (
+            client.patch("/api/v1/tokens/writer", json={"admin": True}).status_code
+            == 401
+        )
+
+
 def test_token_endpoints_and_settings_put_require_admin(tmp_path: Path) -> None:
     app, db = _make_app(tmp_path)
     with TestClient(app) as client:

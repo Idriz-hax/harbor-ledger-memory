@@ -272,6 +272,57 @@ def test_activity_history_sweeps_token_created_rules(tmp_path: Path) -> None:
         assert "Secret" not in json.dumps(reader_created)
 
 
+def test_activity_history_sweeps_token_updated_rules(tmp_path: Path) -> None:
+    """token_updated events hide rules on paths the observer cannot read.
+
+    Mirrors the ``token_created`` sweep: a reader must not learn that a
+    token was granted access to its hidden folder through an update event.
+    """
+    app, db = _make_app(tmp_path)
+    admin, reader = _make_tokens(db)
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/tokens",
+            json={"name": "swept", "rules": [{"path": "AI", "access": "read"}]},
+            headers=_headers(admin),
+        )
+        assert created.status_code == 201
+        patched = client.patch(
+            "/api/v1/tokens/swept",
+            json={
+                "rules": [
+                    {"path": "AI", "access": "read"},
+                    {"path": "Secret", "access": "propose-write"},
+                ],
+            },
+            headers=_headers(admin),
+        )
+        assert patched.status_code == 200
+
+        full = client.get("/api/v1/activity", headers=_headers(admin)).json()
+        admin_updated = [
+            event for event in full["events"] if event["event_type"] == "token_updated"
+        ]
+        assert len(admin_updated) == 1
+        # Control: the admin history carries the hidden-folder rule.
+        assert admin_updated[0]["payload"]["rules"] == [
+            {"path": "AI", "access": "read"},
+            {"path": "Secret", "access": "propose-write"},
+        ]
+
+        swept = client.get("/api/v1/activity", headers=_headers(reader)).json()
+        reader_updated = [
+            event for event in swept["events"] if event["event_type"] == "token_updated"
+        ]
+        assert len(reader_updated) == 1, "the event stays visible to the reader"
+        # The rule on the reader's hidden folder disappears; the readable
+        # one survives.
+        assert reader_updated[0]["payload"]["rules"] == [
+            {"path": "AI", "access": "read"}
+        ]
+        assert "Secret" not in json.dumps(reader_updated)
+
+
 def test_sse_stream_sweeps_unreadable_events(tmp_path: Path) -> None:
     """The SSE stream sweeps both the history replay and live frames.
 

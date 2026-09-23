@@ -98,6 +98,7 @@ from harbor_ledger_memory.services.tokens import (
 from harbor_ledger_memory.services.ui_session import (
     UI_CSRF_COOKIE,
     UI_SESSION_COOKIE,
+    UiSessionCapacityError,
     UiSessionService,
 )
 from harbor_ledger_memory.services.vault_mutations import (
@@ -402,6 +403,20 @@ class TokenCreateBody(BaseModel):
     approve_own_proposals: bool = False
 
 
+class TokenUpdateBody(BaseModel):
+    """Partial in-place update of an active token's permissions.
+
+    Omitted (``None``) fields are left unchanged; the token secret is never
+    touched.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rules: tuple[FolderRule, ...] | None = None
+    admin: bool | None = None
+    approve_own_proposals: bool | None = None
+
+
 class WriteRequest(BaseModel):
     """Request to create a memory write proposal."""
 
@@ -618,6 +633,13 @@ def create_app(
     application.state.frontend_enabled = settings.frontend.enabled
     application.state.api_enabled = settings.api.enabled
     application.state.frontend_mode = settings.frontend.mode
+    # UI authentication only exists in LAN mode with a usable verifier (an
+    # empty string is treated as absent, matching the verifier itself);
+    # everywhere else / and the UI pages render without a session gate.
+    ui_auth_required = settings.frontend.mode == "lan" and bool(
+        settings.frontend.password_verifier
+    )
+    application.state.ui_auth_required = ui_auth_required
     application.state.secure_cookies = bool(
         ui_origin and ui_origin.startswith("https://")
     )
@@ -659,7 +681,7 @@ def create_app(
         return SettingsResponse.model_validate(payload)
 
     def _require_ui_page(request: Request) -> None:
-        if settings.frontend.mode == "lan" and not ui_session_service.authenticate(
+        if ui_auth_required and not ui_session_service.authenticate(
             request.cookies.get(UI_SESSION_COOKIE)
         ):
             raise HTTPException(status_code=303, headers={"location": "/login"})
@@ -703,12 +725,15 @@ def create_app(
     def index(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
         session = request.cookies.get(UI_SESSION_COOKIE)
         new_session = None
-        if settings.frontend.mode == "lan" and not ui_session_service.authenticate(
-            session
-        ):
+        if ui_auth_required and not ui_session_service.authenticate(session):
             return RedirectResponse("/login", status_code=303)
         if settings.frontend.enabled and not ui_session_service.authenticate(session):
-            new_session = ui_session_service.new_session()
+            try:
+                new_session = ui_session_service.new_session()
+            except UiSessionCapacityError:
+                raise HTTPException(
+                    status_code=503, detail="UI session capacity reached"
+                ) from None
         if web_index.is_file():
             result = FileResponse(web_index, media_type="text/html")
         else:
@@ -732,18 +757,23 @@ def create_app(
             )
         return result
 
-    @application.get("/login")
-    def login_page() -> HTMLResponse:  # pyright: ignore[reportUnusedFunction]
+    def _login_document(
+        error: str | None = None, status_code: int = 200
+    ) -> HTMLResponse:
         return HTMLResponse(
-            "<!doctype html><title>Harbor Ledger Memory — Log in</title>"
-            '<form method="post">'
-            '<label>Password <input type="password" name="password" autofocus></label>'
-            '<button type="submit">Log in</button></form>'
+            jinja_env.get_template("login.html").render(error=error),
+            status_code=status_code,
         )
+
+    @application.get("/login")
+    def login_page() -> Response:  # pyright: ignore[reportUnusedFunction]
+        if not ui_auth_required:
+            return RedirectResponse("/", status_code=303)
+        return _login_document()
 
     @application.post("/login")
     def login(request: Request, password: str = Form(...)) -> Response:  # pyright: ignore[reportUnusedFunction]
-        if settings.frontend.mode != "lan":
+        if not ui_auth_required:
             return RedirectResponse("/", status_code=303)
         if request.headers.get("origin") != application.state.ui_origin:
             raise HTTPException(status_code=403, detail="login unavailable")
@@ -751,7 +781,7 @@ def create_app(
         if not allowed:
             raise HTTPException(status_code=403, detail="login unavailable")
         if not _login_allowed(application, request):
-            raise HTTPException(status_code=429, detail="try again later")
+            return _login_document("Too many failed attempts. Try again shortly.", 429)
         verifier = settings.frontend.password_verifier
         valid = False
         if verifier:
@@ -761,11 +791,16 @@ def create_app(
                 valid = False
         if not valid:
             _login_failed(application, request)
-            raise HTTPException(status_code=401, detail="invalid credentials")
+            return _login_document("Invalid credentials.", 401)
         _login_succeeded(application, request)
         old = request.cookies.get(UI_SESSION_COOKIE)
         ui_session_service.revoke(old)
-        session = ui_session_service.new_session()
+        try:
+            session = ui_session_service.new_session()
+        except UiSessionCapacityError:
+            raise HTTPException(
+                status_code=503, detail="UI session capacity reached"
+            ) from None
         result = RedirectResponse("/", status_code=303)
         _set_ui_cookies(
             result, session, ui_session_service, application.state.secure_cookies
@@ -1028,6 +1063,37 @@ def create_app(
             "admin": created.admin,
             "approve_own_proposals": created.approve_own_proposals,
             "created_at": created.record.created_at.isoformat(),
+        }
+
+    @application.patch(
+        "/api/v1/tokens/{name}",
+        response_model=None,
+        dependencies=[Depends(require_admin)],
+    )
+    def update_token(  # pyright: ignore[reportUnusedFunction]
+        name: str,
+        body: TokenUpdateBody,
+    ) -> dict[str, object] | JSONResponse:
+        try:
+            record = token_service.update(
+                name,
+                rules=body.rules,
+                admin=body.admin,
+                approve_own_proposals=body.approve_own_proposals,
+                activity=activity_service,
+            )
+        except InvalidTokenRequestError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+        if record is None:
+            return JSONResponse(
+                status_code=404, content={"detail": f"unknown token name: {name}"}
+            )
+        return {
+            "name": record.name,
+            "rules": [rule.model_dump(mode="json") for rule in record.rules],
+            "admin": record.admin,
+            "approve_own_proposals": record.approve_own_proposals,
+            "created_at": record.created_at.isoformat(),
         }
 
     @application.delete(
@@ -1512,6 +1578,7 @@ def create_app(
     @application.post("/query")
     async def query_submit(  # pyright: ignore[reportUnusedFunction]
         request: Request,
+        response: Response,
         q: str = Form(...),
         project: str = Form(""),
         token: str = Form(""),
@@ -1533,7 +1600,7 @@ def create_app(
         record = token_service.verify(candidate)
         internal_token = None
         if record is None and not candidate:
-            auth = await authenticated(request)
+            auth = await authenticated(request, response)
             policy = auth.policy
             internal_token = hlm_internal_request.set(True)
         else:
@@ -1737,7 +1804,7 @@ def _sweep_activity_payload(
     """Sweep one event payload to the token's readable paths."""
     if not _activity_payload_readable(policy, payload):
         return None
-    if event_type != "token_created":
+    if event_type not in ("token_created", "token_updated"):
         return payload
     raw_rules = payload.get("rules")
     if not isinstance(raw_rules, list):
