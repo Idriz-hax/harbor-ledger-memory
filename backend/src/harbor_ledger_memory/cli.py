@@ -41,7 +41,10 @@ from harbor_ledger_memory.services.status import (
     CatalogStatusService,
     canonical_status_payload,
 )
-from harbor_ledger_memory.services.tokens import TokenService
+from harbor_ledger_memory.services.tokens import (
+    InvalidTokenRequestError,
+    TokenService,
+)
 from harbor_ledger_memory.services.validation import ValidationService
 from harbor_ledger_memory.vault.boundary import VaultBoundary, VaultPathError
 from harbor_ledger_memory.watcher import VaultWatchService
@@ -56,7 +59,9 @@ app = typer.Typer(
 )
 config_app = typer.Typer(name="config", help="Manage local application settings.")
 app.add_typer(config_app, name="config")
-token_app = typer.Typer(name="token", help="Create, list, and revoke API tokens.")
+token_app = typer.Typer(
+    name="token", help="Create, update, list, and revoke API tokens."
+)
 app.add_typer(token_app, name="token")
 
 
@@ -423,6 +428,65 @@ def token_create(
     )
 
 
+@token_app.command("update")
+def token_update(
+    name: str = typer.Argument(..., help="Name of the active token to update."),
+    admin: bool | None = typer.Option(
+        None,
+        "--admin/--no-admin",
+        help="Set (or clear) the admin flag; omitted leaves it unchanged.",
+    ),
+    rule: list[str] = typer.Option(
+        [],
+        "--rule",
+        help="Replace folder rules with PATH=LEVEL (repeatable). LEVEL: "
+        "none|read|propose-write|auto-write. Omitted leaves rules unchanged.",
+    ),
+    approve_own_proposals: bool | None = typer.Option(
+        None,
+        "--approve-own-proposals/--no-approve-own-proposals",
+        help="Set (or clear) approve-own-proposals; omitted leaves it "
+        "unchanged.",
+    ),
+    clear_rules: bool = typer.Option(
+        False,
+        "--clear-rules",
+        help="Remove all folder rules; mutually exclusive with --rule.",
+    ),
+) -> None:
+    """Update an active token's permissions in place.
+
+    The token secret is never changed: the existing plaintext stays valid.
+    """
+    if clear_rules and rule:
+        raise typer.BadParameter("--clear-rules and --rule are mutually exclusive")
+    settings = _load_settings()
+    parsed = [_parse_rule(raw) for raw in rule]
+    service = _token_service(settings)
+    try:
+        record = service.update(
+            name,
+            # Omitted --rule leaves rules unchanged; --clear-rules replaces
+            # them with the empty list, which ``or`` must not collapse.
+            rules=[] if clear_rules else parsed or None,
+            admin=admin,
+            approve_own_proposals=approve_own_proposals,
+        )
+    except InvalidTokenRequestError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        service.close()
+    if record is None:
+        typer.echo(f"Error: no active token named '{name}'", err=True)
+        raise typer.Exit(code=1)
+    admin_note = " [admin]" if record.admin else ""
+    typer.echo(
+        f"updated token '{record.name}'{admin_note} — "
+        f"{_rule_summary(record.rules)}; the token secret is unchanged"
+    )
+
+
 @token_app.command("list")
 def token_list(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON output."),
@@ -696,8 +760,6 @@ def _validate_lan_config(settings: Settings, bind_host: str) -> str:
         raise typer.BadParameter("LAN frontend mode requires a non-loopback host")
     if not network.enabled:
         raise typer.BadParameter("network.enabled must be true for LAN serving")
-    if not settings.frontend.password_verifier:
-        raise typer.BadParameter("LAN serving requires a password verifier")
     for cidr in network.allowed_cidrs:
         try:
             ipaddress.ip_network(cidr, strict=False)

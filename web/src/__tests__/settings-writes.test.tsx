@@ -44,7 +44,7 @@ const { readFileSync } = (await import(fsSpecifier)) as { readFileSync: (path: s
 const css = readFileSync(`${process.cwd()}/src/styles.css`, 'utf8')
 
 /* Queue of GET /api/v1/writes bodies; the last entry repeats for later calls. */
-function mockWrites(lists: unknown[], options: { getWrites?: Failure; postWrites?: Failure } = {}) {
+function mockWrites(lists: unknown[], options: { getWrites?: Failure; postWrites?: Failure; postFailures?: Record<number, Failure> } = {}) {
   let listCalls = 0
   const calls: FetchCall[] = []
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -54,9 +54,10 @@ function mockWrites(lists: unknown[], options: { getWrites?: Failure; postWrites
     const fail = (f: Failure) => ({ ok: f.status >= 200 && f.status < 300, status: f.status, text: async () => f.text } as Response)
     const postMatch = url.match(/\/api\/v1\/writes\/(\d+)\/(approve|reject)$/)
     if (postMatch) {
+      const id = Number(postMatch[1])
+      if (options.postFailures?.[id]) return fail(options.postFailures[id])
       if (options.postWrites) return fail(options.postWrites)
       /* Mirror the backend: a successful POST returns the resolved proposal. */
-      const id = Number(postMatch[1])
       const status = postMatch[2] === 'approve' ? 'applied' : 'rejected'
       const source = (lists[0] as { proposals?: WriteProposal[] })?.proposals?.find(w => w.id === id) ?? ({} as WriteProposal)
       return { ok: true, json: async () => ({ ...source, status, resolved_at: new Date().toISOString() }) } as Response
@@ -82,15 +83,11 @@ function mockWrites(lists: unknown[], options: { getWrites?: Failure; postWrites
 const writesGets = (calls: FetchCall[]) => calls.filter(c => c.url === '/api/v1/writes' && c.method === 'GET')
 
 describe('Settings · vault writes', () => {
-  it('shows discovered folders and selects a folder to configure', async () => {
+  it('does not duplicate the folder policy editor on Settings', async () => {
     mockWrites([{ proposals: [] }])
     render(<Settings />)
-    const user = userEvent.setup()
-
-    await user.click(await screen.findByLabelText('Expand Projects'))
-    await user.click(screen.getByText('Client').closest('button') as HTMLButtonElement)
-
-    expect(screen.getByLabelText('Permission for Projects/Client')).toBeTruthy()
+    expect(screen.queryByLabelText(/Permission for/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /save folder settings/i })).toBeNull()
   })
 
   it('renders pending proposals with path, operation, rule access, and a content preview', async () => {
@@ -360,6 +357,19 @@ describe('Settings · vault writes', () => {
     expect(media560).toContain('.write-actions .write-action-error { width: 100% }')
   })
 
+  it('keeps the shell full-width and keyboard-visible on compact screens', () => {
+    const compact = css.slice(css.indexOf('@media (max-width: 700px)'))
+    expect(compact).toContain('.app-shell { flex-direction: column')
+    expect(compact).toContain('.app-sidebar { width: 100%')
+    expect(compact).toContain('.app-primary-nav ul { display: grid')
+    expect(css).toContain('.MuiButtonBase-root:focus-visible')
+    expect(css).toContain('outline: 3px solid')
+  })
+
+  it('gives native permission selects explicit programmatic names', () => {
+    expect(css).toContain('select:focus-visible')
+  })
+
   it('does not repeat the page title — the app shell header owns it', async () => {
     mockWrites([{ proposals: [] }])
     render(<Settings />)
@@ -415,5 +425,102 @@ describe('Settings · vault writes', () => {
     render(<Approvals />)
     await screen.findByText('All caught up. Nothing needs review.')
     expect(calls.some(call => /\/api\/v1\/(settings|graph|tokens)/.test(call.url))).toBe(false)
+  })
+
+  it('uses full workspace width for the approvals view', async () => {
+    mockWrites([{ proposals: [pendingProposal] }])
+    const { container } = render(<Approvals />)
+    await screen.findByRole('article', { name: 'write proposal for AI/new.md' })
+    const workspace = container.querySelector('.settings-workspace-layout')
+    /* Approvals-only modifier: the Settings split grid must not leave a dead column. */
+    expect(workspace).toHaveAttribute('data-layout', 'approvals-full')
+    /* CSS contract: the modifier collapses the split grid to a single column. */
+    expect(css).toContain('.settings-workspace-layout[data-layout="approvals-full"] { grid-template-columns: 1fr }')
+  })
+
+  it('approves every current pending proposal through the per-proposal route', async () => {
+    const second: WriteProposal = { ...pendingProposal, id: 8, path: 'AI/second.md' }
+    const applied7: WriteProposal = { ...pendingProposal, status: 'applied', resolved_at: minutesAgo(1) }
+    const applied8: WriteProposal = { ...second, status: 'applied', resolved_at: minutesAgo(1) }
+    const { calls } = mockWrites(
+      [{ proposals: [pendingProposal, second] }, { proposals: [applied7, applied8] }],
+    )
+    const { container } = render(<Approvals />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /Approve all/ }))
+    await screen.findByText('All caught up. Nothing needs review.')
+    /* Each proposal goes through its own route — no bulk endpoint. */
+    expect(calls).toContainEqual({ url: '/api/v1/writes/7/approve', method: 'POST' })
+    expect(calls).toContainEqual({ url: '/api/v1/writes/8/approve', method: 'POST' })
+    expect(container.querySelector('.writes-bulk-status')?.textContent).toContain('2 of 2 approved')
+    expect(screen.queryByRole('button', { name: 'Approve AI/new.md' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Approve AI/second.md' })).toBeNull()
+  })
+
+  it('reports approve-all partial failures and keeps the failed card actionable', async () => {
+    const second: WriteProposal = { ...pendingProposal, id: 8, path: 'AI/second.md' }
+    const applied7: WriteProposal = { ...pendingProposal, status: 'applied', resolved_at: minutesAgo(1) }
+    mockWrites(
+      [{ proposals: [pendingProposal, second] }, { proposals: [applied7, second] }],
+      { postFailures: { 8: { status: 400, text: 'proposal 8 is already applied, not pending' } } },
+    )
+    const { container } = render(<Approvals />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /Approve all/ }))
+    /* The failure is announced per card and in the summary — never silent. */
+    expect(await screen.findByRole('alert')).toHaveTextContent('already applied')
+    const status = container.querySelector('.writes-bulk-status')
+    expect(status?.textContent).toContain('1 of 2 approved')
+    expect(status?.textContent).toContain('AI/second.md')
+    /* The failed proposal stays pending and actionable — not marked successful. */
+    expect(screen.getByRole('button', { name: 'Approve AI/second.md' })).toBeEnabled()
+  })
+
+  it('issues approve-all requests sequentially — the second is not sent until the first resolves', async () => {
+    const second: WriteProposal = { ...pendingProposal, id: 8, path: 'AI/second.md' }
+    const applied7: WriteProposal = { ...pendingProposal, status: 'applied', resolved_at: minutesAgo(1) }
+    const applied8: WriteProposal = { ...second, status: 'applied', resolved_at: minutesAgo(1) }
+
+    /* Hold the first approval in flight; a concurrent (Promise.all) fan-out
+       would fire the second POST before this resolves and fail the check below. */
+    let resolveFirst: (value: Response) => void = () => undefined
+    const firstApproval = new Promise<Response>(resolve => { resolveFirst = resolve })
+    let listCalls = 0
+    const calls: FetchCall[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      calls.push({ url, method })
+      if (url === '/api/v1/writes/7/approve') return firstApproval
+      if (url === '/api/v1/writes/8/approve') return { ok: true, json: async () => applied8 } as Response
+      if (method === 'GET' && /^\/api\/v1\/writes$/.test(url)) {
+        listCalls += 1
+        const list = listCalls === 1 ? [pendingProposal, second]
+          : listCalls === 2 ? [applied7, second]
+          : [applied7, applied8]
+        return { ok: true, json: async () => ({ proposals: list }) } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { container } = render(<Approvals />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /Approve all/ }))
+    await waitFor(() => expect(calls).toContainEqual({ url: '/api/v1/writes/7/approve', method: 'POST' }))
+    /* The first request is still in flight: the second must not have started. */
+    expect(calls.some(c => c.url === '/api/v1/writes/8/approve')).toBe(false)
+
+    resolveFirst({ ok: true, json: async () => applied7 } as Response)
+    await waitFor(() => expect(calls).toContainEqual({ url: '/api/v1/writes/8/approve', method: 'POST' }))
+    await screen.findByText('All caught up. Nothing needs review.')
+    expect(container.querySelector('.writes-bulk-status')?.textContent).toContain('2 of 2 approved')
+  })
+
+  it('hides approve-all when there are no pending proposals', async () => {
+    mockWrites([{ proposals: [] }])
+    render(<Approvals />)
+    expect(await screen.findByText('All caught up. Nothing needs review.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Approve all/ })).toBeNull()
   })
 })

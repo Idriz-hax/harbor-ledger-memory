@@ -10,10 +10,15 @@ import {
   CircularProgress,
   CssBaseline,
   Divider,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   FormControlLabel,
   IconButton,
   InputLabel,
+  ListItem,
   List,
   ListItemButton,
   ListItemText,
@@ -85,7 +90,7 @@ export const api = async <T,>(url: string, init?: RequestInit) => {
   return response.json() as Promise<T>
 }
 export type TokenRule = { path: string; access: string }
-export type TokenSummary = { name: string; rules: TokenRule[]; admin: boolean; approve_own_proposals: boolean; created_at: string }
+export type TokenSummary = { name: string; rules: TokenRule[]; admin: boolean; approve_own_proposals: boolean; created_at: string; revoked_at?: string | null }
 /* Short, scannable rule summary for a token list row: only the rules that
    deviate from the default read are named. */
 const RULE_SUMMARY_LABEL: Record<string, string> = { none: 'none', 'propose-write': 'propose', 'auto-write': 'write' }
@@ -102,6 +107,122 @@ const formatCreated = (stamp: string) => {
 const timeAgo = (stamp: string) => { const seconds = Math.max(0, (Date.now() - new Date(stamp).getTime()) / 1000); if (seconds < 60) return `${Math.round(seconds)}s ago`; if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`; return `${Math.round(seconds / 3600)}h ago` }
 const label = (value: string) => value.replaceAll('_', ' ')
 const prefersReducedMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+type TokenEditorProps = {
+  open: boolean
+  mode: 'create' | 'edit'
+  tokenName: string
+  rules: TokenRule[]
+  folders: string[]
+  admin: boolean
+  approveOwn: boolean
+  busy: boolean
+  error: string
+  created: { name: string; token: string } | null
+  revealed: boolean
+  copied: boolean
+  onClose: () => void
+  onNameChange: (name: string) => void
+  onRulesChange: (rules: TokenRule[]) => void
+  onAdminChange: (value: boolean) => void
+  onApproveOwnChange: (value: boolean) => void
+  onSubmit: () => void
+  onReveal: () => void
+  onCopy: () => void
+}
+
+type FolderNode = { path: string; name: string; children: FolderNode[] }
+
+const buildFolderTree = (paths: string[]): FolderNode => {
+  const root: FolderNode = { path: '.', name: 'vault root', children: [] }
+  for (const path of [...new Set(paths.filter(path => path && path !== '.'))]) {
+    const parts = path.split('/').filter(Boolean)
+    let children = root.children
+    parts.forEach((part, index) => {
+      const key = parts.slice(0, index + 1).join('/')
+      const existing = children.find(node => node.path === key)
+      if (existing) children = existing.children
+      else {
+        const node = { path: key, name: part, children: [] }
+        children.push(node)
+        children = node.children
+      }
+    })
+  }
+  const sort = (node: FolderNode) => { node.children.sort((a, b) => a.name.localeCompare(b.name)); node.children.forEach(sort) }
+  sort(root)
+  return root
+}
+
+function FolderPermissionTree({ folders, rules, onChange }: { folders: string[]; rules: TokenRule[]; onChange: (rules: TokenRule[]) => void }) {
+  const [expanded, setExpanded] = useState(new Set(['.']))
+  const [filter, setFilter] = useState('')
+  const tree = useMemo(() => buildFolderTree(folders), [folders])
+  const allPaths = (nodes: FolderNode[]): string[] => nodes.flatMap(node => [node.path, ...allPaths(node.children)])
+  const ruleFor = (path: string) => rules.filter(rule => rule.path === '.' || path === rule.path || path.startsWith(`${rule.path}/`)).sort((a, b) => b.path.length - a.path.length)[0]
+  const explicit = (path: string) => rules.find(rule => rule.path === path)
+  const setAccess = (path: string, access: string) => onChange([...rules.filter(rule => rule.path !== path), { path, access }])
+  const removeAccess = (path: string) => onChange(rules.filter(rule => rule.path !== path))
+  const query = filter.trim().toLowerCase()
+
+  const item = (node: FolderNode, depth: number): React.ReactNode => {
+    const matches = !query || node.path.toLowerCase().includes(query) || allPaths(node.children).some(path => path.toLowerCase().includes(query))
+    if (!matches && node.path !== '.') return null
+    const isExpanded = expanded.has(node.path) || Boolean(query)
+    const inherited = ruleFor(node.path)
+    const own = explicit(node.path)
+    const displayPath = node.path === '.' ? 'vault root' : node.path
+    return <Box key={node.path} sx={{ pl: { xs: depth * 1, sm: depth * 1.5 } }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, flexWrap: 'wrap' }}>
+        {node.children.length > 0 ? <Button size="small" sx={{ minWidth: 32, px: 0.5 }} aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${displayPath}`} onClick={() => setExpanded(previous => { const next = new Set(previous); next.has(node.path) ? next.delete(node.path) : next.add(node.path); return next })}>{isExpanded ? '▼' : '▶'}</Button> : <Box sx={{ width: 32 }} />}
+        <Box sx={{ flex: '1 1 150px', minWidth: 0 }}>
+          <Typography variant="body2" sx={{ fontFamily: '"IBM Plex Mono", monospace', overflowWrap: 'anywhere' }}>{displayPath}</Typography>
+          <Typography variant="caption" color="text.secondary">{own ? `explicit ${own.access}` : inherited ? `inherited from ${inherited.path === '.' ? 'vault root' : inherited.path}` : 'default read'}</Typography>
+        </Box>
+        <Chip size="small" variant={own ? 'filled' : 'outlined'} label={`${own ? 'override' : 'effective'} · ${inherited?.access ?? 'read'}`} />
+        <Select native size="small" value={inherited?.access ?? 'read'} onChange={event => setAccess(node.path, event.target.value)} inputProps={{ 'aria-label': `Permission for ${displayPath}` }} sx={{ minWidth: { xs: 125, sm: 150 } }}>
+          <option value="read">read only</option><option value="propose-write">ask to write</option><option value="auto-write">allow writes</option><option value="none">no access</option>
+        </Select>
+        {own && <Button size="small" color="error" onClick={() => removeAccess(node.path)}>Remove override</Button>}
+      </Box>
+      {isExpanded && node.children.map(child => item(child, depth + 1))}
+    </Box>
+  }
+
+  return <Box sx={{ display: 'grid', gap: 1.5 }}>
+    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+      <TextField size="small" label="Filter folders" value={filter} onChange={event => setFilter(event.target.value)} inputProps={{ 'aria-label': 'Filter vault folders' }} sx={{ flex: '1 1 220px' }} />
+      <Button size="small" onClick={() => setExpanded(new Set(allPaths(tree.children).concat('.')))}>Expand all</Button>
+      <Button size="small" onClick={() => setExpanded(new Set(['.']))}>Collapse all</Button>
+    </Box>
+    <Typography variant="body2" color="text.secondary">Set an explicit override on any folder. Unlisted folders use the nearest inherited access.</Typography>
+    <Box sx={{ maxHeight: { xs: 360, sm: 440 }, overflow: 'auto' }}>{item(tree, 0)}</Box>
+  </Box>
+}
+
+function TokenEditor({ open, mode, tokenName, rules, folders, admin, approveOwn, busy, error, created, revealed, copied, onClose, onNameChange, onRulesChange, onAdminChange, onApproveOwnChange, onSubmit, onReveal, onCopy }: TokenEditorProps) {
+  return <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="sm" aria-labelledby="token-editor-title">
+    <DialogTitle id="token-editor-title">{mode === 'create' ? 'Generate token' : `Edit token ${tokenName}`}</DialogTitle>
+    <DialogContent dividers>
+      {created ? <Box sx={{ display: 'grid', gap: 2 }}>
+        <Alert severity="success">Token created. The secret is shown only once.</Alert>
+        <Box component="code" role="status" translate="no" sx={{ p: 1.5, border: 1, borderColor: 'divider', fontFamily: '"IBM Plex Mono", monospace', overflowWrap: 'anywhere' }}>{revealed ? created.token : '•'.repeat(Math.min(32, Math.max(16, created.token.length)))}</Box>
+        <Box sx={{ display: 'flex', gap: 1 }}><Button variant="contained" onClick={onCopy}>{copied ? 'Copied ✓' : 'Copy token'}</Button><Button variant="outlined" onClick={onReveal}>{revealed ? 'Hide token' : 'Reveal token'}</Button></Box>
+      </Box> : <Box sx={{ display: 'grid', gap: 2 }}>
+        <TextField autoFocus={mode === 'create'} id="token-name" size="small" label="Token name" name="token-name" autoComplete="off" value={tokenName} disabled={mode === 'edit'} onChange={e => onNameChange(e.target.value)} placeholder={`${tokenNameSuggestion()}…`} inputProps={{ spellCheck: false }} />
+        <Box>
+          <Typography component="div" variant="subtitle2" sx={{ mb: 1 }}>Folder permissions</Typography>
+          <FolderPermissionTree folders={folders} rules={rules} onChange={onRulesChange} />
+        </Box>
+        <FormControlLabel control={<Checkbox checked={admin} onChange={e => onAdminChange(e.target.checked)} />} label="Admin — can manage tokens" />
+        <FormControlLabel control={<Checkbox checked={approveOwn} onChange={e => onApproveOwnChange(e.target.checked)} />} label="Approve own proposals" />
+        {error && <Alert severity="error" role="alert">{error}</Alert>}
+      </Box>}
+    </DialogContent>
+    {!created && <DialogActions><Button onClick={onClose} disabled={busy}>{mode === 'edit' ? `Close editor for ${tokenName}` : 'Cancel'}</Button><Button variant="contained" onClick={onSubmit} disabled={busy} aria-busy={busy} startIcon={busy ? <CircularProgress size={14} /> : undefined}>{busy ? (mode === 'create' ? 'Generating…' : 'Saving…') : mode === 'create' ? 'Generate token' : `Save token ${tokenName}`}</Button></DialogActions>}
+    {created && <DialogActions><Button onClick={onClose}>Done</Button></DialogActions>}
+  </Dialog>
+}
 
 /* --- App shell --- */
 export function App() {
@@ -175,8 +296,8 @@ export function App() {
   return (
     <ThemeProvider theme={makeAppTheme(preset)}>
       <CssBaseline />
-      <Box sx={{ display: 'flex', minHeight: '100vh', background: 'transparent' }}>
-        <Box component="aside" sx={{ width: 252, flexShrink: 0, p: 3, borderRight: 1, borderColor: 'divider', bgcolor: 'background.paper', display: 'flex', flexDirection: 'column', gap: 1 }}>
+      <Box className="app-shell" sx={{ display: 'flex', minHeight: '100vh', background: 'transparent' }}>
+        <Box component="aside" className="app-sidebar" sx={{ width: 252, flexShrink: 0, p: 3, borderRight: 1, borderColor: 'divider', bgcolor: 'background.paper', display: 'flex', flexDirection: 'column', gap: 1 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, pb: 3, mb: 2, borderBottom: 1, borderColor: 'divider' }}>
             <Box component="span" aria-hidden sx={{ display: 'grid', width: 38, height: 38, placeItems: 'center', borderRadius: '50%', border: 1, borderColor: 'secondary.main', color: 'secondary.main', fontSize: 17 }}>✦</Box>
             <Box>
@@ -184,20 +305,21 @@ export function App() {
               <Typography variant="caption" color="text.secondary" sx={{ fontFamily: '"IBM Plex Mono", monospace', letterSpacing: '.12em' }}>MEMORY SERVICE</Typography>
             </Box>
           </Box>
-          <nav aria-label="Primary navigation">
+          <nav className="app-primary-nav" aria-label="Primary navigation">
             <List disablePadding>
               {(['graph', 'approvals', 'settings'] as Screen[]).map((item, index) => (
-                <ListItemButton
-                  key={item}
-                  selected={screen === item}
-                  onClick={() => setScreen(item)}
-                  aria-label={`${SCREEN_META[item].label} — ${SCREEN_META[item].description}`}
-                  aria-current={screen === item ? 'page' : undefined}
-                  title={SCREEN_META[item].label}
-                  sx={{ minHeight: 52, mb: 1, gap: 1.5 }}
-                >
-                  <ListItemText primary={<Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>{SCREEN_META[item].label}{item === 'approvals' && pendingApprovals > 0 && <Chip size="small" color="secondary" label={pendingApprovals} aria-label={`${pendingApprovals} pending approvals`} sx={{ height: 20, minWidth: 20, fontSize: 11 }} />}</Box>} primaryTypographyProps={{ variant: 'subtitle2', fontWeight: 600 }} />
-                </ListItemButton>
+                <ListItem key={item} disablePadding sx={{ mb: 1 }}>
+                  <ListItemButton
+                    selected={screen === item}
+                    onClick={() => setScreen(item)}
+                    aria-label={`${SCREEN_META[item].label} — ${SCREEN_META[item].description}`}
+                    aria-current={screen === item ? 'page' : undefined}
+                    title={SCREEN_META[item].label}
+                    sx={{ minHeight: 52, gap: 1.5 }}
+                  >
+                    <ListItemText primary={<Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>{SCREEN_META[item].label}{item === 'approvals' && pendingApprovals > 0 && <Chip size="small" color="secondary" label={pendingApprovals} aria-label={`${pendingApprovals} pending approvals`} sx={{ height: 20, minWidth: 20, fontSize: 11 }} />}</Box>} primaryTypographyProps={{ component: 'div', variant: 'subtitle2', fontWeight: 600 }} />
+                  </ListItemButton>
+                </ListItem>
               ))}
             </List>
           </nav>
@@ -209,7 +331,7 @@ export function App() {
         <Box component="main" sx={{ flexGrow: 1, width: '100%', minWidth: 0, p: { xs: 2, sm: 3, md: 4 }, display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 'none' }}>
           <Box component="header" sx={{ mb: 1 }}>
             <Typography variant="overline" color="text.secondary" sx={{ display: 'block', mb: 1 }}>LOCAL · PRIVATE · AUDITABLE MEMORY</Typography>
-            <Typography variant="h2">{SCREEN_META[screen].label}</Typography>
+            <Typography variant="h1" sx={{ fontSize: { xs: '2.2rem', md: '3.2rem' } }}>{SCREEN_META[screen].label}</Typography>
           </Box>
           {error && <Alert severity="error">{error}</Alert>}
           {screen === 'graph' && <TideAtlas events={events} onRefresh={refresh} />}
@@ -998,7 +1120,7 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
       <Box className="graph-header screen-intro" sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 240 }}>
           <Typography variant="overline" color="text.secondary">MEMORY CHART · LOCAL INDEX</Typography>
-          <Typography variant="h5">{hasNodes ? `${nodes.length} notes` : '…'}</Typography>
+           <Typography variant="h2">{hasNodes ? `${nodes.length} notes` : '…'}</Typography>
           <Typography variant="body2" color="text.secondary">This Harbor Ledger server keeps its vault local. Teal routes show reads; amber marks attention and approval.</Typography>
         </Box>
         <Box className="graph-controls" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
@@ -1083,7 +1205,7 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
         {selectedNode && (
           <section className="node-details" aria-label="Selected note details">
             <Box className="node-details-head" sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-              <Typography variant="h6" sx={{ flex: 1, minWidth: 160 }}>{selectedNode.title}</Typography>
+               <Typography variant="h3" sx={{ flex: 1, minWidth: 160 }}>{selectedNode.title}</Typography>
               <Box sx={{ display: 'flex', gap: 1 }}>
                 <Button size="small" variant={pinnedPaths.has(selectedNode.path) ? 'contained' : 'outlined'} onClick={togglePin}>{pinnedPaths.has(selectedNode.path) ? 'unpin' : 'pin'}</Button>
                 <Button size="small" onClick={() => setSelectedPath(null)}>close</Button>
@@ -1150,12 +1272,7 @@ const previewContent = (content: string) => {
 
 export function Settings({ approvals = false, onPendingCountChange }: { approvals?: boolean; onPendingCountChange?: (count: number) => void } = {}) {
   const [settings, setSettings] = useState<any>(null)
-  const [settingsError, setSettingsError] = useState('')
   const [fallbackFolders, setFallbackFolders] = useState<string[]>([])
-  const [rules, setRules] = useState<any[]>([])
-  const [expanded, setExpanded] = useState(new Set(['.']))
-  const [selectedFolder, setSelectedFolder] = useState<string | null>(null)
-  const [folderFilter, setFolderFilter] = useState('')
   const [writes, setWrites] = useState<WriteProposal[] | null>(null)
   const [writesError, setWritesError] = useState('')
   const [writesStale, setWritesStale] = useState('')
@@ -1178,13 +1295,20 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
   const [adminDenied, setAdminDenied] = useState(false)
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null)
   const [tokenError, setTokenError] = useState('')
+  const [editingToken, setEditingToken] = useState<string | null>(null)
+  const [editAdmin, setEditAdmin] = useState(false)
+  const [editApproveOwn, setEditApproveOwn] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editError, setEditError] = useState('')
+  const [editSuccess, setEditSuccess] = useState<string | null>(null)
+  const [tokenEditor, setTokenEditor] = useState<'create' | 'edit' | null>(null)
+  const [editorRules, setEditorRules] = useState<TokenRule[]>([])
   const confirmTimer = useRef<number | null>(null)
 
   useEffect(() => {
     if (approvals) return
     api<any>('/api/v1/settings').then(r => {
       setSettings(r)
-      setRules(r.folder_rules || [])
       /* Older running services do not expose `folders` yet. Derive a useful
          tree from the graph so the settings page never collapses to an empty
          vault while the service is being upgraded. */
@@ -1198,7 +1322,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
           setFallbackFolders([...paths].sort())
         }).catch(() => undefined)
       }
-    }).catch(e => setSettingsError(e instanceof Error ? e.message : 'vault permissions unavailable'))
+    }).catch(() => setFallbackFolders([]))
   }, [approvals])
 
   /* Proposals this session resolved via POST — guards against an older list
@@ -1242,17 +1366,19 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
 
   useEffect(() => { if (!approvals) refreshTokens() }, [approvals])
 
-  /* Generate: persist the folder draft as the next token's template, then mint
-     the token with that draft as its own rules. */
+  useEffect(() => {
+    if (editingToken && !tokenRows?.some(row => row.name === editingToken && !row.revoked_at)) setEditingToken(null)
+  }, [editingToken, tokenRows])
+
+  /* Generate the token from its local editor draft; global settings are not changed. */
   const generateToken = async () => {
     const name = tokenName.trim() || tokenNameSuggestion()
     setGenerating(true); setTokenError(''); setJustCreated(null)
     try {
-      await api('/api/v1/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_rules: rules }) })
-      const r = await api<{ token: string } & TokenSummary>('/api/v1/tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, rules, admin: tokenAdmin, approve_own_proposals: approveOwnProposals }) })
+      const r = await api<{ token: string } & TokenSummary>('/api/v1/tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, rules: editorRules, admin: tokenAdmin, approve_own_proposals: approveOwnProposals }) })
       setJustCreated({ name, token: r.token })
       setRevealed(false); setCopied(false)
-      setTokenName('')
+      setTokenName(name)
       refreshTokens()
     } catch (e) { setTokenError(e instanceof Error ? e.message : 'failed to create token') }
     finally { setGenerating(false) }
@@ -1285,15 +1411,45 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
     catch (e) { setTokenError(e instanceof Error ? e.message : 'failed to revoke token') }
   }
 
-  /* Persist the folder-permission draft for the browser's own session. */
-  const saveSettings = async () => {
-    setSettingsError('')
-    try {
-      await api('/api/v1/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_rules: rules }) })
-    } catch (e) { setSettingsError(e instanceof Error ? e.message : 'failed to save folder settings') }
+  const beginTokenEdit = (row: TokenSummary) => {
+    if (row.revoked_at) return
+    setJustCreated(null)
+    setEditingToken(row.name)
+    setEditorRules(row.rules ?? [])
+    setEditAdmin(row.admin)
+    setEditApproveOwn(row.approve_own_proposals)
+    setEditError('')
+    setEditSuccess(null)
+    setTokenEditor('edit')
   }
 
-  const resolveProposal = async (action: 'approve' | 'reject', proposal: WriteProposal) => {
+  const saveTokenEdit = async () => {
+    if (!editingToken) return
+    if (!tokenRows?.some(row => row.name === editingToken && !row.revoked_at)) { setEditingToken(null); return }
+    const parsedRules = editorRules
+    setEditing(true); setEditError(''); setEditSuccess(null)
+    try {
+      const updated = await api<TokenSummary>(`/api/v1/tokens/${encodeURIComponent(editingToken)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules: parsedRules, admin: editAdmin, approve_own_proposals: editApproveOwn }),
+      })
+      setTokenRows(prev => prev?.map(row => row.name === updated.name ? updated : row) ?? prev)
+       closeTokenEditor()
+      setEditSuccess(`${updated.name} updated just now.`)
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : 'failed to update token')
+    } finally { setEditing(false) }
+  }
+
+  const openTokenCreator = () => {
+    setTokenName(''); setEditorRules([]); setTokenAdmin(false); setApproveOwnProposals(false)
+    setTokenError(''); setJustCreated(null); setTokenEditor('create')
+  }
+
+  const closeTokenEditor = () => { setTokenEditor(null); setEditingToken(null) }
+
+  const resolveProposal = async (action: 'approve' | 'reject', proposal: WriteProposal): Promise<boolean> => {
     setBusy({ id: proposal.id, action })
     setActionErrors(prev => { const next = { ...prev }; delete next[proposal.id]; return next })
     try {
@@ -1305,13 +1461,39 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
       setWrites(prev => (prev ? prev.map(w => (w.id === resolved.id ? resolved : w)) : prev))
       /* Keep the card busy until the refresh lands so a stale card cannot be re-submitted. */
       await loadWrites(true)
+      return true
     } catch (e) {
       const message = e instanceof Error ? e.message : 'the action failed'
       setActionErrors(prev => ({ ...prev, [proposal.id]: message }))
       setLiveMessage(`${proposal.path}: ${action === 'approve' ? 'approval' : 'rejection'} failed.`)
+      return false
     } finally {
       setBusy(prev => (prev && prev.id === proposal.id ? null : prev))
     }
+  }
+
+  /* Approve-all: fan out sequentially over the currently pending snapshot,
+     reusing the per-proposal route and semantics; per-card alerts carry the
+     failure reasons and the summary names any path that did not apply. */
+  const [bulkApproving, setBulkApproving] = useState(false)
+  const [bulkStatus, setBulkStatus] = useState('')
+  const approveAll = async () => {
+    const targets = pending
+    if (targets.length === 0 || busy !== null || bulkApproving) return
+    setBulkApproving(true)
+    setBulkStatus(`Approving ${targets.length} proposal${targets.length === 1 ? '' : 's'}…`)
+    let approved = 0
+    const failedPaths: string[] = []
+    for (const w of targets) {
+      if (await resolveProposal('approve', w)) approved += 1
+      else failedPaths.push(w.path)
+    }
+    const summary = failedPaths.length === 0
+      ? `${approved} of ${targets.length} approved`
+      : `${approved} of ${targets.length} approved — ${failedPaths.join(', ')} failed`
+    setBulkStatus(summary)
+    setLiveMessage(summary)
+    setBulkApproving(false)
   }
 
   const proposeFolder = async () => {
@@ -1331,223 +1513,64 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
     } finally { setCreatingFolder(false) }
   }
 
-  const toggleExpand = (path: string) => {
-    setExpanded(prev => { const next = new Set(prev); if (next.has(path)) next.delete(path); else next.add(path); return next })
-  }
-
-  type FolderNode = { path: string; name: string; children: FolderNode[] }
-  const buildTree = (paths: string[]): FolderNode => {
-    const root: FolderNode = { path: '.', name: 'vault', children: [] }
-    paths.forEach(path => {
-      if (!path || path === '.') return
-      const parts = path.split('/').filter(Boolean)
-      let current: any[] = root.children
-      parts.forEach((part: string, idx: number) => {
-        const key = parts.slice(0, idx + 1).join('/')
-        const existing = current.find(c => c.path === key)
-        if (existing) { current = existing.children }
-        else {
-          const newNode: FolderNode = { path: key, name: part, children: [] }
-          current.push(newNode)
-          current = newNode.children
-        }
-      })
-    })
-    const sort = (node: FolderNode) => { node.children.sort((a, b) => a.name.localeCompare(b.name)); node.children.forEach(sort) }
-    sort(root)
-    return root
-  }
-
-  const explicitRule = (path: string) => rules.find(rule => rule.path === path)
-  const accessFor = (path: string) => {
-    const match = rules.filter(rule => rule.path === '.' || path === rule.path || path.startsWith(`${rule.path}/`))
-      .sort((a, b) => b.path.length - a.path.length)[0]
-    return match?.access ?? 'read'
-  }
-  const setFolderAccess = (path: string, access: string) => {
-    if (!path) return
-    const current = explicitRule(path)
-    setRules(current
-      ? rules.map(rule => rule.path === path ? { ...rule, access } : rule)
-      : [...rules, { path, access }])
-  }
-
-  const TreeItem = ({ node, depth }: { node: FolderNode, depth: number }) => {
-    const expandedNode = expanded.has(node.path)
-    const explicit = node.path === '.' ? null : explicitRule(node.path)
-    const access = accessFor(node.path)
-    const query = folderFilter.trim().toLowerCase()
-    const matches = !query || node.path.toLowerCase().includes(query) || treePaths(node.children).some(path => path.toLowerCase().includes(query))
-    if (!matches && node.path !== '.') return null
-    return (
-      <Box sx={{ pl: depth * 1.5 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1, borderRadius: 1.5, bgcolor: selectedFolder === node.path ? 'action.selected' : 'transparent', flexWrap: 'wrap' }}>
-          {node.children.length > 0 && (
-            <Button size="small" sx={{ minWidth: 34, px: 0.5, fontSize: 11, color: 'text.secondary' }} aria-label={`${expandedNode ? 'Collapse' : 'Expand'} ${node.name}`} onClick={() => toggleExpand(node.path)}>
-              {expandedNode ? '▼' : '▶'}
-            </Button>
-          )}
-          <Button size="small" onClick={() => setSelectedFolder(node.path)} aria-pressed={selectedFolder === node.path} sx={{ gap: 0.5, px: 1, textAlign: 'left', whiteSpace: 'nowrap', fontWeight: selectedFolder === node.path ? 600 : 400 }}>
-            <Typography component="span" variant="body2" aria-hidden>{node.path === '.' ? '⌂' : '▰'}</Typography>
-            {node.name}
-          </Button>
-          <Chip size="small" variant={explicit ? 'filled' : 'outlined'} sx={{ fontSize: 11, height: 22 }} label={`${explicit ? 'set' : 'inherits'} · ${access}`} />
-          <Select
-            native
-            size="small"
-            aria-label={`Quick permission for ${node.path}`}
-            value={access}
-            onClick={e => e.stopPropagation()}
-            onChange={e => setFolderAccess(node.path, e.target.value)}
-            sx={{ minWidth: 128, fontSize: 13 }}
-          >
-            <option value="read">read</option>
-            <option value="none">none</option>
-            <option value="propose-write">ask to write</option>
-            <option value="auto-write">allow writes</option>
-          </Select>
-        </Box>
-        {expandedNode && node.children.map(child => <TreeItem node={child} depth={depth + 1} key={child.path} />)}
-      </Box>
-    )
-  }
-
   const discoveredFolders = useMemo(() => {
     const configured: string[] = Array.isArray(settings?.folders) && settings.folders.length > 0
       ? settings.folders.filter((path: unknown): path is string => typeof path === 'string')
       : fallbackFolders
-    const paths = configured.length > 0 ? configured : rules.map(rule => rule.path)
+    const paths = configured
     return [...new Set(paths.filter((path: string) => path && path !== '.'))]
-  }, [fallbackFolders, settings?.folders, rules])
-  const tree = buildTree(discoveredFolders)
-  const treePaths = (paths: FolderNode[]): string[] => paths.flatMap(node => [node.path, ...treePaths(node.children)])
-  const selectedRule = selectedFolder ? explicitRule(selectedFolder) : null
-  const inheritingDescendants = selectedFolder
-    ? treePaths(tree.children).filter(path => (selectedFolder === '.' || path === selectedFolder || path.startsWith(`${selectedFolder}/`)) && !rules.some(rule => rule.path !== selectedFolder && (rule.path === '.' || path === rule.path || path.startsWith(`${rule.path}/`))))
-    : []
+  }, [fallbackFolders, settings?.folders])
   const pending = (writes ?? []).filter(w => w.status === 'pending')
   const audit = (writes ?? []).filter(w => w.status !== 'pending')
-  const pendingHeading = pending.length === 0 ? 'Proposals' : `${pending.length} ${pending.length === 1 ? 'proposal' : 'proposals'} awaiting approval`
 
   return (
     <Box component="section" sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <Box sx={{ mb: 1 }}>
-        <Typography variant="body1" color="text.secondary">{approvals ? 'Review proposed changes before they reach your local vault.' : 'Configure vault access, trusted tokens, and the read-only audit trail.'}</Typography>
+         {!approvals && <Typography variant="body1" color="text.secondary">Configure vault access, trusted tokens, and the read-only audit trail.</Typography>}
       </Box>
-      {!approvals && <Paper elevation={0} sx={{ p: { xs: 2, md: 3 }, border: 1, borderColor: 'divider' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', mb: 2 }}>
-          <Box>
-            <Typography variant="overline" color="text.secondary">VAULT</Typography>
-            <Typography variant="h6">{settings?.vault_path || 'Vault permissions'}</Typography>
-          </Box>
-          <Box sx={{ ml: 'auto' }}>
-            <Chip size="small" label={`${discoveredFolders.length} folders`} />
-          </Box>
-        </Box>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, border: 1, borderColor: 'divider', borderRadius: 2, p: 2, bgcolor: 'background.default' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-            <Typography variant="body2" color="text.secondary">{discoveredFolders.length} folders + vault root · {rules.length} overrides</Typography>
-            <Box sx={{ ml: 'auto', display: 'flex', gap: 1 }}>
-              <Button size="small" onClick={() => setExpanded(new Set(treePaths(tree.children).concat('.')))}>expand all</Button>
-              <Button size="small" onClick={() => setExpanded(new Set(['.']))}>collapse</Button>
-            </Box>
-          </Box>
-          <TextField
-            size="small"
-            sx={{ maxWidth: 320 }}
-            slotProps={{ input: { 'aria-label': 'Filter vault folders' } }}
-            value={folderFilter}
-            onChange={e => setFolderFilter(e.target.value)}
-            placeholder="Filter folders…"
-          />
-          <Typography variant="body2" color="text.secondary">Select a folder to inspect its inherited rule, or set access directly from its row.</Typography>
-          <Box sx={{ minHeight: 40 }}>
-            {settingsError ? <Box role="alert" sx={{ display: 'flex', alignItems: 'center', gap: 2, color: 'error.main' }}>{settingsError}<Button size="small" onClick={() => window.location.reload()}>retry</Button></Box> : <TreeItem node={tree} depth={0} />}
-          </Box>
-          {selectedFolder && (
-            <Box sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 2, bgcolor: 'background.paper' }}>
-              <Typography variant="body2" sx={{ fontFamily: '"IBM Plex Mono", monospace', color: 'text.secondary', mb: 1 }}>{selectedFolder === '.' ? 'vault root' : selectedFolder}</Typography>
-              <Typography variant="body2" sx={{ display: 'block', mb: 0.5 }}>Permission for {selectedFolder === '.' ? 'vault root' : selectedFolder}</Typography>
-              <Select native size="small" aria-label={`Permission for ${selectedFolder}`} value={selectedRule?.access ?? accessFor(selectedFolder)} onChange={e => setFolderAccess(selectedFolder, e.target.value)} sx={{ minWidth: 160, mb: 1 }}>
-                <option value="read">read</option>
-                <option value="none">none</option>
-                <option value="propose-write">propose-write</option>
-                <option value="auto-write">auto-write</option>
-              </Select>
-              {selectedRule
-                ? <Button size="small" color="error" onClick={() => setRules(rules.filter(rule => rule.path !== selectedFolder))}>remove explicit override</Button>
-                : <Button size="small" disabled={selectedFolder === '.'} onClick={() => setFolderAccess(selectedFolder, accessFor(selectedFolder))}>save inherited value</Button>}
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                {selectedRule ? (selectedRule.access === 'read' ? 'Read-only — writes create a proposal instead of touching the vault.' : selectedRule.access === 'none' ? 'No access — matching notes are hidden from this token.' : selectedRule.access === 'propose-write' ? 'Read access with write proposals requiring approval.' : 'Read and write access, applied immediately with an audit record.') : 'This folder currently inherits read access from its nearest explicit rule.'}
-                {inheritingDescendants.length > 0 && ` Applies to ${inheritingDescendants.length} descendant folder${inheritingDescendants.length === 1 ? '' : 's'} without an explicit override.`}
-              </Typography>
-            </Box>
-          )}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-            <Typography variant="body2" color="text.secondary">{settings?.vault_path || 'no vault configured'}</Typography>
-            <Button variant="contained" size="small" sx={{ ml: 'auto' }} disabled={!settings} onClick={saveSettings}>save folder settings</Button>
-          </Box>
-        </Box>
-      </Paper>}
       {!approvals && <Box component="form" onSubmit={event => { event.preventDefault(); proposeFolder() }} sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, flexWrap: 'wrap', p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1.5, bgcolor: 'background.default' }}>
         <TextField size="small" label="New folder path" value={newFolderPath} onChange={event => setNewFolderPath(event.target.value)} placeholder="AI/Inbox" inputProps={{ spellCheck: false }} sx={{ flex: '1 1 220px' }} />
         <Button type="submit" variant="contained" size="small" disabled={creatingFolder} aria-busy={creatingFolder}>{creatingFolder ? 'Creating…' : 'Create folder'}</Button>
         {folderCreateError && <Alert severity="error" role="alert" sx={{ flexBasis: '100%', py: 0 }}>{folderCreateError}</Alert>}
       </Box>}
-      <div className="settings-workspace-layout" data-layout="quiet-split">
+      <div className="settings-workspace-layout" data-layout={approvals ? 'approvals-full' : 'quiet-split'}>
       {!approvals && <section className="tokens-section" aria-labelledby="tokens-heading">
         <Box className="tokens-intro" sx={{ mb: 3 }}>
           <Typography variant="overline" color="text.secondary">TRUSTED CONNECTIONS</Typography>
           <Typography variant="h2" id="tokens-heading">External access</Typography>
-          <Typography variant="body2" color="text.secondary">The Web UI uses its own authenticated session. Tokens for trusted REST and MCP clients use the folder-permission policy configured above.</Typography>
+           <Typography variant="body2" color="text.secondary">The Web UI uses its own authenticated session. Tokens for trusted REST and MCP clients carry their own folder permissions.</Typography>
         </Box>
         <div className="tokens-layout" data-layout="single-column">
           <Paper elevation={0} className="token-zone token-create" sx={{ p: { xs: 2, md: 2.5 }, border: 1, borderColor: 'divider' }} aria-labelledby="create-token-heading">
             <Typography variant="overline" color="text.secondary">CREATE TOKEN</Typography>
-            <Typography variant="h6" id="create-token-heading">New external token</Typography>
+              <Typography variant="h3" id="create-token-heading">Token access</Typography>
             {adminDenied ? (
               <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>This local session cannot manage external tokens — ask an admin to generate or revoke them.</Typography>
             ) : (
-              <Box sx={{ display: 'grid', gap: 2, mt: 2 }}>
-                <TextField size="small" label="Token name" name="token-name" autoComplete="off" value={tokenName} onChange={e => setTokenName(e.target.value)} placeholder={`${tokenNameSuggestion()}…`} inputProps={{ spellCheck: false }} />
-                <FormControlLabel control={<Checkbox name="token-admin" checked={tokenAdmin} onChange={e => setTokenAdmin(e.target.checked)} />} label="Admin — can manage tokens" />
-                <FormControlLabel control={<Checkbox name="approve-own-proposals" checked={approveOwnProposals} onChange={e => setApproveOwnProposals(e.target.checked)} />} label="Approve own proposals" />
-                <Typography variant="caption" color="text.secondary">Admin tokens can create and revoke other tokens. Only enable this for a trusted operator.</Typography>
-                <Button variant="contained" sx={{ alignSelf: 'flex-start' }} onClick={generateToken} disabled={generating} aria-busy={generating} startIcon={generating ? <CircularProgress size={14} /> : undefined}>Generate token</Button>
-              </Box>
+               <Box sx={{ display: 'grid', gap: 1.5, mt: 2 }}>
+                 <Typography variant="body2" color="text.secondary">Open the editor to name a token, choose folder access, and set operator privileges.</Typography>
+                 <Button variant="contained" sx={{ alignSelf: 'flex-start' }} onClick={openTokenCreator}>Generate token</Button>
+               </Box>
             )}
             {tokenError && <Alert severity="error" sx={{ mt: 2 }}>{tokenError}</Alert>}
           </Paper>
-          {justCreated && <Paper elevation={0} className="token-zone token-revealed" sx={{ p: { xs: 2, md: 2.5 }, mt: 2, border: 1, borderColor: 'success.main', bgcolor: 'success.light', color: 'text.primary' }} aria-labelledby="token-revealed-heading">
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              <Typography variant="h6" id="token-revealed-heading">Token ready to copy</Typography>
-              <Typography variant="caption" sx={{ ml: 'auto', color: 'text.secondary', fontVariant: 'small-caps', letterSpacing: '.08em' }}>shown only once</Typography>
-            </Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1, mb: 2 }}>Copy this token now. It will not be available again after this session.</Typography>
-            <Box role="status" sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
-              <Box component="code" translate="no" sx={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 14, fontWeight: 600 }}>{revealed ? justCreated.token : '•'.repeat(Math.min(32, Math.max(16, justCreated.token.length)))}</Box>
-              <Box sx={{ display: 'flex', gap: 1 }}>
-                <Button size="small" variant="contained" onClick={copyToken}>{copied ? 'Copied ✓' : 'Copy token'}</Button>
-                <Button size="small" variant="outlined" onClick={() => setRevealed(v => !v)}>{revealed ? 'Hide token' : 'Reveal token'}</Button>
-              </Box>
-            </Box>
-          </Paper>}
           <Paper elevation={0} className="token-zone token-existing" sx={{ p: { xs: 2, md: 2.5 }, mt: 2, border: 1, borderColor: 'divider' }} aria-labelledby="existing-tokens-heading">
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
               <Box>
                 <Typography variant="overline" color="text.secondary">MANAGE</Typography>
-                <Typography variant="h6" id="existing-tokens-heading">Existing tokens</Typography>
+                 <Typography variant="h3" id="existing-tokens-heading">Existing tokens</Typography>
               </Box>
               {tokenRows !== null && <Chip size="small" label={tokenRows.length} sx={{ ml: 'auto' }} />}
             </Box>
             {tokenRows !== null && <Box component="ul" sx={{ listStyle: 'none', p: 0, m: 0, mt: 2, display: 'grid', gap: 1 }}>
-              {tokenRows.length === 0 && <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>No tokens yet — generate the first one above.</Typography>}
+               {tokenRows.length === 0 && <Box component="li" sx={{ listStyle: 'none' }}><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>No tokens yet — generate the first one above.</Typography></Box>}
               {tokenRows.map(row => (
-                <Box component="li" key={row.name} sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1.5, flexWrap: 'wrap' }}>
+                <Box component="li" key={row.name} sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 1.5, border: 1, borderColor: editingToken === row.name ? 'primary.main' : 'divider', borderRadius: 1.5, flexWrap: 'wrap' }}>
                   <Box sx={{ minWidth: 0, flexGrow: 1 }}>
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>{row.name}{row.admin && <Chip size="small" label="admin" sx={{ ml: 1, height: 18, fontSize: 10 }} />}</Typography>
+                    <Typography component="div" variant="body2" sx={{ fontWeight: 600 }}>{row.name}{row.admin && <Chip size="small" label="admin" sx={{ ml: 1, height: 18, fontSize: 10 }} />}</Typography>
                     <Typography variant="caption" color="text.secondary">{ruleSummary(row.rules)}{formatCreated(row.created_at) ? ` · created ${formatCreated(row.created_at)}` : ''}</Typography>
                   </Box>
+                   {!row.revoked_at && <Button size="small" variant="text" aria-label={`${editingToken === row.name ? 'Close editor for' : 'Edit'} token ${row.name}`} onClick={() => editingToken === row.name ? closeTokenEditor() : beginTokenEdit(row)}>{editingToken === row.name ? 'Close' : 'Edit'}</Button>}
                   <Button
                     size="small"
                     color={confirmRevoke === row.name ? 'error' : undefined}
@@ -1561,27 +1584,37 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
                 </Box>
               ))}
             </Box>}
+            {editSuccess && <Alert severity="success" role="status" sx={{ mt: 2 }}>{editSuccess}</Alert>}
           </Paper>
-        </div>
+       </div>
+       <TokenEditor open={tokenEditor !== null} mode={tokenEditor ?? 'create'} tokenName={tokenEditor === 'edit' ? (editingToken ?? '') : tokenName} rules={editorRules} folders={discoveredFolders} admin={tokenEditor === 'edit' ? editAdmin : tokenAdmin} approveOwn={tokenEditor === 'edit' ? editApproveOwn : approveOwnProposals} busy={tokenEditor === 'edit' ? editing : generating} error={tokenEditor === 'edit' ? editError : tokenError} created={justCreated} revealed={revealed} copied={copied} onClose={closeTokenEditor} onNameChange={setTokenName} onRulesChange={setEditorRules} onAdminChange={value => tokenEditor === 'edit' ? setEditAdmin(value) : setTokenAdmin(value)} onApproveOwnChange={value => tokenEditor === 'edit' ? setEditApproveOwn(value) : setApproveOwnProposals(value)} onSubmit={tokenEditor === 'edit' ? saveTokenEdit : generateToken} onReveal={() => setRevealed(value => !value)} onCopy={copyToken} />
       </section>}
-      {approvals && <section className="writes-section" aria-labelledby="writes-heading">
+       {approvals && <section className="writes-section" aria-label="Pending changes">
         <div className="writes-layout">
           <Paper elevation={0} className="writes-panel write-proposals-region" sx={{ p: { xs: 2, md: 2.5 }, border: 1, borderColor: 'divider', display: 'grid', gap: 2 }}>
-            <Box>
-              <Typography variant="overline" color="text.secondary">WRITES</Typography>
-              <Typography variant="h6" id="writes-heading">Write proposals</Typography>
-              <Typography variant="body2" color="text.secondary">Review changes that need approval before they reach your vault.</Typography>
-            </Box>
             {writesStale && writes !== null && (
               <Box className="writes-stale" role="status" title={writesStale} sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', p: 1.5, border: 1, borderColor: 'warning.main', bgcolor: 'warning.light', borderRadius: 1.5 }}>
                 <Typography variant="body2">live update failed — the list may be out of date</Typography>
                 <Button size="small" onClick={() => loadWrites(true)}>retry</Button>
               </Box>
             )}
-            <Box>
-              <Typography variant="overline" color="text.secondary">PENDING</Typography>
-              <Typography variant="h6">{pendingHeading}</Typography>
+            <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
+               {pending.length > 0 && (
+                <Button
+                  className="write-bulk-approve"
+                  size="small"
+                  color="success"
+                  variant="outlined"
+                  disabled={busy !== null || bulkApproving}
+                  aria-busy={bulkApproving}
+                  onClick={approveAll}
+                  sx={{ ml: 'auto' }}
+                >
+                  {bulkApproving ? 'Approving…' : `Approve all (${pending.length})`}
+                </Button>
+              )}
             </Box>
+            {bulkStatus && <Typography className="writes-bulk-status" component="p" role="status" variant="body2" color="text.secondary">{bulkStatus}</Typography>}
             {writesError && (
               <Box className="writes-error" role="alert" sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', p: 1.5, border: 1, borderColor: 'error.main', bgcolor: 'error.light', borderRadius: 1.5 }}>
                 <Typography variant="body2">{writesError}</Typography>
@@ -1627,11 +1660,10 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
         </div>
         <span className="sr-only" role="status" aria-live="polite">{liveMessage}</span>
       </section>}
-      </div>
-      {!approvals && <section className="audit-region" aria-labelledby="audit-heading">
+       {!approvals && <section className="audit-region" aria-labelledby="audit-heading">
         <Box sx={{ mb: 2 }}>
           <Typography variant="overline" color="text.secondary">AUDIT</Typography>
-          <Typography variant="h6" id="audit-heading">Recent activity</Typography>
+           <Typography variant="h2" id="audit-heading">Recent activity</Typography>
         </Box>
         {writesError && <Typography variant="body2" color="text.secondary">audit unavailable — the writes feed could not be loaded.</Typography>}
         {!writesError && writes === null && <Box role="status" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, color: 'text.secondary' }}><CircularProgress size={16} /><Typography variant="body2">loading audit…</Typography></Box>}
@@ -1645,7 +1677,8 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
             {w.failure_reason && <Typography variant="caption" color="error.main" title={w.failure_reason}>{w.failure_reason}</Typography>}
           </Box>)}
         </Box>}
-      </section>}
+       </section>}
+       </div>
     </Box>
   )
 }

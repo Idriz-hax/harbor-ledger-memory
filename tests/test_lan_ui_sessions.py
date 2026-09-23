@@ -22,6 +22,7 @@ from harbor_ledger_memory.services.tokens import TokenService
 from harbor_ledger_memory.services.ui_session import (
     UI_CSRF_COOKIE,
     UI_SESSION_COOKIE,
+    UiSessionCapacityError,
     UiSessionService,
 )
 
@@ -37,6 +38,9 @@ _MCP_INITIALIZE = {
 }
 
 
+_NO_VERIFIER: object = object()
+
+
 def _app(
     tmp_path: Path,
     *,
@@ -45,9 +49,14 @@ def _app(
     api_enabled: bool = False,
     mcp_enabled: bool = True,
     ui_session_service: UiSessionService | None = None,
+    password_verifier: str | None | object = _NO_VERIFIER,
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
-    verifier = PasswordHasher().hash("correct horse")
+    verifier: str | None = (
+        PasswordHasher().hash("correct horse")
+        if password_verifier is _NO_VERIFIER
+        else password_verifier  # type: ignore[assignment]
+    )
     settings = Settings(
         vault_path=tmp_path,
         database_url=f"sqlite:///{tmp_path / 'lan.db'}",
@@ -112,6 +121,134 @@ def test_lan_login_flags_failures_and_logout_csrf(tmp_path: Path) -> None:
             == 303
         )
         assert client.get("/", follow_redirects=False).status_code == 303
+
+
+def test_lan_without_verifier_disables_ui_auth(tmp_path: Path) -> None:
+    app = _app(tmp_path, password_verifier=None)
+    with TestClient(app, base_url="http://hlm.local") as client:
+        # / renders the app, not a redirect to login
+        root = client.get("/", follow_redirects=False)
+        assert root.status_code == 200
+        assert root.headers.get("location") is None
+        # The login surface is unavailable: both directions go back to /
+        assert client.get("/login", follow_redirects=False).status_code == 303
+        assert (
+            client.post(
+                "/login",
+                data={"password": "anything"},
+                headers={"Origin": "http://hlm.local"},
+                follow_redirects=False,
+            ).status_code
+            == 303
+        )
+        # Session-gated UI pages stay reachable
+        assert client.get("/status", follow_redirects=False).status_code == 200
+
+
+def test_lan_with_empty_verifier_disables_ui_auth_like_absent(
+    tmp_path: Path,
+) -> None:
+    # An empty-string verifier is treated as absent: the verifier itself can
+    # never validate it, so the login gate must not lock the UI out.
+    app = _app(tmp_path, password_verifier="")
+    with TestClient(app, base_url="http://hlm.local") as client:
+        root = client.get("/", follow_redirects=False)
+        assert root.status_code == 200
+        assert root.headers.get("location") is None
+        assert client.get("/login", follow_redirects=False).status_code == 303
+        assert client.get("/status", follow_redirects=False).status_code == 200
+
+
+def test_passwordless_api_recovers_from_stale_ui_session_cookie(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path, password_verifier=None, api_enabled=True, mcp_enabled=False)
+    with TestClient(app, base_url="http://hlm.local") as client:
+        client.cookies.set(UI_SESSION_COOKIE, "stale-session")
+
+        response = client.get("/api/v1/status")
+
+        assert response.status_code == 200
+        assert any(
+            UI_SESSION_COOKIE in value and "stale-session" not in value
+            for value in response.headers.get_list("set-cookie")
+        )
+
+
+def test_passwordless_stale_cookie_recovery_fails_closed_at_session_capacity(
+    tmp_path: Path,
+) -> None:
+    service = UiSessionService(max_sessions=1)
+    service.new_session()
+    app = _app(
+        tmp_path,
+        password_verifier=None,
+        api_enabled=True,
+        mcp_enabled=False,
+        ui_session_service=service,
+    )
+    with TestClient(app, base_url="http://hlm.local") as client:
+        client.cookies.set(UI_SESSION_COOKIE, "stale-session")
+
+        response = client.get("/api/v1/status")
+
+        assert response.status_code == 401
+        assert UI_SESSION_COOKIE not in response.headers.get("set-cookie", "")
+
+
+def test_passwordless_root_fails_closed_at_session_capacity(tmp_path: Path) -> None:
+    service = UiSessionService(max_sessions=1)
+    service.new_session()
+    app = _app(
+        tmp_path,
+        password_verifier=None,
+        mcp_enabled=False,
+        ui_session_service=service,
+    )
+
+    with TestClient(app, base_url="http://hlm.local") as client:
+        response = client.get("/")
+
+    assert response.status_code == 503
+
+
+def test_lan_login_fails_closed_at_session_capacity(tmp_path: Path) -> None:
+    service = UiSessionService(max_sessions=1)
+    service.new_session()
+    app = _app(tmp_path, mcp_enabled=False, ui_session_service=service)
+
+    with TestClient(app, base_url="http://hlm.local") as client:
+        response = client.post(
+            "/login",
+            data={"password": "correct horse"},
+            headers={"Origin": "http://hlm.local"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 503
+
+
+def test_session_creation_prunes_expired_sessions_before_capacity_check() -> None:
+    now = [0.0]
+    service = UiSessionService(
+        max_sessions=1, idle_seconds=5, absolute_seconds=10, clock=lambda: now[0]
+    )
+    service.new_session()
+    now[0] = 6
+
+    assert service.new_session()
+
+
+def test_session_creation_fails_closed_at_capacity() -> None:
+    service = UiSessionService(max_sessions=1)
+    service.new_session()
+
+    try:
+        service.new_session()
+    except UiSessionCapacityError:
+        pass
+    else:
+        raise AssertionError("session creation must fail at capacity")
 
 
 def test_lan_ui_does_not_accept_the_legacy_session_cookie(tmp_path: Path) -> None:

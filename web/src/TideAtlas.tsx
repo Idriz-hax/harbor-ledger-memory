@@ -774,7 +774,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
         <Stack direction="row" justifyContent="space-between" alignItems="start">
           <Box>
             <Typography variant="overline" color="primary">{selected.kind} · SURVEYED</Typography>
-            <Typography variant="h4">{selected.label}</Typography>
+         <Typography variant="h3">{selected.label}</Typography>
           </Box>
           <IconButton aria-label="Close inspector" onClick={() => setSelected(null)} sx={{ color: 'text.secondary' }}><Close /></IconButton>
         </Stack>

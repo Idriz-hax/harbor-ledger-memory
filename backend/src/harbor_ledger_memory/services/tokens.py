@@ -303,6 +303,57 @@ class TokenService:
             approve_own_proposals=approve_own_proposals,
         )
 
+    def update(
+        self,
+        name: str,
+        *,
+        rules: Sequence[FolderRule] | None = None,
+        admin: bool | None = None,
+        approve_own_proposals: bool | None = None,
+        activity: Any = None,
+    ) -> TokenRecord | None:
+        """Update an active token's permission metadata in place.
+
+        ``None`` fields stay unchanged; rules reuse the create-time
+        validation. Returns the updated record, or ``None`` when no active
+        token has the name (unknown or revoked). The token hash is never
+        touched, so the existing plaintext stays valid.
+        """
+        if rules is None and admin is None and approve_own_proposals is None:
+            raise InvalidTokenRequestError(
+                "nothing to update: provide rules, admin, "
+                "or approve_own_proposals"
+            )
+        if rules is not None:
+            rules = _parse_create_rules(rules)
+        with self._lock:
+            row = self._session.scalar(
+                select(ApiToken).where(
+                    ApiToken.name == name, ApiToken.revoked_at.is_(None)
+                )
+            )
+            if row is None:
+                return None
+            if rules is not None:
+                row.rules = _rules_to_json(rules)
+            if admin is not None:
+                row.admin = admin
+            if approve_own_proposals is not None:
+                row.approve_own_proposals = approve_own_proposals
+            self._session.commit()
+            record = _record_from_row(row)
+        if activity is not None:
+            activity.record(
+                "token_updated",
+                {
+                    "name": record.name,
+                    "rules": [rule.model_dump(mode="json") for rule in record.rules],
+                    "admin": record.admin,
+                    "approve_own_proposals": record.approve_own_proposals,
+                },
+            )
+        return record
+
     def list(self) -> list[TokenRecord]:
         with self._lock:
             rows = self._session.scalars(select(ApiToken).order_by(ApiToken.id)).all()

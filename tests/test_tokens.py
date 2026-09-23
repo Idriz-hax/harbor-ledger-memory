@@ -324,3 +324,146 @@ def test_backfill_legacy_tokens_is_idempotent(tmp_path: Path) -> None:
         assert service.backfill_legacy_tokens(rules) == 0
     finally:
         service.close()
+
+
+class _RecordingActivity:
+    """Minimal ActivityService stand-in: keeps ``(type, payload)`` pairs."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def record(self, event_type: str, payload: dict[str, object]) -> None:
+        self.events.append((event_type, payload))
+
+
+def _stored_hash(db: Path, name: str) -> str:
+    engine = create_engine(f"sqlite:///{db}")
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT token_hash FROM api_tokens WHERE name = :name"),
+                {"name": name},
+            ).first()
+        assert row is not None
+        return str(row[0])
+    finally:
+        engine.dispose()
+
+
+def test_update_changes_permissions_in_place_and_keeps_hash(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "tokens.db"
+    service = TokenService(f"sqlite:///{db}")
+    try:
+        record, plaintext = service.create(
+            "agent",
+            (FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),),
+        )
+        old_hash = _stored_hash(db, "agent")
+        new_rules = (
+            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            FolderRule(path=PurePosixPath("Inbox"), access=FolderAccess.NONE),
+        )
+        updated = service.update(
+            "agent", rules=new_rules, admin=True, approve_own_proposals=True
+        )
+        assert updated is not None
+        assert updated.name == "agent"
+        assert updated.rules == new_rules
+        assert updated.admin is True
+        assert updated.approve_own_proposals is True
+        assert updated.created_at == record.created_at
+        assert updated.active is True
+        # The stored hash is untouched: the original plaintext still verifies.
+        assert _stored_hash(db, "agent") == old_hash
+        verified = service.verify(plaintext)
+        assert verified is not None
+        assert verified.rules == new_rules
+        assert verified.admin is True
+        assert verified.approve_own_proposals is True
+    finally:
+        service.close()
+
+
+def test_update_partial_keeps_unspecified_fields(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    try:
+        record, _ = service.create(
+            "agent",
+            (FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),),
+            admin=True,
+            approve_own_proposals=True,
+        )
+        updated = service.update("agent", admin=False)
+        assert updated is not None
+        assert updated.admin is False
+        # Unspecified fields stay as they were.
+        assert updated.rules == record.rules
+        assert updated.approve_own_proposals is True
+        assert updated.created_at == record.created_at
+    finally:
+        service.close()
+
+
+def test_update_rejects_missing_and_revoked_tokens(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    try:
+        _, plaintext = service.create("gone")
+        assert service.update("never-existed", admin=True) is None
+        service.revoke("gone")
+        assert service.update("gone", admin=True) is None
+        # An update attempt never revives a revoked token.
+        assert service.verify(plaintext) is None
+        assert all(record.revoked_at is not None for record in service.list())
+    finally:
+        service.close()
+
+
+def test_update_reuses_create_validation(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    try:
+        service.create("agent")
+        with pytest.raises(InvalidTokenRequestError):
+            service.update("agent")  # nothing to update
+        with pytest.raises(InvalidTokenRequestError):
+            service.update("agent", rules=cast(Sequence[FolderRule], ("read",)))
+        with pytest.raises(InvalidTokenRequestError):
+            service.update(
+                "agent",
+                rules=(
+                    FolderRule(path=PurePosixPath("AI"), access=FolderAccess.DENY),
+                ),
+            )
+        # Failed updates leave the row untouched.
+        listed = service.list()
+        assert listed[0].rules == ()
+        assert listed[0].admin is False
+        assert listed[0].approve_own_proposals is False
+    finally:
+        service.close()
+
+
+def test_update_records_activity_event(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    activity = _RecordingActivity()
+    try:
+        service.create("agent")
+        service.update("agent", admin=True, activity=activity)
+        assert activity.events == [
+            (
+                "token_updated",
+                {
+                    "name": "agent",
+                    "rules": [],
+                    "admin": True,
+                    "approve_own_proposals": False,
+                },
+            )
+        ]
+        # Rejected (unknown) updates record nothing.
+        activity.events.clear()
+        assert service.update("ghost", admin=True, activity=activity) is None
+        assert activity.events == []
+    finally:
+        service.close()
