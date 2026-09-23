@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { api, App, Settings } from '../main'
+import { api, App, Settings, type TokenSummary } from '../main'
 
 type MockResponse = { status?: number; body?: unknown }
 type Call = { url: string; method: string; headers?: Record<string, string>; body?: string }
@@ -68,47 +68,49 @@ afterEach(() => {
 })
 
 describe('Settings · API tokens', () => {
-  it('presents external token management as an accessible three-zone workspace', async () => {
+  it('opens one accessible token modal from the compact management surface', async () => {
     mockApi({
       'GET /api/v1/tokens': { body: [{ name: 'agent', rules: [], admin: true, created_at: '2026-01-02T00:00:00Z' }] },
     })
     render(<Settings />)
     expect(screen.getByRole('heading', { name: 'External access' })).toBeInTheDocument()
     expect(screen.getByText(/Web UI uses its own authenticated session/i)).toBeInTheDocument()
-    const tokenName = screen.getByRole('textbox', { name: /token name/i })
-    expect(tokenName).toHaveAttribute('name', 'token-name')
-    expect(tokenName).toHaveAttribute('autocomplete', 'off')
-    expect(tokenName).toHaveAttribute('spellcheck', 'false')
-    expect(screen.getByRole('checkbox', { name: /admin/i })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: /new external token|create token/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /generate token/i })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: /token name/i })).toBeNull()
     expect(screen.getByRole('heading', { name: /existing tokens/i })).toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: /generate token/i }))
+    const dialog = screen.getByRole('dialog', { name: /generate token/i })
+    expect(within(dialog).getByRole('textbox', { name: /token name/i })).toHaveAttribute('autocomplete', 'off')
+    expect(within(dialog).getByRole('checkbox', { name: /admin/i })).toBeInTheDocument()
+    expect(within(dialog).getByRole('checkbox', { name: /approve own proposals/i })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /token ready to copy/i })).toBeNull()
     expect(document.querySelector('.tokens-layout')).toHaveAttribute('data-layout', 'single-column')
   })
 
-  it('generates a token: persists the folder draft, POSTs the rules, and reveals the plaintext once', async () => {
+  it('generates a token: POSTs only token rules and reveals the plaintext once', async () => {
     const user = userEvent.setup()
     const writeText = vi.fn(async () => {})
     Object.defineProperty(window.navigator, 'clipboard', { value: { writeText }, configurable: true })
     const { calls } = mockApi({
-      'PUT /api/v1/settings': { status: 200, body: { settings: {} } },
+      'GET /api/v1/settings': { status: 200, body: { folders: ['AI'], folder_rules: [] } },
       'POST /api/v1/tokens': { status: 201, body: { token: 'hlm_new', name: 'opencode', rules: [], admin: false, created_at: '2026-01-02T00:00:00Z' } },
-      '/api/v1/settings': { status: 200, body: { folders: ['AI'], folder_rules: [{ path: 'AI', access: 'propose-write' }] } },
       '/api/v1/tokens': { status: 200, body: [] },
     })
     render(<Settings />)
-    await user.type(screen.getByPlaceholderText(/agent-\d{4}-\d{2}-\d{2}/), 'opencode')
     await user.click(screen.getByRole('button', { name: /generate token/i }))
-    await waitFor(() => expect(screen.getByText(/shown only once/)).toBeInTheDocument())
+    const dialog = screen.getByRole('dialog', { name: /generate token/i })
+    await user.type(within(dialog).getByRole('textbox', { name: /token name/i }), 'opencode')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Permission for AI' }), 'propose-write')
+    await user.click(within(dialog).getByRole('button', { name: /generate token/i }))
+    await waitFor(() => expect(within(dialog).getByText(/shown only once/)).toBeInTheDocument())
     /* Masked until revealed — the plaintext is never visible by default. */
     expect(screen.queryByText('hlm_new')).toBeNull()
-    await user.click(screen.getByRole('button', { name: /^reveal token$/i }))
-    expect(screen.getByText('hlm_new')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /^copy token$/i }))
+    await user.click(within(dialog).getByRole('button', { name: /^reveal token$/i }))
+    expect(within(dialog).getByText('hlm_new')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: /^copy token$/i }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('hlm_new'))
-    const put = calls.find(call => call.method === 'PUT' && call.url === '/api/v1/settings')
     const post = calls.find(call => call.method === 'POST' && call.url === '/api/v1/tokens')
-    expect(JSON.parse(put?.body ?? '{}')).toEqual({ folder_rules: [{ path: 'AI', access: 'propose-write' }] })
+    expect(calls.some(call => call.method === 'PUT' && call.url === '/api/v1/settings')).toBe(false)
     expect(post?.headers?.['Content-Type']).toBe('application/json')
     expect(JSON.parse(post?.body ?? '{}')).toEqual({ name: 'opencode', rules: [{ path: 'AI', access: 'propose-write' }], admin: false, approve_own_proposals: false })
   })
@@ -116,15 +118,16 @@ describe('Settings · API tokens', () => {
   it('falls back to a suggested name and sends admin when the checkbox is set', async () => {
     const user = userEvent.setup()
     const { calls } = mockApi({
-      'PUT /api/v1/settings': { status: 200, body: {} },
       'POST /api/v1/tokens': { status: 201, body: { token: 'hlm_admin', name: 'agent-x', rules: [], admin: true, created_at: '2026-01-02T00:00:00Z' } },
       '/api/v1/tokens': { status: 200, body: [] },
     })
     render(<Settings />)
-    await user.click(screen.getByRole('checkbox', { name: /admin/i }))
     await user.click(screen.getByRole('button', { name: /generate token/i }))
+    const dialog = screen.getByRole('dialog', { name: /generate token/i })
+    await user.click(within(dialog).getByRole('checkbox', { name: /admin/i }))
     const suggested = `agent-${new Date().toISOString().slice(0, 10)}`
-    await waitFor(() => expect(screen.getByText(/shown only once/)).toBeInTheDocument())
+    await user.click(within(dialog).getByRole('button', { name: /generate token/i }))
+    await waitFor(() => expect(within(dialog).getByText(/shown only once/)).toBeInTheDocument())
     const post = calls.find(call => call.method === 'POST' && call.url === '/api/v1/tokens')
     expect(JSON.parse(post?.body ?? '{}')).toEqual({ name: suggested, rules: [], admin: true, approve_own_proposals: false })
   })
@@ -136,12 +139,15 @@ describe('Settings · API tokens', () => {
       '/api/v1/tokens': { body: [] },
     })
     render(<Settings />)
-    const checkbox = screen.getByRole('checkbox', { name: /approve own proposals/i })
-    expect(checkbox).not.toBeChecked()
-    await user.click(checkbox)
     await user.click(screen.getByRole('button', { name: /generate token/i }))
-    await waitFor(() => expect(screen.getByText(/shown only once/)).toBeInTheDocument())
-    const post = calls.find(call => call.method === 'POST')
+    const dialog = screen.getByRole('dialog', { name: /generate token/i })
+    const checkbox = within(dialog).getByRole('checkbox', { name: /approve own proposals/i })
+    expect(checkbox).not.toBeChecked()
+    fireEvent.click(checkbox)
+    expect(checkbox).toBeChecked()
+    await user.click(within(dialog).getByRole('button', { name: /generate token/i }))
+    await waitFor(() => expect(within(dialog).getByText(/shown only once/)).toBeInTheDocument())
+    const post = calls.find(call => call.method === 'POST' && call.url === '/api/v1/tokens')
     expect(JSON.parse(post?.body ?? '{}').approve_own_proposals).toBe(true)
   })
 
@@ -161,6 +167,109 @@ describe('Settings · API tokens', () => {
     expect(revoke?.url).toBe('/api/v1/tokens/opencode')
     /* The row summarizes its rules instead of a raw scope list. */
     expect(await screen.findByText(/read-only · created/)).toBeInTheDocument()
+  })
+
+  it('edits an active token in place and applies the returned record without exposing a secret', async () => {
+    const user = userEvent.setup()
+    const { calls } = mockApi({
+      'GET /api/v1/settings': { body: { folders: ['AI'], folder_rules: [] } },
+      'PATCH /api/v1/tokens/agent': { body: { name: 'agent', rules: [{ path: 'AI', access: 'auto-write' }], admin: false, approve_own_proposals: true, created_at: '2026-01-02T00:00:00Z' } },
+      '/api/v1/tokens': { body: [{ name: 'agent', rules: [], admin: true, approve_own_proposals: false, created_at: '2026-01-02T00:00:00Z' }] },
+    })
+    render(<Settings />)
+
+    await user.click(await screen.findByRole('button', { name: /edit token agent/i }))
+    const dialog = screen.getByRole('dialog', { name: /edit token agent/i })
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Permission for AI' }), 'auto-write')
+    await user.click(within(dialog).getByRole('checkbox', { name: /admin/i }))
+    await user.click(within(dialog).getByRole('checkbox', { name: /approve own proposals/i }))
+    await user.click(within(dialog).getByRole('button', { name: /save token agent/i }))
+
+    await waitFor(() => expect(calls.some(call => call.method === 'PATCH')).toBe(true))
+    const patch = calls.find(call => call.method === 'PATCH')
+    expect(patch?.url).toBe('/api/v1/tokens/agent')
+    expect(JSON.parse(patch?.body ?? '{}')).toEqual({ rules: [{ path: 'AI', access: 'auto-write' }], admin: false, approve_own_proposals: true })
+    expect(screen.getByText(/updated just now/i)).toBeInTheDocument()
+    expect(screen.queryByText('hlm_secret')).toBeNull()
+  })
+
+  it('shows deepest inherited permissions and preserves an explicit read override', async () => {
+    const user = userEvent.setup()
+    const { calls } = mockApi({
+      'GET /api/v1/settings': { body: { folders: ['AI', 'AI/Private'], folder_rules: [] } },
+      'PATCH /api/v1/tokens/agent': { body: { name: 'agent', rules: [], admin: false, approve_own_proposals: false, created_at: '2026-01-02T00:00:00Z' } },
+      '/api/v1/tokens': { body: [{ name: 'agent', rules: [{ path: '.', access: 'auto-write' }, { path: 'AI', access: 'propose-write' }], admin: false, approve_own_proposals: false, created_at: '2026-01-02T00:00:00Z' }] },
+    })
+    render(<Settings />)
+    await user.click(await screen.findByRole('button', { name: /edit token agent/i }))
+    const dialog = screen.getByRole('dialog', { name: /edit token agent/i })
+    expect(within(dialog).getByRole('combobox', { name: 'Permission for vault root' })).toHaveValue('auto-write')
+    expect(within(dialog).getByRole('combobox', { name: 'Permission for AI' })).toHaveValue('propose-write')
+    await user.click(within(dialog).getByRole('button', { name: 'Expand AI' }))
+    expect(within(dialog).getByRole('combobox', { name: 'Permission for AI/Private' })).toHaveValue('propose-write')
+    expect(within(dialog).getByText('inherited from AI')).toBeInTheDocument()
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Permission for AI' }), 'read')
+    await user.click(within(dialog).getByRole('button', { name: /save token agent/i }))
+    await waitFor(() => expect(calls.some(call => call.method === 'PATCH')).toBe(true))
+    expect(JSON.parse(calls.find(call => call.method === 'PATCH')?.body ?? '{}').rules).toEqual([
+      { path: '.', access: 'auto-write' },
+      { path: 'AI', access: 'read' },
+    ])
+  })
+
+  it('closes the shared modal from the token row and clears edit state', async () => {
+    const user = userEvent.setup()
+    mockApi({ '/api/v1/tokens': { body: [{ name: 'agent', rules: [], admin: false, approve_own_proposals: false, created_at: '2026-01-02T00:00:00Z' }] } })
+    render(<Settings />)
+    await user.click(await screen.findByRole('button', { name: /edit token agent/i }))
+    expect(screen.getByRole('dialog', { name: /edit token agent/i })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /close editor for agent/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByRole('button', { name: /edit token agent/i })).toBeInTheDocument()
+  })
+
+  it('shows an update error and leaves the editor open', async () => {
+    const user = userEvent.setup()
+    mockApi({
+      'GET /api/v1/settings': { body: { folders: ['AI'], folder_rules: [] } },
+      'PATCH /api/v1/tokens/agent': { status: 400, body: { detail: 'invalid token rules' } },
+      '/api/v1/tokens': { body: [{ name: 'agent', rules: [], admin: false, approve_own_proposals: false, created_at: '2026-01-02T00:00:00Z' }] },
+    })
+    render(<Settings />)
+    await user.click(await screen.findByRole('button', { name: /edit token agent/i }))
+    const dialog = screen.getByRole('dialog', { name: /edit token agent/i })
+    await user.click(within(dialog).getByRole('button', { name: /save token agent/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('invalid token rules')
+    expect(within(dialog).getByRole('button', { name: /save token agent/i })).toBeEnabled()
+  })
+
+  it('does not offer editing for revoked tokens', async () => {
+    mockApi({
+      'GET /api/v1/tokens': { body: [{ name: 'old-agent', rules: [], admin: false, approve_own_proposals: false, revoked_at: '2026-01-03T00:00:00Z', created_at: '2026-01-02T00:00:00Z' }] },
+    })
+    render(<Settings />)
+    expect(await screen.findByText('old-agent')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /edit token old-agent/i })).toBeNull()
+  })
+
+  it('does not keep a revoked token editor actionable after the list changes', async () => {
+    const user = userEvent.setup()
+    let listed: TokenSummary[] = [{ name: 'agent', rules: [], admin: false, approve_own_proposals: false, created_at: '2026-01-02T00:00:00Z' }]
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/v1/tokens' && (init?.method ?? 'GET') === 'GET') return { ok: true, status: 200, json: async () => listed } as Response
+      if (url === '/api/v1/tokens/agent' && init?.method === 'DELETE') { listed = [{ ...listed[0], revoked_at: '2026-01-03T00:00:00Z' }]; return { ok: true, status: 200, json: async () => ({}) } as Response }
+      return { ok: true, status: 200, json: async () => ({}) } as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Settings />)
+    await user.click(await screen.findByRole('button', { name: /edit token agent/i }))
+    await user.click(screen.getByRole('button', { name: /close editor for agent/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await user.click(screen.getByRole('button', { name: /revoke token agent/i }))
+    await user.click(screen.getByRole('button', { name: /confirm revoke token agent/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /edit token agent/i })).toBeNull())
+    expect(screen.queryByRole('button', { name: /save token agent/i })).toBeNull()
   })
 
   it('shows a masked note instead of the generator when the token is not admin (403)', async () => {
@@ -194,6 +303,24 @@ describe('Browser session API protection', () => {
   })
 })
 
+describe('App shell semantics', () => {
+  it('uses a page-level h1 and list semantics for primary navigation', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('EventSource', MockEventSource)
+    mockApi(appResponses())
+    render(<App />)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Memory Chart' })).toBeInTheDocument()
+    const navigation = screen.getByRole('navigation', { name: 'Primary navigation' })
+    expect(navigation.querySelectorAll('li')).toHaveLength(3)
+    const levels = [...document.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(node => Number(node.tagName.slice(1)))
+    expect(levels.every((level, index) => index === 0 || level <= levels[index - 1] + 1)).toBe(true)
+    await user.click(screen.getByRole('button', { name: /settings/i }))
+    await screen.findByRole('heading', { name: 'External access' })
+    const settingsLevels = [...document.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(node => Number(node.tagName.slice(1)))
+    expect(settingsLevels.every((level, index) => index === 0 || level <= settingsLevels[index - 1] + 1)).toBe(true)
+  })
+})
+
 describe('App · automatic local UI session', () => {
   it('loads normally without a fragment or browser token and uses cookie authentication', async () => {
     vi.stubGlobal('EventSource', MockEventSource)
@@ -221,11 +348,13 @@ describe('App · automatic local UI session', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: /settings/i })).toBeInTheDocument())
     await user.click(screen.getByRole('button', { name: /settings/i }))
-    await user.type(screen.getByPlaceholderText(/agent-/), 'external')
     await user.click(screen.getByRole('button', { name: /generate token/i }))
-    await waitFor(() => expect(screen.getByText(/shown only once/)).toBeInTheDocument())
-    await user.click(screen.getByRole('button', { name: /^reveal token$/i }))
-    expect(screen.getByText('hlm_new')).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog', { name: /generate token/i })
+    await user.type(within(dialog).getByRole('textbox', { name: /token name/i }), 'external')
+    await user.click(within(dialog).getByRole('button', { name: /generate token/i }))
+    await waitFor(() => expect(within(dialog).getByText(/shown only once/)).toBeInTheDocument())
+    await user.click(within(dialog).getByRole('button', { name: /^reveal token$/i }))
+    expect(within(dialog).getByText('hlm_new')).toBeInTheDocument()
     const create = calls.find(call => call.method === 'POST' && call.url === '/api/v1/tokens')
     expect(create?.headers?.Authorization).toBeUndefined()
   })
@@ -271,7 +400,7 @@ describe('App · automatic local UI session', () => {
     expect(sessionStorage.getItem('hlm_ui_return_screen')).toBe('approvals')
     view.unmount()
     render(<App />)
-    expect(screen.getByRole('heading', { name: 'Approvals', level: 2 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Approvals', level: 1 })).toBeInTheDocument()
   })
 
   it('shows a 403 renewal error without leaving the visible Approvals view', async () => {
@@ -289,7 +418,7 @@ describe('App · automatic local UI session', () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(25 * 60 * 1000) })
 
-    expect(screen.getByRole('heading', { name: 'Approvals', level: 2 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Approvals', level: 1 })).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('authorization required')
     expect(sessionStorage.getItem('hlm_ui_return_screen')).toBeNull()
   })

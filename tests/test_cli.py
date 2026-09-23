@@ -435,15 +435,6 @@ def test_serve_requires_frontend_enabled(monkeypatch, tmp_path: Path) -> None:
             "192.168.1.10",
             "network",
         ),
-        (
-            Settings(
-                vault_path=Path("."),
-                frontend=FrontendSettings(enabled=True, mode="lan"),
-                network=NetworkSettings(enabled=True),
-            ),
-            "192.168.1.10",
-            "password",
-        ),
     ],
 )
 def test_serve_rejects_invalid_mode_combinations(
@@ -458,6 +449,37 @@ def test_serve_rejects_invalid_mode_combinations(
     result = CliRunner().invoke(app, ["serve", "--host", host])
     assert result.exit_code != 0
     assert message in result.output.lower()
+
+
+def test_serve_lan_without_verifier_starts_with_auth_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # No password_verifier: startup must succeed and create_app sees a LAN
+    # origin; the app itself then runs with UI auth disabled.
+    settings = Settings(
+        vault_path=tmp_path,
+        frontend=FrontendSettings(
+            enabled=True,
+            mode="lan",
+            public_origin="http://hlm.local",
+        ),
+        network=NetworkSettings(enabled=True, insecure_http=True),
+    )
+    calls: list[dict[str, object]] = []
+    origins: list[str] = []
+    monkeypatch.setattr(cli, "_load_settings", lambda: settings)
+    monkeypatch.setattr(
+        cli,
+        "create_app",
+        lambda settings, **kwargs: origins.append(kwargs["ui_origin"]) or object(),
+    )
+    monkeypatch.setattr(
+        "uvicorn.run", lambda application, **kwargs: calls.append(kwargs)
+    )
+    result = CliRunner().invoke(app, ["serve", "--host", "192.168.1.10"])
+    assert result.exit_code == 0, result.output
+    assert origins == ["http://hlm.local"]
+    assert calls == [{"host": "192.168.1.10", "port": 8765, "log_level": "info"}]
 
 
 def test_serve_rejects_invalid_lan_origin_and_tls(
@@ -832,6 +854,108 @@ def test_cli_token_create_defaults_to_read_only(
     rows = json.loads(listed.stdout)
     assert rows[0]["rules"] == []
     assert rows[0]["admin"] is False
+
+
+def test_cli_token_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_vault(tmp_path)
+    monkeypatch.setenv("HLM_VAULT_PATH", str(tmp_path))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'tokens.db'}")
+    runner = CliRunner()
+
+    created = runner.invoke(app, ["token", "create", "--name", "worker"])
+    assert created.exit_code == 0, created.stdout
+    plaintext = created.stdout.strip().splitlines()[0]
+
+    updated = runner.invoke(
+        app,
+        [
+            "token",
+            "update",
+            "worker",
+            "--admin",
+            "--rule",
+            "AI=auto-write",
+            "--approve-own-proposals",
+        ],
+    )
+    assert updated.exit_code == 0, updated.stdout
+    assert "updated token 'worker'" in updated.stdout
+    assert "secret" in updated.stdout.lower()
+
+    listed = runner.invoke(app, ["token", "list", "--json"])
+    assert listed.exit_code == 0, listed.stdout
+    rows = json.loads(listed.stdout)
+    assert rows[0]["admin"] is True
+    assert rows[0]["approve_own_proposals"] is True
+    assert rows[0]["rules"] == [{"path": "AI", "access": "auto-write"}]
+
+    # The unchanged secret still authenticates with the new metadata.
+    from harbor_ledger_memory.services.tokens import TokenService
+
+    service = TokenService(f"sqlite:///{tmp_path / 'tokens.db'}")
+    try:
+        record = service.verify(plaintext)
+        assert record is not None
+        assert record.admin is True
+        assert record.approve_own_proposals is True
+    finally:
+        service.close()
+
+    # Partial update: clear both flags, leave the rules untouched.
+    demoted = runner.invoke(
+        app,
+        ["token", "update", "worker", "--no-admin", "--no-approve-own-proposals"],
+    )
+    assert demoted.exit_code == 0, demoted.stdout
+    rows = json.loads(runner.invoke(app, ["token", "list", "--json"]).stdout)
+    assert rows[0]["admin"] is False
+    assert rows[0]["approve_own_proposals"] is False
+    assert rows[0]["rules"] == [{"path": "AI", "access": "auto-write"}]
+
+    noop = runner.invoke(app, ["token", "update", "worker"])
+    assert noop.exit_code != 0
+    assert "nothing to update" in noop.output
+
+    missing = runner.invoke(app, ["token", "update", "ghost", "--admin"])
+    assert missing.exit_code != 0
+    assert "no active token named 'ghost'" in missing.output
+
+
+def test_cli_token_update_clear_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_vault(tmp_path)
+    monkeypatch.setenv("HLM_VAULT_PATH", str(tmp_path))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'tokens.db'}")
+    runner = CliRunner()
+
+    created = runner.invoke(
+        app, ["token", "create", "--name", "worker", "--admin", "--rule", "AI=read"]
+    )
+    assert created.exit_code == 0, created.stdout
+
+    cleared = runner.invoke(app, ["token", "update", "worker", "--clear-rules"])
+    assert cleared.exit_code == 0, cleared.stdout
+    rows = json.loads(runner.invoke(app, ["token", "list", "--json"]).stdout)
+    # Explicit clear replaces the rules with an empty list...
+    assert rows[0]["rules"] == []
+    # ...and leaves the other permissions untouched.
+    assert rows[0]["admin"] is True
+
+    # Mutually exclusive with --rule.
+    conflict = runner.invoke(
+        app,
+        ["token", "update", "worker", "--clear-rules", "--rule", "AI=read"],
+    )
+    assert conflict.exit_code != 0
+    assert "mutually exclusive" in conflict.output
+
+    # A bare clear is a valid update, a bare update is still a no-op.
+    noop = runner.invoke(app, ["token", "update", "worker"])
+    assert noop.exit_code != 0
+    assert "nothing to update" in noop.output
 
 
 def test_cli_token_list_renders_admin_badge_and_rule_summary(

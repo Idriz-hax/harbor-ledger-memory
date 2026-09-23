@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Log in — Harbor Ledger Memory</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        /* Login-only layout layered on the shared Harbor Ledger theme. */
+        body { display: grid; place-items: center; min-height: 100vh; padding: 24px; }
+        .login-card { width: min(360px, 100%); padding: 34px 30px 30px; }
+        .login-card .brand { margin-bottom: 30px; }
+        .login-card .brand-mark { width: 40px; height: 40px; font-size: 18px; }
+        .login-card h1 { letter-spacing: -.02em; margin: 6px 0 26px; font: 600 25px Playfair Display, serif; }
+        .login-card form { gap: 14px; display: grid; }
+        .login-card label { color: var(--muted); letter-spacing: .08em; text-transform: uppercase; font: 10px DM Mono, monospace; }
+        .login-card input { color: var(--paper); border: 1px solid var(--line); background: var(--ink); border-radius: 4px; padding: 13px; outline: 0; }
+        .login-card input:focus-visible,
+        .login-card button:focus-visible { outline: 2px solid var(--yellow); outline-offset: 2px; }
+        .login-card .primary-button { width: 100%; border-radius: 4px; padding: 13px; margin-top: 6px; }
+        .login-card .primary-button:hover { filter: brightness(1.08); }
+        .login-error { color: #f0a08f; background: #452d2a; border: 1px solid #724237; border-radius: 4px; margin: 0; padding: 11px 13px; font-size: 12px; line-height: 1.5; }
+        .login-hint { color: var(--muted); margin: 18px 0 0; font-size: 11px; line-height: 1.5; }
+        @media (prefers-reduced-motion: no-preference) {
+            .login-card { animation: login-in .35s ease-out both; }
+            @keyframes login-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+        }
+    </style>
+</head>
+<body>
+    <main class="login-card panel" aria-labelledby="login-title">
+        <div class="brand">
+            <span class="brand-mark" aria-hidden="true">✦</span>
+            <div>
+                <strong>HARBOR LEDGER</strong>
+                <small>MEMORY SERVICE</small>
+            </div>
+        </div>
+        <p class="eyebrow">Restricted area</p>
+        <h1 id="login-title">Log in</h1>
+        <form method="post" action="/login">
+            {% if error %}
+            <p class="login-error" id="login-error" role="alert">{{ error }}</p>
+            {% endif %}
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" required
+                   autocomplete="current-password" autofocus
+                   {% if error %}aria-describedby="login-error"{% endif %}>
+            <button type="submit" class="primary-button">Log in</button>
+        </form>
+        <p class="login-hint">Enter the password configured for this host.</p>
+    </main>
+</body>
+</html>

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -14,6 +15,11 @@ from harbor_ledger_memory.services.access import AccessPolicy
 UI_SESSION_COOKIE = "hlm_ui_session"
 UI_CSRF_COOKIE = "hlm_ui_csrf"
 UI_CSRF_HEADER = "X-HLM-CSRF"
+UI_SESSION_MAX = 1024
+
+
+class UiSessionCapacityError(RuntimeError):
+    """Raised when no bounded UI session slot is available."""
 
 
 @dataclass
@@ -31,12 +37,17 @@ class UiSessionService:
         *,
         idle_seconds: float = 1800,
         absolute_seconds: float = 86400,
+        max_sessions: int = UI_SESSION_MAX,
         clock: object = time.monotonic,
     ) -> None:
+        if max_sessions < 1:
+            raise ValueError("max_sessions must be positive")
         self.idle_seconds = idle_seconds
         self.absolute_seconds = absolute_seconds
+        self.max_sessions = max_sessions
         self._clock = clock  # injectable for deterministic expiry tests
         self._sessions: dict[str, _Session] = {}
+        self._lock = threading.RLock()
 
     def _now(self) -> float:
         return float(self._clock())  # type: ignore[operator]
@@ -46,12 +57,26 @@ class UiSessionService:
         return hashlib.sha256(value.encode("ascii")).hexdigest()
 
     def new_session(self) -> str:
-        raw = secrets.token_urlsafe(32)
         now = self._now()
-        self._sessions[self._digest(raw)] = _Session(
-            now, now, secrets.token_urlsafe(32)
-        )
+        with self._lock:
+            self._prune_expired(now)
+            if len(self._sessions) >= self.max_sessions:
+                raise UiSessionCapacityError("UI session capacity reached")
+            raw = secrets.token_urlsafe(32)
+            self._sessions[self._digest(raw)] = _Session(
+                now, now, secrets.token_urlsafe(32)
+            )
         return raw
+
+    def _prune_expired(self, now: float) -> None:
+        expired = [
+            key
+            for key, record in self._sessions.items()
+            if now - record.last_seen > self.idle_seconds
+            or now - record.created > self.absolute_seconds
+        ]
+        for key in expired:
+            self._sessions.pop(key, None)
 
     def authenticate(self, session: str | None) -> bool:
         return self.get(session) is not None
@@ -88,7 +113,8 @@ class UiSessionService:
 
     def revoke(self, session: str | None) -> None:
         if session:
-            self._sessions.pop(self._digest(session), None)
+            with self._lock:
+                self._sessions.pop(self._digest(session), None)
 
     def csrf(self, session: str | None) -> str | None:
         record = self.get(session)

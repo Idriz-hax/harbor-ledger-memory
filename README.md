@@ -220,14 +220,19 @@ token (no read, no write). `--admin` allows managing tokens and settings but
 does not bypass folder rules; without any `--rule` a token is read-only
 everywhere.
 
-Tokens are immutable — to change a rule or the admin flag, create a new token
-and revoke the old one.
+Permission metadata is mutable: `hlm token update <name> --admin --no-admin
+--rule PATH=LEVEL --clear-rules --approve-own-proposals
+--no-approve-own-proposals` (or `PATCH /api/v1/tokens/<name>`, admin-only)
+updates rules, the admin flag, and `approve_own_proposals` in place. Omitted
+options are unchanged; `--clear-rules` (mutually exclusive with `--rule`)
+replaces all rules with none. The update never changes the token secret —
+the existing plaintext stays valid, and the hash is only ever replaced by
+revoking and creating a new token.
 
-The authenticated Web UI and REST token-creation API expose the
-`approve_own_proposals` boolean field. Set it to `true` to explicitly permit
-that token to approve proposals it created itself; without it, own-proposal
-approval is rejected even when the token can otherwise write to the path. The
-CLI does not currently expose this field.
+`approve_own_proposals` is exposed by the Web UI, the REST token APIs, and
+`hlm token update`. Set it to `true` to explicitly permit that token to
+approve proposals it created itself; without it, own-proposal approval is
+rejected even when the token can otherwise write to the path.
 
 It prints the plaintext `hlm_…` token **once** (only its SHA-256 hash is
 stored). Send it as `Authorization: Bearer hlm_…` on external REST/MCP calls;
@@ -245,8 +250,8 @@ On MCP, denials surface as tool errors (for example
 while an unauthenticated MCP request still gets the HTTP `401` body from the
 middleware.
 
-Manage tokens with `hlm token list` and `hlm token revoke <name>` (or the
-settings page). Revoking a token takes effect immediately; the service never
+Manage tokens with `hlm token list`, `hlm token update <name>`, and
+`hlm token revoke <name>` (or the settings page). Revoking a token takes effect immediately; the service never
 falls back to open mode.
 
 ### MCP clients
