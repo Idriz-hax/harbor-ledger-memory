@@ -1,6 +1,7 @@
 """End-to-end fixture tests for the QueryService orchestration."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty
 
@@ -13,6 +14,7 @@ from harbor_ledger_memory.catalog.models import (
     MemoryWriteProposal,
     Note,
     QueryTrace,
+    ShortTermEntry,
     ShortTermEvent,
 )
 from harbor_ledger_memory.config import MemorySettings
@@ -21,13 +23,95 @@ from harbor_ledger_memory.domain.retrieval import (
     QueryRequest,
     QueryResult,
     QuerySettings,
+    SeedCandidate,
 )
+from harbor_ledger_memory.services.context import ContextBuilder
 from harbor_ledger_memory.services.live_traversal import (
     LiveTraversalPublisher,
     TraversalEvent,
 )
 from harbor_ledger_memory.services.memory import MemoryService
 from harbor_ledger_memory.services.query import QueryService
+
+
+def test_context_excerpt_redacts_unreadable_wikilink_targets(tmp_path: Path) -> None:
+    engine = create_database(f"sqlite:///{tmp_path / 'context.db'}")
+    session = CatalogSession(bind=engine)
+    try:
+        session.add(
+            Note(
+                path="Public/readable.md",
+                title="Readable",
+                content="See [[Private/secret.md]] and [[Public/other.md]].",
+                summary=None,
+                frontmatter_json="{}",
+                content_hash="readable",
+            )
+        )
+        session.commit()
+        result = ContextBuilder(
+            session,
+            path_filter=lambda path: path.startswith("Public/"),
+        ).build(
+            "See",
+            [SeedCandidate(path="Public/readable.md", retrieval_score=1.0)],
+            [],
+            1000,
+        )
+    finally:
+        session.close()
+        engine.dispose()
+
+    assert result[0].excerpt == "See [[REDACTED]] and [[Public/other.md]]."
+    assert result[0].citation_source == "content_start"
+    assert result[0].matched_terms == ("see",)
+
+
+def test_query_does_not_disclose_evicted_unreadable_cache_path(tmp_path: Path) -> None:
+    engine = create_database(f"sqlite:///{tmp_path / 'cache-policy.db'}")
+    session = CatalogSession(bind=engine)
+    try:
+        session.add_all(
+            [
+                Note(
+                    path="Public/readable.md",
+                    title="Readable",
+                    content="public cache phrase",
+                    summary="public cache phrase",
+                    frontmatter_json="{}",
+                    content_hash="public",
+                ),
+                Note(
+                    path="Secret/hidden.md",
+                    title="Hidden",
+                    content="hidden cache phrase",
+                    summary="hidden cache phrase",
+                    frontmatter_json="{}",
+                    content_hash="hidden",
+                ),
+                ShortTermEntry(
+                    path="Secret/hidden.md",
+                    last_selected_at=datetime.now(UTC).isoformat(),
+                    selection_count=1,
+                ),
+            ]
+        )
+        session.commit()
+        result = QueryService(
+            session,
+            memory_settings=MemorySettings(short_term_capacity=1),
+            path_filter=lambda path: path.startswith("Public/"),
+        ).query(QueryRequest(query="public cache phrase"))
+        trace = session.scalar(
+            select(QueryTrace).where(QueryTrace.trace_uuid == str(result.trace_id))
+        )
+    finally:
+        session.close()
+        engine.dispose()
+
+    assert "Secret/hidden.md" not in result.short_term_evidence.evicted_paths
+    assert trace is not None
+    assert "Secret/hidden.md" not in trace.retrieval_settings
 
 
 def _seed_catalog(tmp_path: Path) -> str:
@@ -378,9 +462,11 @@ class TestQueryServiceWithNotes:
                 memory_settings=memory_settings,
             ).query(QueryRequest(query="memory"))
 
-            assert cached_path in result.short_term_evidence.hit_paths
-            selected = {memory.path: memory for memory in result.selected_memories}
-            assert "Short-term cache (+" in " ".join(selected[cached_path].reasons)
+            assert result.short_term_evidence.hit_paths == ()
+            assert not any(
+                "Short-term cache (+" in " ".join(memory.reasons)
+                for memory in result.selected_memories
+            )
         finally:
             session.close()
             engine.dispose()

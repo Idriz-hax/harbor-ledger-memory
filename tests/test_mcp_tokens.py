@@ -515,7 +515,8 @@ def test_mcp_scan_and_feedback_require_write_access(tmp_path: Path) -> None:
             )
             assert json.loads(applied.content[0].text) == {
                 "applied": True,
-                "adjustments_count": 1,
+                "adjustments_count": 0,
+                "recorded_count": 1,
             }
         finally:
             hlm_mcp_token.reset(token)

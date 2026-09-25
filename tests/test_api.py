@@ -25,6 +25,7 @@ from harbor_ledger_memory.config import (
 )
 from harbor_ledger_memory.config import Settings as BaseSettings
 from harbor_ledger_memory.graph.builder import GraphBuilder
+from harbor_ledger_memory.services.scan import ScanService
 
 
 def Settings(**kwargs: Any) -> BaseSettings:
@@ -685,6 +686,7 @@ def test_trace_replay(tmp_path: Path) -> None:
     # Validate it's a proper UUID string
     UUID(trace_id)
 
+
     # Replay the trace
     replay_resp = client.get(f"/api/v1/traces/{trace_id}")
     assert replay_resp.status_code == 200
@@ -714,6 +716,36 @@ def test_trace_replay(tmp_path: Path) -> None:
     assert not_found_resp.status_code == 404
 
 
+def test_restricted_rest_query_redacts_unreadable_summary_link(tmp_path: Path) -> None:
+    (tmp_path / "Public").mkdir()
+    (tmp_path / "Private").mkdir()
+    (tmp_path / "Public" / "readable.md").write_text(
+        "---\nsummary: See [[Private/secret.md]]\n---\n\n# Readable\n\npublic phrase",
+        encoding="utf-8",
+    )
+    (tmp_path / "Private" / "secret.md").write_text(
+        "# Secret\n\nsecret phrase", encoding="utf-8"
+    )
+    settings = Settings(
+        vault_path=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'restricted-summary.db'}",
+    )
+    app = create_app(settings)
+    token = app.state.token_service.create(
+        "restricted-summary",
+        rules=[FolderRule(path=PurePosixPath("Private"), access=FolderAccess.NONE)],
+    ).plaintext
+    ScanService.from_settings(settings).full_scan()
+
+    with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as client:
+        response = client.post("/api/v1/queries", json={"query": "public phrase"})
+
+    assert response.status_code == 200
+    summary = response.json()["selected_memories"][0]["summary"]
+    assert "[[REDACTED]]" in summary
+    assert "Private/secret.md" not in summary
+
+
 def test_scan_endpoint_rescans_vault_and_returns_counts(tmp_path: Path) -> None:
     """POST /api/v1/scan rebuilds the catalog and returns concise counts."""
     ai_dir = tmp_path / "AI"
@@ -740,6 +772,35 @@ def test_scan_endpoint_rescans_vault_and_returns_counts(tmp_path: Path) -> None:
     # Status should reflect the re-scan
     status = client.get("/api/v1/status")
     assert status.json()["indexed_notes"] == 2
+
+
+def test_scan_response_hides_unreadable_paths_for_limited_token(tmp_path: Path) -> None:
+    (tmp_path / "AI" / "Public").mkdir(parents=True)
+    (tmp_path / "AI" / "Private").mkdir()
+    (tmp_path / "AI" / "Public" / "visible.md").write_text("# visible")
+    (tmp_path / "AI" / "Private" / "hidden.md").write_text("# hidden")
+    rules = (
+        FolderRule(path=PurePosixPath("AI/Public"), access=FolderAccess.PROPOSE_WRITE),
+        FolderRule(path=PurePosixPath("AI/Private"), access=FolderAccess.NONE),
+    )
+    settings = Settings(
+        vault_path=tmp_path,
+        index_root="AI",
+        folder_rules=rules,
+        database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+    )
+    application = create_app(settings)
+    token = application.state.token_service.create(
+        "limited", rules=list(rules)
+    ).plaintext
+    with TestClient(
+        application, headers={"Authorization": f"Bearer {token}"}
+    ) as client:
+        response = client.post("/api/v1/scan")
+    assert response.status_code == 200
+    indexed_paths = response.json()["rebuild"]["indexed_paths"]
+    assert indexed_paths == ["AI/Public/visible.md"]
+    assert all("Private" not in path for path in indexed_paths)
 
 
 def test_scan_endpoint_records_activity(tmp_path: Path) -> None:
@@ -1488,13 +1549,11 @@ def test_approval_revalidates_access_rules_after_changes(tmp_path: Path) -> None
     assert create_resp.json()["status"] == "pending"
     create_id = create_resp.json()["id"]
 
-    # The approver's grant denies the path: the approval 403s and the
-    # proposal stays pending for a caller that can write it.
+    # The approver cannot read the path: the proposal is intentionally
+    # indistinguishable from an unavailable proposal.
     denied = client.post(f"/api/v1/writes/{create_id}/approve", headers=headers["deny"])
-    assert denied.status_code == 403
-    assert denied.json() == {
-        "detail": "path 'AI/managed/later.md' not writable by this token"
-    }
+    assert denied.status_code == 404
+    assert denied.json() == {"detail": "proposal unavailable"}
 
     listing = {
         proposal["id"]: proposal
@@ -1541,7 +1600,7 @@ def test_read_or_deny_rules_before_approval_block_the_write(tmp_path: Path) -> N
         "detail": "path 'AI/managed/note.md' not writable by this token"
     }
 
-    # A fresh proposal blocked by a deny grant 403s the same way.
+    # A fresh proposal blocked by a deny grant is also unavailable.
     second = client.post(
         "/api/v1/writes",
         json={"path": "AI/managed/note.md", "content": original.replace("v1", "v3")},
@@ -1550,10 +1609,8 @@ def test_read_or_deny_rules_before_approval_block_the_write(tmp_path: Path) -> N
     assert second.status_code == 200
     second_id = second.json()["id"]
     denied = client.post(f"/api/v1/writes/{second_id}/approve", headers=headers["deny"])
-    assert denied.status_code == 403
-    assert denied.json() == {
-        "detail": "path 'AI/managed/note.md' not writable by this token"
-    }
+    assert denied.status_code == 404
+    assert denied.json() == {"detail": "proposal unavailable"}
 
     # Both proposals are still pending and neither write touched the vault.
     listing = {

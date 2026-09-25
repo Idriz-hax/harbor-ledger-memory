@@ -13,6 +13,7 @@ import time
 from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from datetime import datetime
 from importlib import metadata as importlib_metadata
 from importlib import resources
 from pathlib import Path, PurePosixPath
@@ -70,10 +71,6 @@ from harbor_ledger_memory.services.activity import (
     ActivityMessage,
     ActivityService,
 )
-from harbor_ledger_memory.services.adaptive import (
-    AdaptiveService,
-    FeedbackValidationError,
-)
 from harbor_ledger_memory.services.graph_projection import (
     GraphHandleError,
     GraphProjectionService,
@@ -83,8 +80,9 @@ from harbor_ledger_memory.services.live_traversal import (
     TraversalEvent,
 )
 from harbor_ledger_memory.services.memory import MemoryService
+from harbor_ledger_memory.services.memory_marks import MemoryMarkService, token_scope
 from harbor_ledger_memory.services.query import QueryService
-from harbor_ledger_memory.services.scan import ScanService
+from harbor_ledger_memory.services.scan import ScanService, visible_scan_paths
 from harbor_ledger_memory.services.status import (
     CatalogStatusService,
     token_status_payload,
@@ -108,6 +106,13 @@ from harbor_ledger_memory.services.vault_mutations import (
 )
 from harbor_ledger_memory.vault.boundary import VaultBoundary
 from harbor_ledger_memory.watcher import VaultWatchService
+
+
+class MemoryMarkRequest(BaseModel):
+    trace_id: str
+    path: str
+    expires_at: str | None = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +262,12 @@ class StatusResponse(BaseModel):
     ambiguous_links: int
     last_scan_status: str | None
     last_scan_completed_at: str | None
+    latest_scan_attempt: dict[str, object]
+    latest_successful_scan: dict[str, object] | None
+    admitted_index_root: str
+    embedding_mode: str
+    embedding_model: str | None
+    derived_index_is_disposable: bool
 
 
 class CacheStatusResponse(BaseModel):
@@ -390,6 +401,7 @@ class ScanResponse(BaseModel):
     broken_links: int
     ambiguous_links: int
     diagnostics_count: int
+    rebuild: dict[str, object] = Field(default_factory=dict)
 
 
 class TokenCreateBody(BaseModel):
@@ -444,6 +456,8 @@ class WriteProposalResponse(BaseModel):
     affected_paths: list[str]
     created_paths: list[str]
     creator_token_id: int | None
+    base_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    diff: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class WritesListResponse(BaseModel):
@@ -855,7 +869,9 @@ def create_app(
         response_model=ScanResponse,
         dependencies=[Depends(require_any_write)],
     )
-    def trigger_scan() -> ScanResponse:  # pyright: ignore[reportUnusedFunction]
+    def trigger_scan(
+        auth: AuthContext = Depends(authenticated),
+    ) -> ScanResponse:  # pyright: ignore[reportUnusedFunction]
         """Re-run a full vault scan, rebuilding the catalog projection."""
         scanner = ScanService.from_settings(settings)
         set_activity_service = getattr(scanner, "set_activity_service", None)
@@ -870,6 +886,13 @@ def create_app(
             broken_links=scan_result.broken_links,
             ambiguous_links=scan_result.ambiguous_links,
             diagnostics_count=len(scan_result.diagnostics),
+            rebuild={
+                "mode": "full_scan",
+                "derived_index_is_disposable": True,
+                "indexed_paths": list(
+                    visible_scan_paths(scan_result.indexed_paths, auth.policy.can_read)
+                ),
+            },
         )
 
     @application.post("/api/v1/writes", response_model=WriteProposalResponse)
@@ -964,7 +987,10 @@ def create_app(
         try:
             existing = session.get(MemoryWriteProposal, id)
             if existing is None:
-                raise HTTPException(status_code=404, detail=f"proposal {id} not found")
+                raise HTTPException(status_code=404, detail="proposal unavailable")
+            paths = (existing.path, *existing.affected_paths)
+            if any(not auth.policy.can_read(path) for path in paths):
+                raise HTTPException(status_code=404, detail="proposal unavailable")
             service = VaultMutationService.from_settings(
                 session,
                 settings,
@@ -1001,7 +1027,10 @@ def create_app(
         try:
             existing = session.get(MemoryWriteProposal, id)
             if existing is None:
-                raise HTTPException(status_code=404, detail=f"proposal {id} not found")
+                raise HTTPException(status_code=404, detail="proposal unavailable")
+            paths = (existing.path, *existing.affected_paths)
+            if any(not auth.policy.can_read(path) for path in paths):
+                raise HTTPException(status_code=404, detail="proposal unavailable")
             service = VaultMutationService.from_settings(
                 session,
                 settings,
@@ -1265,7 +1294,14 @@ def create_app(
                 activity_service=activity_service,
                 live_traversal=live_traversal,
             )
-            result = service.query(request)
+            scope = token_scope(
+                auth.record.id if auth.record else None, auth.ui_session
+            )
+            result = service.query(
+                request.model_copy(
+                    update={"scope_kind": scope.scope_kind, "scope_id": scope.scope_id}
+                )
+            )
         finally:
             session.close()
             engine.dispose()
@@ -1297,7 +1333,12 @@ def create_app(
         swept out.
         """
         swept_events: list[ActivityEventResponse] = []
+        scope = token_scope(auth.record.id if auth.record else None, auth.ui_session)
         for event in activity_service.history(limit=limit, after_id=after_id):
+            if not _activity_scope_visible(
+                scope.scope_kind, scope.scope_id, event.event_type, event.payload
+            ):
+                continue
             payload = _sweep_activity_payload(
                 auth.policy, event.event_type, event.payload
             )
@@ -1318,10 +1359,15 @@ def create_app(
         """
 
         async def swept_stream() -> AsyncGenerator[str, None]:
+            scope = token_scope(
+                auth.record.id if auth.record else None, auth.ui_session
+            )
             async for frame in activity_service.stream(after_id=after_id):
                 if auth.ui_session and not ui_session_service.is_valid(auth.ui_session):
                     return
-                swept = _swept_sse_frame(auth.policy, frame)
+                swept = _swept_sse_frame(
+                    auth.policy, frame, (scope.scope_kind, scope.scope_id)
+                )
                 if swept is not None:
                     yield swept
 
@@ -1365,6 +1411,13 @@ def create_app(
                 raise HTTPException(
                     status_code=404, detail=f"Trace {trace_id} not found"
                 )
+            scope = token_scope(
+                auth.record.id if auth.record else None, auth.ui_session
+            )
+            if trace.scope_kind != scope.scope_kind or trace.scope_id != scope.scope_id:
+                raise HTTPException(
+                    status_code=404, detail=f"Trace {trace_id} not found"
+                )
 
             boundary = VaultBoundary(settings)
             return TraceReplayResponse(
@@ -1401,28 +1454,146 @@ def create_app(
 
     @application.post(
         "/api/v1/feedback",
-        dependencies=[Depends(require_any_write)],
     )
-    def feedback(request: FeedbackRequest) -> FeedbackResponse:  # pyright: ignore[reportUnusedFunction]
-        """Apply feedback to adjust adaptive edge weights."""
+    def feedback(  # pyright: ignore[reportUnusedFunction]
+        request: FeedbackRequest,
+        auth: AuthContext = Depends(require_any_write),
+    ) -> FeedbackResponse:
+        """Record explicit feedback without changing ranking weights."""
         engine = create_database(settings.database_url)
         session = CatalogSession(bind=engine)
         try:
-            adaptive = AdaptiveService(session, settings.memory)
+            boundary = VaultBoundary(settings)
+            scope = token_scope(
+                auth.record.id if auth.record else None, auth.ui_session
+            )
+            marks = MemoryMarkService(session)
             try:
-                adjustments = adaptive.apply_trace_feedback(
-                    trace_uuid=request.trace_id,
-                    relevant_paths=request.relevant_paths,
-                    irrelevant_paths=request.irrelevant_paths,
-                    path_filter=VaultBoundary(settings).is_admitted,
-                )
-            except FeedbackValidationError as exc:
+                if not request.relevant_paths and not request.irrelevant_paths:
+                    raise ValueError("feedback must include at least one path")
+                marks.validate_trace(scope, request.trace_id)
+                recorded = 0
+                for path in request.relevant_paths or ():
+                    marks.create_mark(
+                        scope,
+                        request.trace_id,
+                        path,
+                        "relevant",
+                        lambda value: (
+                            boundary.is_admitted(value) and auth.policy.can_read(value)
+                        ),
+                    )
+                    recorded += 1
+                for path in request.irrelevant_paths or ():
+                    marks.create_mark(
+                        scope,
+                        request.trace_id,
+                        path,
+                        "irrelevant",
+                        lambda value: (
+                            boundary.is_admitted(value) and auth.policy.can_read(value)
+                        ),
+                    )
+                    recorded += 1
+            except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             session.commit()
-            return FeedbackResponse(applied=True, adjustments_count=adjustments)
+            return FeedbackResponse(
+                applied=True, adjustments_count=0, recorded_count=recorded
+            )
         finally:
             session.close()
             engine.dispose()
+
+    @application.get("/api/v1/marks")
+    def marks_list(auth: AuthContext = Depends(authenticated)) -> list[dict[str, Any]]:
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        try:
+            scope = token_scope(
+                auth.record.id if auth.record else None, auth.ui_session
+            )
+            boundary = VaultBoundary(settings)
+            marks = MemoryMarkService(session).list_marks(
+                scope,
+                lambda path: boundary.is_admitted(path) and auth.policy.can_read(path),
+            )
+            return [
+                {
+                    "scope_kind": mark.scope_kind,
+                    "scope_id": mark.scope_id,
+                    "trace_id": mark.trace_uuid,
+                    "path": mark.path,
+                    "kind": mark.kind,
+                    "created_at": mark.created_at,
+                    "expires_at": mark.expires_at,
+                }
+                for mark in marks
+            ]
+        finally:
+            session.close()
+            engine.dispose()
+
+    @application.post("/api/v1/marks/pin")
+    def mark_pin(
+        request: MemoryMarkRequest,
+        auth: AuthContext = Depends(require_any_write),
+    ) -> dict[str, Any]:
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        try:
+            scope = token_scope(
+                auth.record.id if auth.record else None, auth.ui_session
+            )
+            boundary = VaultBoundary(settings)
+            expires = (
+                datetime.fromisoformat(request.expires_at)
+                if request.expires_at
+                else None
+            )
+            mark = MemoryMarkService(session).create_mark(
+                scope,
+                request.trace_id,
+                request.path,
+                "pin",
+                lambda path: boundary.is_admitted(path) and auth.policy.can_read(path),
+                expires_at=expires,
+            )
+            session.commit()
+            return {"recorded": True, "path": mark.path, "kind": mark.kind}
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            session.close()
+            engine.dispose()
+
+    @application.post("/api/v1/marks/reset")
+    def marks_reset(auth: AuthContext = Depends(require_any_write)) -> dict[str, Any]:
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        try:
+            scope = token_scope(
+                auth.record.id if auth.record else None, auth.ui_session
+            )
+            boundary = VaultBoundary(settings)
+            count = MemoryMarkService(session).reset(
+                scope,
+                lambda path: boundary.is_admitted(path) and auth.policy.can_read(path),
+            )
+            session.commit()
+            return {"reset_count": count}
+        finally:
+            session.close()
+            engine.dispose()
+
+    @application.get("/api/v1/marks/status")
+    def marks_status(auth: AuthContext = Depends(authenticated)) -> dict[str, Any]:
+        marks = marks_list(auth)
+        return {
+            "count": len(marks),
+            "scope_kind": marks[0]["scope_kind"] if marks else None,
+        }
 
     @application.get(
         "/api/v1/cache-status",
@@ -1821,6 +1992,23 @@ def _sweep_activity_payload(
     return {**payload, "rules": swept_rules}
 
 
+def _activity_scope_visible(
+    scope_kind: str,
+    scope_id: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    """Query activity is visible only to its exact authenticated scope."""
+    if event_type != "query":
+        return True
+    if "trace_id" not in payload:
+        return True
+    return (
+        payload.get("scope_kind") == scope_kind
+        and payload.get("scope_id") == scope_id
+    )
+
+
 def _sweep_memory_reasons(
     policy: AccessPolicy, memory: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1851,7 +2039,11 @@ def _hop_reason_readable(policy: AccessPolicy, reason: str) -> bool:
     return True
 
 
-def _swept_sse_frame(policy: AccessPolicy, frame: str) -> str | None:
+def _swept_sse_frame(
+    policy: AccessPolicy,
+    frame: str,
+    scope: tuple[str, str] | None = None,
+) -> str | None:
     """Sweep one SSE frame to the token's readable paths."""
     lines = frame.splitlines()
     for index, line in enumerate(lines):
@@ -1864,6 +2056,13 @@ def _swept_sse_frame(policy: AccessPolicy, frame: str) -> str | None:
         payload = envelope.get("payload")
         if not isinstance(payload, Mapping):
             return frame
+        if scope is not None and not _activity_scope_visible(
+            scope[0],
+            scope[1],
+            str(envelope.get("event_type", "")),
+            cast(Mapping[str, Any], payload),
+        ):
+            return None
         swept = _sweep_activity_payload(
             policy,
             str(envelope.get("event_type", "")),
@@ -1896,6 +2095,8 @@ def _write_response(proposal: MemoryWriteProposal) -> WriteProposalResponse:
         affected_paths=proposal.affected_paths,
         created_paths=proposal.created_paths,
         creator_token_id=proposal.creator_token_id,
+        base_hash=proposal.expected_source_hash,
+        diff=proposal.base_diff,
     )
 
 

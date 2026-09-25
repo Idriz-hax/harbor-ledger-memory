@@ -168,28 +168,10 @@ def test_trace_replay_sweeps_unreadable_paths_and_edges(tmp_path: Path) -> None:
         }
         assert {"AI/bridge.md", "Secret/deep.md"} <= via_hidden
 
-        swept = client.get(
+        swept_response = client.get(
             f"/api/v1/traces/{trace_id}", headers=_headers(reader)
-        ).json()
-        assert swept["trace_id"] == trace_id
-
-        def readable(path: str | None) -> bool:
-            return path is None or not path.startswith(_SECRET_PREFIX)
-
-        assert swept["selected_paths"] == [
-            selection
-            for selection in full["selected_paths"]
-            if readable(selection["path"])
-        ]
-        assert swept["activation_graph"] == [
-            visit
-            for visit in full["activation_graph"]
-            if readable(visit["path"]) and readable(visit["via_path"])
-        ]
-        # The sweep removed entries from both lists, so the reader's view
-        # is narrower by construction, not by an empty vault.
-        assert len(swept["selected_paths"]) < len(full["selected_paths"])
-        assert len(swept["activation_graph"]) < len(full["activation_graph"])
+        )
+        assert swept_response.status_code == 404
 
 
 def test_activity_history_sweeps_unreadable_events(tmp_path: Path) -> None:

@@ -49,7 +49,14 @@ const SCREEN_META: Record<Screen, { label: string; icon: string; description: st
   settings: { label: 'Settings', icon: '⌑', description: 'Configure access, tokens, and audit' },
 }
 export type Activity = { id: number; event_type: string; created_at: string; payload: Record<string, unknown> }
-type Status = { indexed_notes: number; scan_runs: number; diagnostics: number; broken_links: number; ambiguous_links: number; last_scan_status: string | null; last_scan_completed_at: string | null; effective_read_scope: string }
+export const mergeActivityEvents = (history: Activity[], current: Activity[]) => {
+  const currentIds = new Set(current.map(event => event.id))
+  return [...history.filter(event => !currentIds.has(event.id)), ...current].slice(-80)
+}
+type Status = {
+  indexed_notes: number; scan_runs: number; diagnostics: number; broken_links: number; ambiguous_links: number
+  last_scan_status: string | null; last_scan_completed_at: string | null; effective_read_scope: string
+}
 
 export class APIError extends Error {
   readonly status: number
@@ -243,7 +250,7 @@ export function App() {
     api<Status>('/api/v1/status')
       .then(() => setError(''))
       .catch(e => setError(e.message))
-    api<{ events: Activity[] }>('/api/v1/activity?limit=40').then(r => setEvents(r.events)).catch(() => undefined)
+    api<{ events?: Activity[] }>('/api/v1/activity?limit=40').then(r => setEvents(current => mergeActivityEvents(r.events ?? [], current))).catch(() => undefined)
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
@@ -447,6 +454,7 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
   const cy = useRef<Core | null>(null)
   const [scanning, setScanning] = useState(false)
   const [rescanError, setRescanError] = useState('')
+  const [rescanSuccess, setRescanSuccess] = useState<{ notes: number; diagnostics: number } | null>(null)
   const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null)
   const [phase, setPhase] = useState<GraphPhase>('loading')
   const [graphError, setGraphError] = useState('')
@@ -1003,18 +1011,21 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
   const handleRescan = async () => {
     setScanning(true)
     setRescanError('')
+    setRescanSuccess(null)
     try {
       const prev = await api<Status>('/api/v1/status').then(s => s.last_scan_completed_at).catch(() => null)
       await api('/api/v1/scan', { method: 'POST' })
       let completed = false
+      let completedStatus: Status | null = null
       for (let attempts = 0; attempts < 60; attempts++) {
         const s = await api<Status>('/api/v1/status')
-        if (s.last_scan_completed_at !== prev) { completed = true; break }
+        if (s.last_scan_completed_at !== prev) { completed = true; completedStatus = s; break }
         if (!alive.current) return
         await new Promise(r => setTimeout(r, 1000))
       }
       if (!alive.current) return
       if (!completed) { setRescanError('scan did not complete in time'); return }
+      setRescanSuccess({ notes: completedStatus?.indexed_notes ?? 0, diagnostics: completedStatus?.diagnostics ?? 0 })
       onRefresh?.()
       loadGraph('refresh')
     } catch (e) {
@@ -1127,6 +1138,7 @@ export function Graph({ events, onRefresh }: { events: Activity[]; onRefresh?: (
           <span className="live-indicator"><i /> {scanning ? 'scanning…' : 'live'}</span>
           <Button onClick={handleRescan} disabled={scanning}>{scanning ? 'rescanning…' : 'rescan'}</Button>
           {rescanError && <Typography className="rescan-error" variant="body2" color="error.main" role="alert">{rescanError}</Typography>}
+          {rescanSuccess && <Alert severity="success" role="status" sx={{ flexBasis: '100%', py: 0.75 }}>Catalog rebuilt from Markdown · {rescanSuccess.notes} notes · {rescanSuccess.diagnostics} diagnostics. No vault files were modified.</Alert>}
         </Box>
       </Box>
       <Box className="graph-workspace-toolbar" aria-label="Graph workspace controls" sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', p: 1.25, border: 1, borderColor: 'divider', borderRadius: 2, bgcolor: 'background.paper' }}>
@@ -1260,14 +1272,30 @@ export type WriteProposal = {
   requested_at: string
   resolved_at: string | null
   failure_reason: string | null
+  diff?: string | null
+  base_hash?: string | null
+  base_status?: string | null
 }
 
 /* Backend status surfaced as a review nudge. */
 const statusLabel = (status: string) => (status === 'reconciliation_required' ? 'needs review' : label(status))
-/* Newline-safe preview: one line, capped, ellipsis. React escapes on render. */
-const previewContent = (content: string) => {
-  const flat = content.replace(/\s+/g, ' ').trim()
-  return flat.length > 160 ? `${flat.slice(0, 160).trimEnd()}…` : flat
+type MemoryState = {
+  counts?: { pins?: number; pin?: number; active_pins?: number; feedback?: number; feedbacks?: number; active_feedback?: number }
+  nearest_expiry?: string | null
+  marks?: Array<{ kind?: string }>
+}
+
+const memoryCount = (state: MemoryState, kind: 'pins' | 'feedback') => {
+  const counts = state.counts ?? {}
+  const direct = kind === 'pins' ? counts.pins ?? counts.pin ?? counts.active_pins : counts.feedback ?? counts.feedbacks ?? counts.active_feedback
+  if (typeof direct === 'number') return direct
+  return state.marks?.filter(mark => mark.kind === (kind === 'pins' ? 'pin' : 'feedback')).length ?? 0
+}
+const normalizeMemoryState = (payload: unknown): MemoryState => {
+  if (!payload || typeof payload !== 'object') return {}
+  const value = payload as { state?: unknown; data?: unknown }
+  const candidate = value.state && typeof value.state === 'object' ? value.state : value.data && typeof value.data === 'object' ? value.data : payload
+  return candidate as MemoryState
 }
 
 export function Settings({ approvals = false, onPendingCountChange }: { approvals?: boolean; onPendingCountChange?: (count: number) => void } = {}) {
@@ -1303,6 +1331,11 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
   const [editSuccess, setEditSuccess] = useState<string | null>(null)
   const [tokenEditor, setTokenEditor] = useState<'create' | 'edit' | null>(null)
   const [editorRules, setEditorRules] = useState<TokenRule[]>([])
+  const [memoryState, setMemoryState] = useState<MemoryState | null>(null)
+  const [memoryStateError, setMemoryStateError] = useState('')
+  const [clearingMemoryState, setClearingMemoryState] = useState(false)
+  const [confirmClearMemoryState, setConfirmClearMemoryState] = useState(false)
+  const [trustStatus, setTrustStatus] = useState<Status | null>(null)
   const confirmTimer = useRef<number | null>(null)
 
   useEffect(() => {
@@ -1323,6 +1356,20 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
         }).catch(() => undefined)
       }
     }).catch(() => setFallbackFolders([]))
+  }, [approvals])
+
+  const loadMemoryState = useCallback(() => {
+    setMemoryState(null); setMemoryStateError('')
+    return api<unknown>('/api/v1/marks/status')
+      .then(state => { setMemoryState(normalizeMemoryState(state)); setMemoryStateError('') })
+      .catch(error => setMemoryStateError(error instanceof Error ? error.message : 'memory state unavailable'))
+  }, [])
+
+  useEffect(() => { if (!approvals) loadMemoryState() }, [approvals, loadMemoryState])
+
+  useEffect(() => {
+    if (approvals) return
+    api<Status>('/api/v1/status').then(setTrustStatus).catch(() => setTrustStatus(null))
   }, [approvals])
 
   /* Proposals this session resolved via POST — guards against an older list
@@ -1449,6 +1496,17 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
 
   const closeTokenEditor = () => { setTokenEditor(null); setEditingToken(null) }
 
+  const clearMemoryState = async () => {
+    setConfirmClearMemoryState(false)
+    setClearingMemoryState(true); setMemoryStateError('')
+    try {
+      await api('/api/v1/marks/reset', { method: 'POST' })
+      setMemoryState({ counts: { pins: 0, feedback: 0 }, nearest_expiry: null, marks: [] })
+    } catch (error) {
+      setMemoryStateError(error instanceof Error ? error.message : 'failed to clear memory state')
+    } finally { setClearingMemoryState(false) }
+  }
+
   const resolveProposal = async (action: 'approve' | 'reject', proposal: WriteProposal): Promise<boolean> => {
     setBusy({ id: proposal.id, action })
     setActionErrors(prev => { const next = { ...prev }; delete next[proposal.id]; return next })
@@ -1535,33 +1593,21 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
       </Box>}
       <div className="settings-workspace-layout" data-layout={approvals ? 'approvals-full' : 'quiet-split'}>
       {!approvals && <section className="tokens-section" aria-labelledby="tokens-heading">
-        <Box className="tokens-intro" sx={{ mb: 3 }}>
-          <Typography variant="overline" color="text.secondary">TRUSTED CONNECTIONS</Typography>
-          <Typography variant="h2" id="tokens-heading">External access</Typography>
-           <Typography variant="body2" color="text.secondary">The Web UI uses its own authenticated session. Tokens for trusted REST and MCP clients carry their own folder permissions.</Typography>
-        </Box>
-        <div className="tokens-layout" data-layout="single-column">
-          <Paper elevation={0} className="token-zone token-create" sx={{ p: { xs: 2, md: 2.5 }, border: 1, borderColor: 'divider' }} aria-labelledby="create-token-heading">
-            <Typography variant="overline" color="text.secondary">CREATE TOKEN</Typography>
-              <Typography variant="h3" id="create-token-heading">Token access</Typography>
-            {adminDenied ? (
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>This local session cannot manage external tokens — ask an admin to generate or revoke them.</Typography>
-            ) : (
-               <Box sx={{ display: 'grid', gap: 1.5, mt: 2 }}>
-                 <Typography variant="body2" color="text.secondary">Open the editor to name a token, choose folder access, and set operator privileges.</Typography>
-                 <Button variant="contained" sx={{ alignSelf: 'flex-start' }} onClick={openTokenCreator}>Generate token</Button>
+         <div className="tokens-layout" data-layout="single-column">
+            <Paper elevation={0} className="token-zone token-existing" sx={{ p: { xs: 2, md: 2.5 }, border: 1, borderColor: 'divider' }} aria-labelledby="tokens-heading">
+             <Box className="tokens-intro" sx={{ mb: 3, display: 'flex', alignItems: 'flex-start', gap: 2 }}>
+               <Box sx={{ minWidth: 0, flex: 1 }}>
+                 <Typography variant="overline" color="text.secondary">TRUSTED CONNECTIONS</Typography>
+                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                   <Typography variant="h2" id="tokens-heading">Tokens</Typography>
+                   {!adminDenied && <IconButton size="small" color="primary" aria-label="Generate token" title="Generate token" onClick={openTokenCreator} sx={{ minWidth: 44, minHeight: 44 }}><span aria-hidden="true">＋</span></IconButton>}
+                   {tokenRows !== null && <Chip size="small" label={tokenRows.length} />}
+                 </Box>
+                 <Typography variant="body2" color="text.secondary">The Web UI uses its own authenticated session. Tokens for trusted REST and MCP clients carry their own folder permissions.</Typography>
+                 {adminDenied && <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>This local session cannot manage external tokens — ask an admin to generate or revoke them.</Typography>}
                </Box>
-            )}
-            {tokenError && <Alert severity="error" sx={{ mt: 2 }}>{tokenError}</Alert>}
-          </Paper>
-          <Paper elevation={0} className="token-zone token-existing" sx={{ p: { xs: 2, md: 2.5 }, mt: 2, border: 1, borderColor: 'divider' }} aria-labelledby="existing-tokens-heading">
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              <Box>
-                <Typography variant="overline" color="text.secondary">MANAGE</Typography>
-                 <Typography variant="h3" id="existing-tokens-heading">Existing tokens</Typography>
-              </Box>
-              {tokenRows !== null && <Chip size="small" label={tokenRows.length} sx={{ ml: 'auto' }} />}
-            </Box>
+             </Box>
+             {tokenError && <Alert severity="error" sx={{ mt: 2 }}>{tokenError}</Alert>}
             {tokenRows !== null && <Box component="ul" sx={{ listStyle: 'none', p: 0, m: 0, mt: 2, display: 'grid', gap: 1 }}>
                {tokenRows.length === 0 && <Box component="li" sx={{ listStyle: 'none' }}><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>No tokens yet — generate the first one above.</Typography></Box>}
               {tokenRows.map(row => (
@@ -1587,6 +1633,47 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
             {editSuccess && <Alert severity="success" role="status" sx={{ mt: 2 }}>{editSuccess}</Alert>}
           </Paper>
        </div>
+       <Paper elevation={0} className="memory-state-surface" sx={{ mt: 2, p: { xs: 2, md: 2.5 }, border: 1, borderColor: 'divider', bgcolor: 'background.default' }} aria-labelledby="memory-state-heading">
+         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+           <Typography variant="h3" id="memory-state-heading">Memory state</Typography>
+           <Button size="small" variant="outlined" onClick={() => setConfirmClearMemoryState(true)} disabled={clearingMemoryState} aria-busy={clearingMemoryState} sx={{ ml: 'auto', minHeight: 44 }}>
+             {clearingMemoryState ? 'Clearing…' : 'Clear memory state'}
+           </Button>
+         </Box>
+         {memoryStateError
+           ? <Box sx={{ mt: 1.5, display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}><Typography role="alert" variant="body2" color="text.secondary">Memory state unavailable — try again later.</Typography><Button size="small" variant="text" onClick={loadMemoryState} sx={{ minHeight: 44 }}>Retry</Button></Box>
+           : memoryState === null
+             ? <Typography role="status" variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>Loading memory state…</Typography>
+             : <Box sx={{ mt: 1.5, display: 'grid', gap: 1 }}>
+                 <Typography variant="body2" color="text.secondary">Only explicit pins affect recall.</Typography>
+                 <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                   <Typography variant="body2"><strong>{memoryCount(memoryState, 'pins')}</strong> active pins</Typography>
+                   <Typography variant="body2"><strong>{memoryCount(memoryState, 'feedback')}</strong> feedback marks</Typography>
+                   <Typography variant="body2" color="text.secondary">Nearest expiry: {memoryState.nearest_expiry ? (formatCreated(memoryState.nearest_expiry) || memoryState.nearest_expiry) : 'none'}</Typography>
+                 </Box>
+               </Box>}
+        </Paper>
+        <Box className="trust-summary" sx={{ mt: 2, p: { xs: 2, md: 2.5 }, border: 1, borderColor: 'divider', borderRadius: 2, bgcolor: 'background.default' }} aria-labelledby="trust-summary-heading">
+          <Typography variant="h3" id="trust-summary-heading">Trust summary</Typography>
+          {!trustStatus
+            ? <Typography role="status" variant="body2" color="text.secondary" sx={{ mt: 1 }}>Loading trust status…</Typography>
+            : <Box component="dl" sx={{ mt: 1.5, mb: 0, display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' }, gap: 1.5, '& dt': { color: 'text.secondary', fontSize: 12 }, '& dd': { m: 0, fontWeight: 600, overflowWrap: 'anywhere' } }}>
+                <Box><Typography component="dt">Last successful scan</Typography><Typography component="dd">{trustStatus.last_scan_completed_at ? formatCreated(trustStatus.last_scan_completed_at) : 'unavailable'}</Typography></Box>
+                <Box><Typography component="dt">Indexed notes</Typography><Typography component="dd">{typeof trustStatus.indexed_notes === 'number' ? trustStatus.indexed_notes : 'unavailable'}</Typography></Box>
+                <Box><Typography component="dt">Diagnostics</Typography><Typography component="dd">{typeof trustStatus.diagnostics === 'number' ? trustStatus.diagnostics : 'unavailable'}</Typography></Box>
+                <Box><Typography component="dt">Scan runs</Typography><Typography component="dd">{typeof trustStatus.scan_runs === 'number' ? trustStatus.scan_runs : 'unavailable'}</Typography></Box>
+                <Box><Typography component="dt">Broken links</Typography><Typography component="dd">{typeof trustStatus.broken_links === 'number' ? trustStatus.broken_links : 'unavailable'}</Typography></Box>
+                <Box><Typography component="dt">Ambiguous links</Typography><Typography component="dd">{typeof trustStatus.ambiguous_links === 'number' ? trustStatus.ambiguous_links : 'unavailable'}</Typography></Box>
+              </Box>}
+        </Box>
+       <Dialog open={confirmClearMemoryState} onClose={() => setConfirmClearMemoryState(false)} aria-labelledby="clear-memory-state-title">
+         <DialogTitle id="clear-memory-state-title">Clear memory state?</DialogTitle>
+         <DialogContent><Typography>Remove your active pins and feedback marks from recall state?</Typography></DialogContent>
+         <DialogActions>
+           <Button onClick={() => setConfirmClearMemoryState(false)}>Cancel</Button>
+           <Button color="error" variant="contained" onClick={clearMemoryState} disabled={clearingMemoryState}>Clear memory state</Button>
+         </DialogActions>
+       </Dialog>
        <TokenEditor open={tokenEditor !== null} mode={tokenEditor ?? 'create'} tokenName={tokenEditor === 'edit' ? (editingToken ?? '') : tokenName} rules={editorRules} folders={discoveredFolders} admin={tokenEditor === 'edit' ? editAdmin : tokenAdmin} approveOwn={tokenEditor === 'edit' ? editApproveOwn : approveOwnProposals} busy={tokenEditor === 'edit' ? editing : generating} error={tokenEditor === 'edit' ? editError : tokenError} created={justCreated} revealed={revealed} copied={copied} onClose={closeTokenEditor} onNameChange={setTokenName} onRulesChange={setEditorRules} onAdminChange={value => tokenEditor === 'edit' ? setEditAdmin(value) : setTokenAdmin(value)} onApproveOwnChange={value => tokenEditor === 'edit' ? setEditApproveOwn(value) : setApproveOwnProposals(value)} onSubmit={tokenEditor === 'edit' ? saveTokenEdit : generateToken} onReveal={() => setRevealed(value => !value)} onCopy={copyToken} />
       </section>}
        {approvals && <section className="writes-section" aria-label="Pending changes">
@@ -1630,7 +1717,6 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
               <Typography variant="body2" color="text.secondary">All caught up. Nothing needs review.</Typography>
             )}
             {pending.map(w => {
-              const preview = w.operation === 'mkdir' ? 'Folder creation' : previewContent(w.content)
               return (
               <Box component="article" key={w.id} className="write-card" aria-label={`write proposal for ${w.path}`} sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 2, bgcolor: 'background.default', display: 'grid', gap: 1.5 }}>
                 <Box component="header" className="write-card-head" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
@@ -1640,9 +1726,16 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
                     <Chip size="small" variant="outlined" label={label(w.rule_access)} sx={{ height: 20, fontSize: 10 }} />
                   </Box>
                 </Box>
-                <Box component="p" className="write-preview" title={preview} sx={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 12, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{preview}</Box>
+                <Box component="section" className="write-diff" aria-label={`Proposal diff for ${w.path}`} sx={{ display: 'grid', gap: 0.75 }}>
+                  <Typography variant="caption" color="text.secondary">Server-provided diff</Typography>
+                  <Box component="pre" sx={{ m: 0, p: 1.25, border: 1, borderColor: 'divider', borderRadius: 1.5, bgcolor: 'background.paper', fontFamily: '"IBM Plex Mono", monospace', fontSize: 12, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{w.diff || 'Diff unavailable for this proposal.'}</Box>
+                  <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+                    {w.base_status && <Typography variant="caption" color="text.secondary">Base status: {w.base_status}</Typography>}
+                    {w.base_hash && <Typography component="code" variant="caption" color="text.secondary">Base hash: {w.base_hash}</Typography>}
+                  </Box>
+                </Box>
                 <Box component="footer" className="write-card-foot" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
-                  <Box component="time" dateTime={w.requested_at} title={w.requested_at} sx={{ color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }}>{timeAgo(w.requested_at)} · {w.operation === 'mkdir' ? 'folder' : `${w.content.length.toLocaleString()} chars`}</Box>
+                  <Box component="time" dateTime={w.requested_at} title={w.requested_at} sx={{ color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }}>{timeAgo(w.requested_at)} · {w.operation === 'mkdir' ? 'folder' : 'proposal'}</Box>
                   <Box className="write-actions" sx={{ ml: 'auto', display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                     {actionErrors[w.id] ? <span className="write-action-error" role="alert" style={{ color: 'var(--mui-error-main)', fontSize: 12 }}>{actionErrors[w.id]}</span> : null}
                     <Button className="write-btn" size="small" color="success" variant="contained" disabled={busy !== null} aria-label={`Approve ${w.path}`} onClick={() => resolveProposal('approve', w)}>

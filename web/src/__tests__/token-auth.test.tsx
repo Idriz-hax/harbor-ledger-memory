@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { api, App, Settings, type TokenSummary } from '../main'
+import { api, App, mergeActivityEvents, Settings, type TokenSummary } from '../main'
 
 type MockResponse = { status?: number; body?: unknown }
 type Call = { url: string; method: string; headers?: Record<string, string>; body?: string }
@@ -68,16 +68,68 @@ afterEach(() => {
 })
 
 describe('Settings · API tokens', () => {
+  it('shows the compact trust summary from additive status fields', async () => {
+    mockApi({ 'GET /api/v1/status': { body: { last_scan_completed_at: '2026-09-25T10:00:00Z', indexed_notes: 12, scan_runs: 4, diagnostics: 3, broken_links: 1, ambiguous_links: 0 } } })
+    render(<Settings />)
+    expect(await screen.findByRole('heading', { name: 'Trust summary' })).toBeInTheDocument()
+    expect(screen.getByText('12')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByText('4')).toBeInTheDocument()
+    expect(screen.getByText('1')).toBeInTheDocument()
+  })
+
+  it('shows own memory state and clears it without leaving Settings', async () => {
+    const user = userEvent.setup()
+    const { calls } = mockApi({
+      'GET /api/v1/marks/status': { body: { counts: { pins: 2, feedback: 1 }, nearest_expiry: '2026-10-01T12:00:00Z', marks: [{ kind: 'pin' }, { kind: 'pin' }, { kind: 'feedback' }] } },
+      'POST /api/v1/marks/reset': { body: {} },
+    })
+    render(<Settings />)
+
+    expect(await screen.findByRole('heading', { name: 'Memory state' })).toBeInTheDocument()
+    expect(screen.getByText('Only explicit pins affect recall.')).toBeInTheDocument()
+    expect(screen.getByText(/active pins/)).toHaveTextContent('2')
+    expect(screen.getByText(/feedback marks/)).toHaveTextContent('1')
+    expect(screen.getByRole('button', { name: 'Clear memory state' })).toBeInTheDocument()
+
+    const clear = screen.getByRole('button', { name: 'Clear memory state' })
+    expect(getComputedStyle(clear).minHeight).toBe('44px')
+    await user.click(clear)
+    expect(screen.getByRole('dialog', { name: 'Clear memory state?' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Clear memory state' }))
+    await waitFor(() => expect(calls.some(call => call.method === 'POST' && call.url === '/api/v1/marks/reset')).toBe(true))
+    expect(within(document.querySelector('.memory-state-surface') as HTMLElement).getByText(/active pins/)).toHaveTextContent('0')
+  })
+
+  it('uses a compact unavailable state when memory state cannot be loaded', async () => {
+    const { calls } = mockApi({ 'GET /api/v1/marks/status': { status: 503, body: { detail: 'not ready' } } })
+    render(<Settings />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Memory state unavailable')
+    const retry = screen.getByRole('button', { name: 'Retry' })
+    expect(getComputedStyle(retry).minHeight).toBe('44px')
+    await userEvent.setup().click(retry)
+    expect(calls.filter(call => call.method === 'GET' && call.url === '/api/v1/marks/status')).toHaveLength(2)
+  })
+
   it('opens one accessible token modal from the compact management surface', async () => {
     mockApi({
       'GET /api/v1/tokens': { body: [{ name: 'agent', rules: [], admin: true, created_at: '2026-01-02T00:00:00Z' }] },
     })
     render(<Settings />)
-    expect(screen.getByRole('heading', { name: 'External access' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Tokens' })).toBeInTheDocument()
     expect(screen.getByText(/Web UI uses its own authenticated session/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /generate token/i })).toBeInTheDocument()
+    const generate = screen.getByRole('button', { name: /^generate token$/i })
+    expect(generate).toHaveAttribute('title', 'Generate token')
+    expect(generate.querySelector('span')).toHaveAttribute('aria-hidden', 'true')
+    expect(generate.closest('.tokens-intro')).toBeTruthy()
+    expect(generate.closest('.token-existing')).toBeTruthy()
+    expect(generate.previousElementSibling?.tagName).toBe('H2')
+    expect(document.querySelectorAll('.token-zone')).toHaveLength(1)
+    expect(getComputedStyle(generate).minWidth).toBe('44px')
+    expect(getComputedStyle(generate).minHeight).toBe('44px')
+    expect(screen.queryByText('Generate token')).toBeNull()
     expect(screen.queryByRole('textbox', { name: /token name/i })).toBeNull()
-    expect(screen.getByRole('heading', { name: /existing tokens/i })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Tokens' })).toBeInTheDocument()
     await userEvent.setup().click(screen.getByRole('button', { name: /generate token/i }))
     const dialog = screen.getByRole('dialog', { name: /generate token/i })
     expect(within(dialog).getByRole('textbox', { name: /token name/i })).toHaveAttribute('autocomplete', 'off')
@@ -85,6 +137,8 @@ describe('Settings · API tokens', () => {
     expect(within(dialog).getByRole('checkbox', { name: /approve own proposals/i })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /token ready to copy/i })).toBeNull()
     expect(document.querySelector('.tokens-layout')).toHaveAttribute('data-layout', 'single-column')
+    await userEvent.setup().keyboard('{Escape}')
+    expect(document.activeElement).toBe(generate)
   })
 
   it('generates a token: POSTs only token rules and reveals the plaintext once', async () => {
@@ -315,7 +369,7 @@ describe('App shell semantics', () => {
     const levels = [...document.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(node => Number(node.tagName.slice(1)))
     expect(levels.every((level, index) => index === 0 || level <= levels[index - 1] + 1)).toBe(true)
     await user.click(screen.getByRole('button', { name: /settings/i }))
-    await screen.findByRole('heading', { name: 'External access' })
+    await screen.findByRole('heading', { name: 'Tokens' })
     const settingsLevels = [...document.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(node => Number(node.tagName.slice(1)))
     expect(settingsLevels.every((level, index) => index === 0 || level <= settingsLevels[index - 1] + 1)).toBe(true)
   })
@@ -335,6 +389,13 @@ describe('App · automatic local UI session', () => {
     expect(calls.some(call => call.headers?.Authorization)).toBe(false)
     expect(streamUrls().some(url => url.includes('?token='))).toBe(false)
     expect(screen.queryByText(/API token|required|paste/i)).toBeNull()
+  })
+
+  it('preserves an activity event received before the history request resolves', async () => {
+    const history = [{ id: 1, event_type: 'history.event', created_at: '2026-01-01T00:00:00Z', payload: {} }]
+    const stream = [{ id: 9, event_type: 'stream.event', created_at: '2026-01-01T00:00:01Z', payload: {} }]
+
+    expect(mergeActivityEvents(history, stream)).toEqual([...history, ...stream])
   })
 
   it('keeps API-token management available for external integrations', async () => {

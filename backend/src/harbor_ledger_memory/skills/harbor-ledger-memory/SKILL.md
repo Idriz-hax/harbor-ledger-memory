@@ -45,3 +45,32 @@ without a matching rule retain the read-only default.
 
 After upgrading the server, clients must disconnect and reconnect before using
 the MCP tools so the new tool and transport definitions are loaded.
+
+## OpenCode remote connection
+
+Create a named, read-only token scoped to the allowed folder (with `AI` as the
+configured index root):
+
+```text
+hlm token create --name opencode-read --rule AI=none --rule AI/Knowledge=read
+```
+
+Set the one-time token as `HLM_MCP_TOKEN` and use this exact official remote
+configuration in `opencode.json`:
+
+```json
+{
+  "mcp": {
+    "memory": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8765/mcp/",
+      "oauth": false,
+      "headers": { "Authorization": "Bearer {env:HLM_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+After changing the token or server, run `opencode mcp list` and
+`opencode mcp debug`, then reconnect. Revoke exposed or retired tokens with
+`hlm token revoke opencode-read`; there is no OAuth, relay, or plugin involved.

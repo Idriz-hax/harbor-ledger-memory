@@ -215,6 +215,29 @@ class TestProjectBoost:
         assert candidates[0].path == "projects/my-project/planning.md"
         assert "Active project match" in candidates[0].reasons
 
+    def test_admitted_active_project_is_an_anchor_candidate(
+        self, tmp_path: Path
+    ) -> None:
+        """An exact indexed project path can seed linked context without FTS."""
+        _, session = _make_session(tmp_path)
+        _seed_notes(
+            session,
+            [
+                {
+                    "path": "projects/my-project/status.md",
+                    "title": "Status",
+                    "content": "project status",
+                },
+            ],
+        )
+
+        candidates = HybridRetrievalService(session, _SETTINGS).seeds(
+            "unrelated words", active_project="projects/my-project/status.md"
+        )
+
+        assert candidates[0].path == "projects/my-project/status.md"
+        assert "Active project anchor" in candidates[0].reasons
+
 
 class TestDeterministicTies:
     """Equal scores must be broken deterministically by path."""

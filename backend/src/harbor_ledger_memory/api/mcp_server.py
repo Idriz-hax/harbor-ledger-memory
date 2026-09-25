@@ -28,13 +28,10 @@ from harbor_ledger_memory.domain.retrieval import QueryRequest
 from harbor_ledger_memory.graph.builder import GraphBuilder
 from harbor_ledger_memory.services.access import AccessPolicy
 from harbor_ledger_memory.services.activity import ActivityService
-from harbor_ledger_memory.services.adaptive import (
-    AdaptiveService,
-    FeedbackValidationError,
-)
 from harbor_ledger_memory.services.live_traversal import LiveTraversalPublisher
+from harbor_ledger_memory.services.memory_marks import MemoryMarkService, token_scope
 from harbor_ledger_memory.services.query import QueryService
-from harbor_ledger_memory.services.scan import ScanService
+from harbor_ledger_memory.services.scan import ScanService, visible_scan_paths
 from harbor_ledger_memory.services.status import (
     CatalogStatusService,
     GraphService,
@@ -138,18 +135,30 @@ def build_mcp_server(
             paths this token can read.
         """
         policy = _policy()
+        caller = _token_record()
+        scope = token_scope(caller.id if caller else None)
+        boundary = VaultBoundary(settings)
+
+        def readable_admitted(path: str) -> bool:
+            return boundary.is_admitted(path) and policy.can_read(path)
+
         engine, session = _open_session()
         try:
             service = QueryService(
                 session,
                 retrieval_settings=settings.retrieval,
                 memory_settings=settings.memory,
-                path_filter=VaultBoundary(settings).is_admitted,
+                path_filter=readable_admitted,
                 activity_service=activity_service,
                 live_traversal=live_traversal,
             )
             result = service.query(
-                QueryRequest(query=text, active_project=active_project)
+                QueryRequest(
+                    query=text,
+                    active_project=active_project,
+                    scope_kind=scope.scope_kind,
+                    scope_id=scope.scope_id,
+                )
             )
             kept = tuple(
                 memory
@@ -175,20 +184,115 @@ def build_mcp_server(
             raise ToolError("token has no write access")
         engine, session = _open_session()
         try:
-            adaptive = AdaptiveService(session, settings.memory)
+            boundary = VaultBoundary(settings)
+            caller = _token_record()
+            scope = token_scope(caller.id if caller else None)
+            marks = MemoryMarkService(session)
             try:
-                adjustments = adaptive.apply_trace_feedback(
-                    trace_uuid=trace_id,
-                    relevant_paths=relevant_paths,
-                    irrelevant_paths=irrelevant_paths,
-                    path_filter=VaultBoundary(settings).is_admitted,
-                )
-            except FeedbackValidationError as exc:
+                if not relevant_paths and not irrelevant_paths:
+                    raise ValueError("feedback must include at least one path")
+                marks.validate_trace(scope, trace_id)
+                recorded = 0
+                for path in relevant_paths or ():
+                    marks.create_mark(
+                        scope,
+                        trace_id,
+                        path,
+                        "relevant",
+                        lambda value: (
+                            boundary.is_admitted(value) and policy.can_read(value)
+                        ),
+                    )
+                    recorded += 1
+                for path in irrelevant_paths or ():
+                    marks.create_mark(
+                        scope,
+                        trace_id,
+                        path,
+                        "irrelevant",
+                        lambda value: (
+                            boundary.is_admitted(value) and policy.can_read(value)
+                        ),
+                    )
+                    recorded += 1
+            except ValueError as exc:
                 raise ToolError(str(exc)) from exc
             session.commit()
             return json.dumps(
-                {"applied": True, "adjustments_count": adjustments}, indent=2
+                {"applied": True, "adjustments_count": 0, "recorded_count": recorded},
+                indent=2,
             )
+        finally:
+            session.close()
+            engine.dispose()
+
+    @mcp.tool()
+    def marks_list() -> str:
+        """List explicit marks owned by the authenticated token scope."""
+        caller = _token_record()
+        scope = token_scope(caller.id if caller else None)
+        policy = _policy()
+        boundary = VaultBoundary(settings)
+        engine, session = _open_session()
+        try:
+            marks = MemoryMarkService(session).list_marks(
+                scope,
+                lambda path: boundary.is_admitted(path) and policy.can_read(path),
+            )
+            return json.dumps(
+                [
+                    {"trace_id": mark.trace_uuid, "path": mark.path, "kind": mark.kind}
+                    for mark in marks
+                ],
+                indent=2,
+            )
+        finally:
+            session.close()
+            engine.dispose()
+
+    @mcp.tool()
+    def mark_pin(trace_id: str, path: str) -> str:
+        """Pin one readable indexed path for an owned trace."""
+        policy = _policy()
+        if not policy.has_any_write():
+            raise ToolError("token has no write access")
+        caller = _token_record()
+        scope = token_scope(caller.id if caller else None)
+        boundary = VaultBoundary(settings)
+        engine, session = _open_session()
+        try:
+            mark = MemoryMarkService(session).create_mark(
+                scope,
+                trace_id,
+                path,
+                "pin",
+                lambda value: boundary.is_admitted(value) and policy.can_read(value),
+            )
+            session.commit()
+            return json.dumps({"recorded": True, "path": mark.path, "kind": mark.kind})
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+        finally:
+            session.close()
+            engine.dispose()
+
+    @mcp.tool()
+    def marks_reset() -> str:
+        """Reset explicit marks owned by the authenticated token scope."""
+        policy = _policy()
+        if not policy.has_any_write():
+            raise ToolError("token has no write access")
+        caller = _token_record()
+        scope = token_scope(caller.id if caller else None)
+        boundary = VaultBoundary(settings)
+        engine, session = _open_session()
+        try:
+            count = MemoryMarkService(session).reset(
+                scope,
+                lambda value: boundary.is_admitted(value) and policy.can_read(value),
+            )
+            session.commit()
+            return json.dumps({"reset_count": count})
         finally:
             session.close()
             engine.dispose()
@@ -250,19 +354,23 @@ def build_mcp_server(
             readable by this token.
         """
         policy = _policy()
-        if not policy.can_read(path):
+        boundary = VaultBoundary(settings)
+        candidate = PurePosixPath(path)
+        try:
+            boundary.resolve_vault_path(candidate)
+        except (ValueError, VaultPathError) as exc:
+            raise ValueError(
+                "node path must be an admitted vault-relative path"
+            ) from exc
+        if not policy.can_read(candidate.as_posix()):
             return "[]"
         engine, session = _open_session()
         try:
-            boundary = VaultBoundary(settings)
-            candidate = PurePosixPath(path)
-            try:
-                boundary.resolve_vault_path(candidate)
-            except (ValueError, VaultPathError) as exc:
-                raise ValueError(
-                    "node path must be an admitted vault-relative path"
-                ) from exc
-            graph = GraphBuilder(session, path_filter=boundary.is_admitted).build()
+            graph = GraphBuilder(
+                session,
+                path_filter=lambda candidate_path: boundary.is_admitted(candidate_path)
+                and policy.can_read(candidate_path),
+            ).build()
             result = GraphService(graph).neighbours(candidate.as_posix())
             kept = [asdict(item) for item in result if policy.can_read(item.path)]
             return json.dumps(kept, indent=2, default=str)
@@ -290,6 +398,13 @@ def build_mcp_server(
             {
                 "files_indexed": result.files_indexed,
                 "broken_links": result.broken_links,
+                "rebuild": {
+                    "mode": "full_scan",
+                    "derived_index_is_disposable": True,
+                    "indexed_paths": list(
+                        visible_scan_paths(result.indexed_paths, policy.can_read)
+                    ),
+                },
                 "ambiguous_links": result.ambiguous_links,
             },
             indent=2,
@@ -328,7 +443,10 @@ def build_mcp_server(
             try:
                 existing = session.get(MemoryWriteProposal, proposal_id)
                 if existing is None:
-                    raise ToolError(f"proposal {proposal_id} not found")
+                    raise ToolError("proposal unavailable")
+                paths = (existing.path, *existing.affected_paths)
+                if any(not policy.can_read(path) for path in paths):
+                    raise ToolError("proposal unavailable")
                 service = VaultMutationService.from_settings(
                     session,
                     settings,
@@ -426,6 +544,8 @@ def _write_payload(proposal: MemoryWriteProposal) -> dict[str, object]:
         "affected_paths": proposal.affected_paths,
         "created_paths": proposal.created_paths,
         "creator_token_id": proposal.creator_token_id,
+        "base_hash": proposal.expected_source_hash,
+        "diff": proposal.base_diff,
     }
 
 

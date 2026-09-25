@@ -233,6 +233,10 @@ class QueryTrace(Base):
     schema_version: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="1", default=1
     )
+    scope_kind: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, index=True
+    )
+    scope_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
 
@@ -338,6 +342,28 @@ class AdaptiveEdge(Base):
     last_updated: Mapped[str] = mapped_column(String(128), nullable=False)
 
 
+class MemoryMark(Base):
+    """Explicit, scoped, trace-bound user mark; legacy adaptive rows stay inert."""
+
+    __tablename__ = "memory_marks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope_kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    scope_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    trace_uuid: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    path: Mapped[str] = mapped_column(
+        PosixPathType(), ForeignKey("notes.path", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
+    revoked_at: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
+
+
 class NoteEmbedding(Base):
     """Embedding vector for a note's text content."""
 
@@ -391,6 +417,7 @@ class MemoryWriteProposal(Base):
         String(64),
         nullable=True,
     )
+    base_diff: Mapped[str | None] = mapped_column(Text, nullable=True)
     resolved_at: Mapped[str | None] = mapped_column(String(128), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     creator_token_id: Mapped[int | None] = mapped_column(

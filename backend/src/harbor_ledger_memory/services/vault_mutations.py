@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import inspect
 from collections.abc import Callable, Mapping
@@ -30,6 +31,18 @@ from harbor_ledger_memory.vault.boundary import (
     WriteResult,
 )
 from harbor_ledger_memory.vault.parser import parse_note_bytes
+
+
+def proposal_diff(path: str, base: str, proposed: str) -> str:
+    """Build a compact server-side diff without exposing unrelated vault data."""
+    return "".join(
+        difflib.unified_diff(
+            base.splitlines(keepends=True),
+            proposed.splitlines(keepends=True),
+            fromfile=path,
+            tofile=path,
+        )
+    )
 
 STATUS_PENDING = "pending"
 STATUS_APPLYING = "applying"
@@ -760,9 +773,16 @@ class VaultMutationService:
             )
 
         expected_source_hash: str | None = None
+        base_diff: str | None = None
         try:
             snapshot = self.boundary.read_file(identity)
             expected_source_hash = hashlib.sha256(snapshot.content).hexdigest()
+            try:
+                base_diff = proposal_diff(
+                    identity.as_posix(), snapshot.content.decode("utf-8"), content
+                )
+            except UnicodeDecodeError:
+                base_diff = None
             operation = "update"
         except VaultPathError:
             # File not on disk — check catalog for previously indexed note
@@ -779,6 +799,7 @@ class VaultMutationService:
             rule_access=access.value,
             requested_at=_now(),
             expected_source_hash=expected_source_hash,
+            base_diff=base_diff,
         )
 
     def _record_denied(

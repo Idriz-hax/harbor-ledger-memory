@@ -1,11 +1,15 @@
 """API tests for the query endpoint."""
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from conftest import authed_client
+from harbor_ledger_memory.api.app import create_app
 from harbor_ledger_memory.catalog.database import CatalogSession, create_database
-from harbor_ledger_memory.catalog.models import Link, Note
-from harbor_ledger_memory.config import Settings
+from harbor_ledger_memory.catalog.models import AdaptiveEdge, Link, Note
+from harbor_ledger_memory.config import ApiSettings, FolderAccess, FolderRule, Settings
 
 
 def _seed_catalog_for_query(tmp_path: Path) -> Settings:
@@ -111,7 +115,11 @@ def test_feedback_api_binds_json_body_and_returns_adjustments(tmp_path: Path) ->
     )
 
     assert response.status_code == 200
-    assert response.json() == {"applied": True, "adjustments_count": 1}
+    assert response.json() == {
+        "applied": True,
+        "adjustments_count": 0,
+        "recorded_count": 1,
+    }
 
 
 def test_feedback_api_rejects_invalid_feedback_with_400(tmp_path: Path) -> None:
@@ -122,6 +130,71 @@ def test_feedback_api_rejects_invalid_feedback_with_400(tmp_path: Path) -> None:
         json={"trace_id": "missing-trace"},
     )
     assert response.status_code == 400
+
+
+def test_restricted_rest_feedback_rejects_unreadable_trace_path(
+    tmp_path: Path,
+) -> None:
+    settings = _seed_catalog_for_query(tmp_path)
+    (tmp_path / "Private").mkdir()
+    (tmp_path / "Private" / "secret.md").write_text(
+        "# Secret\n\nunreadable feedback phrase", encoding="utf-8"
+    )
+    engine = create_database(settings.database_url)
+    session = CatalogSession(bind=engine)
+    try:
+        session.add(
+            Note(
+                path="Private/secret.md",
+                title="Secret",
+                content="unreadable feedback phrase",
+                summary="unreadable feedback phrase",
+                frontmatter_json="{}",
+                content_hash="secret",
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+        engine.dispose()
+
+    settings = settings.model_copy(update={"api": ApiSettings(enabled=True)})
+    app = create_app(settings)
+    admin_token = app.state.token_service.create(
+        "feedback-admin",
+        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)],
+        admin=True,
+    ).plaintext
+    restricted_token = app.state.token_service.create(
+        "feedback-restricted",
+        rules=[
+            FolderRule(path=PurePosixPath("Public"), access=FolderAccess.PROPOSE_WRITE),
+            FolderRule(path=PurePosixPath("Private"), access=FolderAccess.NONE),
+        ],
+    ).plaintext
+    with TestClient(
+        app,
+        headers={"Authorization": f"Bearer {admin_token}"},
+    ) as client:
+        queried = client.post(
+            "/api/v1/queries", json={"query": "unreadable feedback phrase"}
+        )
+        trace_id = queried.json()["trace_id"]
+        secret_path = "Private/secret.md"
+        client.headers["Authorization"] = f"Bearer {restricted_token}"
+        response = client.post(
+            "/api/v1/feedback",
+            json={"trace_id": trace_id, "relevant_paths": [secret_path]},
+        )
+
+    assert response.status_code == 400
+    engine = create_database(settings.database_url)
+    session = CatalogSession(bind=engine)
+    try:
+        assert session.scalars(select(AdaptiveEdge)).all() == []
+    finally:
+        session.close()
+        engine.dispose()
 
 
 def test_feedback_changes_later_query_activation(tmp_path: Path) -> None:
@@ -153,7 +226,7 @@ def test_feedback_changes_later_query_activation(tmp_path: Path) -> None:
         for memory in after.json()["selected_memories"]
         if memory["path"] == target
     )
-    assert after_score > before_score
+    assert after_score == before_score
 
 
 def test_query_api_empty_catalog(tmp_path: Path) -> None:

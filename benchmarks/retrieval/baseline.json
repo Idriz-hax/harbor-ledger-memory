@@ -1,0 +1,364 @@
+{
+  "version": 3,
+  "profile": "lexical",
+  "corpus_sha256": "c962a2dd6dd4b2e5e9dd4362915388c0ec7b2f08b7f3c0e9c8420bc6dd93e763",
+  "cases_sha256": "811bec8ec3872ecb57a2b3e9cd8e6d7d50fbe6816ff758892a2e008a59a0f77f",
+  "splits": {
+    "dev": {
+      "metrics": {
+        "hit_at_5": 0.6,
+        "mrr": 0.5524,
+        "evidence_at_5": 0.6,
+        "negative_accuracy": 1.0,
+        "latency_p50_ms": 7.919,
+        "latency_p95_ms": 9.532
+      },
+      "case_results": {
+        "lexical-01": {
+          "selected_paths": [
+            "ledger-export.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "lexical-02": {
+          "selected_paths": [
+            "invoice-reconciliation.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "lexical-03": {
+          "selected_paths": [
+            "cash-flow.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "lexical-04": {
+          "selected_paths": [
+            "payroll-calendar.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "lexical-05": {
+          "selected_paths": [
+            "vendor-onboarding.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "lexical-06": {
+          "selected_paths": [
+            "quarterly-close.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "lexical-07": {
+          "selected_paths": [
+            "expense-policy.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "lexical-08": {
+          "selected_paths": [
+            "tax-calendar.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "lexical-09": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "lexical-10": {
+          "selected_paths": [
+            "renewal-tracker.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "paraphrase-01": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "paraphrase-02": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "paraphrase-03": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "paraphrase-04": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "paraphrase-05": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "paraphrase-06": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "paraphrase-07": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "paraphrase-08": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "paraphrase-09": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "paraphrase-10": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "active-01": {
+          "selected_paths": [
+            "bluebird-status.md",
+            "bluebird-cutover.md",
+            "bluebird-rollback.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "active-02": {
+          "selected_paths": [
+            "bluebird-status.md",
+            "bluebird-cutover.md",
+            "bluebird-rollback.md"
+          ],
+          "rank": 2,
+          "evidence_hit": true
+        },
+        "active-03": {
+          "selected_paths": [
+            "bluebird-status.md",
+            "bluebird-cutover.md",
+            "bluebird-rollback.md"
+          ],
+          "rank": 3,
+          "evidence_hit": true
+        },
+        "active-04": {
+          "selected_paths": [
+            "orchid-status.md",
+            "orchid-vendors.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "active-05": {
+          "selected_paths": [
+            "orchid-status.md",
+            "orchid-vendors.md"
+          ],
+          "rank": 2,
+          "evidence_hit": true
+        },
+        "active-06": {
+          "selected_paths": [
+            "harbor-status.md",
+            "harbor-bank-feed.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "graph-01": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "graph-02": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "graph-03": {
+          "selected_paths": [
+            "bluebird-status.md",
+            "bluebird-cutover.md",
+            "bluebird-rollback.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "graph-04": {
+          "selected_paths": [
+            "orchid-status.md",
+            "orchid-vendors.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "graph-05": {
+          "selected_paths": [
+            "orchid-vendors.md",
+            "orchid-status.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "graph-06": {
+          "selected_paths": [
+            "harbor-status.md",
+            "harbor-bank-feed.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "negative-01": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "negative-02": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "negative-03": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "evidence-01": {
+          "selected_paths": [
+            "ledger-export.md",
+            "bluebird-rollback.md",
+            "bluebird-status.md",
+            "bluebird-cutover.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "evidence-02": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "evidence-03": {
+          "selected_paths": [
+            "payroll-calendar.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        }
+      }
+    },
+    "heldout": {
+      "metrics": {
+        "hit_at_5": 0.8,
+        "mrr": 0.6333,
+        "evidence_at_5": 0.8,
+        "negative_accuracy": 1.0,
+        "latency_p50_ms": 8.196,
+        "latency_p95_ms": 9.542
+      },
+      "case_results": {
+        "lexical-11": {
+          "selected_paths": [
+            "forecast-assumptions.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "lexical-12": {
+          "selected_paths": [
+            "audit-request.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "paraphrase-11": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "paraphrase-12": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "active-07": {
+          "selected_paths": [
+            "harbor-status.md",
+            "harbor-bank-feed.md"
+          ],
+          "rank": 2,
+          "evidence_hit": true
+        },
+        "active-08": {
+          "selected_paths": [
+            "bluebird-status.md",
+            "bluebird-cutover.md",
+            "bluebird-rollback.md"
+          ],
+          "rank": 3,
+          "evidence_hit": true
+        },
+        "graph-07": {
+          "selected_paths": [
+            "harbor-status.md",
+            "harbor-bank-feed.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "graph-08": {
+          "selected_paths": [
+            "bluebird-status.md",
+            "bluebird-cutover.md",
+            "bluebird-rollback.md"
+          ],
+          "rank": 2,
+          "evidence_hit": true
+        },
+        "negative-04": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "negative-05": {
+          "selected_paths": [],
+          "rank": null,
+          "evidence_hit": false
+        },
+        "evidence-04": {
+          "selected_paths": [
+            "audit-request.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
+        "evidence-05": {
+          "selected_paths": [
+            "harbor-bank-feed.md",
+            "harbor-status.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        }
+      }
+    }
+  }
+}

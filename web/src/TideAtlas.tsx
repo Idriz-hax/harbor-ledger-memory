@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import cytoscape, { Core, StylesheetJson } from 'cytoscape'
-import { Box, Button, Chip, Drawer, IconButton, Paper, Stack, Tooltip, Typography, useMediaQuery } from '@mui/material'
+import { Alert, Box, Button, Chip, Drawer, IconButton, Paper, Stack, Tooltip, Typography, useMediaQuery } from '@mui/material'
 import { Add, CenterFocusStrong, Close, Fullscreen, Remove, Refresh, Shuffle, Terrain } from '@mui/icons-material'
 import { api, type Activity } from './main'
 import { activityColors, type ActivityKind } from './appTheme'
@@ -264,6 +264,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
   const [error, setError] = useState('')
   const [fullScreen, setFullScreen] = useState(false)
   const [scanning, setScanning] = useState(false)
+  const [rescanSuccess, setRescanSuccess] = useState<{ notes: number; diagnostics: number } | null>(null)
   const [traversalConnected, setTraversalConnected] = useState(false)
   const [activeTraversalCount, setActiveTraversalCount] = useState(0)
   const [islands, setIslands] = useState<Island[]>([])
@@ -615,9 +616,11 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
   const selectCluster = async (cluster: GraphCluster) => { scopeRef.current = cluster.scope; setScope(cluster.scope); setSelected(cluster); await loadView(2, cluster.scope) }
   const handleRescan = async () => {
     if (scanning) return
-    setScanning(true); setError('')
+    setScanning(true); setError(''); setRescanSuccess(null)
     try {
       await api('/api/v1/scan', { method: 'POST' })
+      const status = await api<{ indexed_notes?: number; diagnostics?: number }>('/api/v1/status')
+      setRescanSuccess({ notes: status.indexed_notes ?? 0, diagnostics: status.diagnostics ?? 0 })
       onRefresh?.()
       await loadView(viewRef.current?.level ?? 2, scopeRef.current)
     } catch (e) { setError(e instanceof Error ? e.message : 'rescan failed') }
@@ -675,7 +678,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
   const chartHeight = fullScreen ? '100vh' : small ? 'calc(100vh - 180px)' : 'min(760px, calc(100vh - 250px))'
 
   /* Last 5 events for the compact radar panel. */
-  const radarEvents = events.slice(0, 5)
+  const radarEvents = events.slice(-5).reverse()
   const folderGroups = [...new Set((view?.clusters ?? []).map(cluster => topLevelFolder(cluster.scope)))].sort()
 
   const toScreenX = (x: number) => x * viewport.zoom + viewport.pan.x
@@ -697,6 +700,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
         <Button startIcon={<Refresh />} onClick={handleRescan} disabled={scanning} sx={{ color: 'text.secondary', border: 1, borderColor: 'rgba(118, 163, 174, .3)', borderRadius: 6, '&:hover': { borderColor: 'rgba(230, 191, 105, .5)', background: 'rgba(230, 191, 105, .06)' } }}>
           {scanning ? 'Scanning…' : 'Rescan'}
         </Button>
+        {rescanSuccess && <Alert severity="success" role="status" sx={{ flexBasis: '100%', py: 0.75 }}>Catalog rebuilt from Markdown · {rescanSuccess.notes} notes · {rescanSuccess.diagnostics} diagnostics. No vault files were modified.</Alert>}
       </Stack>
     </Stack>
     {error && <Box sx={{ mb: 1, p: 1.5, borderRadius: 6, background: 'rgba(240, 128, 114, .1)', border: '1px solid rgba(240, 128, 114, .3)', color: '#f08072', fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>{error}</span><Button size="small" onClick={() => loadView(view?.level ?? 2, scope)} sx={{ color: '#f08072', fontSize: 12 }}>Retry</Button></Box>}

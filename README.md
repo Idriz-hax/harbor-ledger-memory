@@ -258,8 +258,17 @@ falls back to open mode.
 
 MCP is a streamable-HTTP endpoint at `/mcp`, bearer-only, and independent of
 the browser UI. Enable it with `hlm config set --mcp-enabled` (or
-`HLM_MCP__ENABLED=true`), create a token as above, and point a client at
-`http://127.0.0.1:8765/mcp/` with that token. In OpenCode's `opencode.json`:
+`HLM_MCP__ENABLED=true`). For a least-privilege, read-only OpenCode token when
+the configured index root is `AI`, use a named token with an explicit denied
+root and one allowed folder:
+
+```text
+hlm token create --name opencode-read --rule AI=none --rule AI/Knowledge=read
+```
+
+Copy the one-time plaintext into `HLM_MCP_TOKEN` in the environment used to
+launch OpenCode. In OpenCode's `opencode.json`, use the official remote
+configuration exactly:
 
 ```json
 {
@@ -267,12 +276,26 @@ the browser UI. Enable it with `hlm config set --mcp-enabled` (or
     "memory": {
       "type": "remote",
       "url": "http://127.0.0.1:8765/mcp/",
+      "oauth": false,
       "enabled": true,
-      "headers": { "Authorization": "Bearer hlm_…" }
+      "headers": { "Authorization": "Bearer {env:HLM_MCP_TOKEN}" }
     }
   }
 }
 ```
+
+After changing the token or server, reconnect and verify the integration:
+
+```text
+opencode mcp list
+opencode mcp debug
+```
+
+If the token is exposed or no longer needed, revoke it immediately with
+`hlm token revoke opencode-read`, remove `HLM_MCP_TOKEN`, and reconnect. A
+revoked token receives `401`; create a replacement token rather than reusing
+the old secret. This integration uses only the official remote HTTP config:
+there is no OAuth flow, relay, or plugin involved.
 
 MCP sessions are per-process: after `hlm serve` restarts, a client's cached
 session goes stale (`404 Session not found`) until the client reconnects.
@@ -328,6 +351,9 @@ hlm query "vault safety" --format json
 HLM_EMBEDDING_MODEL=all-MiniLM-L6-v2 uv run hlm query "knowledge management"
 hlm query "recent migration work" --project local-obsidian-brain
 hlm status
+hlm doctor
+hlm doctor --json
+hlm doctor --url http://127.0.0.1:8765
 hlm search "recursive index"
 hlm validate --format json
 hlm show-node AI/INDEX.md
@@ -346,6 +372,30 @@ that a restart is required. The local settings page is available at `/settings`
 with matching `GET`/`PUT` `/api/v1/settings` endpoints. There is no
 `short-term` CLI command; short-term state is managed only in SQL as part of
 query execution.
+
+`hlm doctor` is a read-only, offline-first diagnostic. It inspects configuration,
+vault availability, database schema and latest scan state, validation findings,
+embedding runtime, non-secret token/MCP settings, and the installed runtime.
+`--json` emits a stable check report; exit code 0 means healthy, 1 means warnings,
+and 2 means actionable failures. `--url` probes only local `/health` and
+`/openapi.json` endpoints to identify unreachable or stale servers. Doctor never
+creates or migrates a catalog, downloads models, starts a daemon, or prints
+secrets.
+
+### Rebuild and vault-change semantics
+
+`hlm scan` and `POST /api/v1/scan` perform a full, deterministic rebuild from
+the admitted Markdown scope. The catalog, embeddings, graph, and diagnostics
+are derived and disposable; scan/status responses include the latest attempt,
+latest successful scan, admitted index root, embedding configuration, and
+compact rebuild evidence. Rebuilding never restores, backs up, or repairs vault
+files, and Markdown bytes remain unchanged.
+
+Vault writes are separate: `POST /api/v1/writes` creates a version-pinned
+proposal (with a safe base hash and diff), and approval is the only path that
+may apply it under the existing policy and version checks. Lifecycle marks are
+also separate SQL metadata; they do not edit Markdown and are not part of a
+rebuild or a vault proposal.
 
 The frontend service also exposes the JSON API with uvicorn (bundled
 dependency):
@@ -395,6 +445,22 @@ uv run alembic -c backend/alembic.ini upgrade head
 uv run ruff check backend tests
 uv run ruff format --check .
 uv run pyright backend/src
+```
+
+The offline retrieval benchmark uses only the synthetic corpus under
+`benchmarks/retrieval/`; it never loads an embedding model or contacts a
+network. Its public `dev` and `heldout` regression splits are documented in
+`benchmarks/retrieval/README.md`; heldout is not a private canary. Run the
+committed lexical baseline check with:
+
+```text
+uv run python -m benchmarks.retrieval.runner --compare-baseline
+```
+
+Update `baseline.json` only when an intentional retrieval change is reviewed:
+
+```text
+uv run python -m benchmarks.retrieval.runner --write-baseline
 ```
 
 The parser uses safe YAML loading for a leading frontmatter block and reports
