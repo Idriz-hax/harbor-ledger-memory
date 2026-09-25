@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -41,7 +42,11 @@ class MemoryService:
         )
         self._session.add(event)
 
-    def refresh_selected(self, paths: list[str]) -> CacheRefresh:
+    def refresh_selected(
+        self,
+        paths: list[str],
+        path_filter: Callable[[str], bool] | None = None,
+    ) -> CacheRefresh:
         """Refresh selected notes in the bounded short-term cache."""
         self.cleanup_cache()
         selected_paths = tuple(dict.fromkeys(paths))
@@ -92,7 +97,11 @@ class MemoryService:
 
         return CacheRefresh(
             refreshed_paths=selected_paths,
-            evicted_paths=tuple(entry.path for entry in overflow),
+            evicted_paths=tuple(
+                entry.path
+                for entry in overflow
+                if path_filter is None or path_filter(entry.path)
+            ),
         )
 
     def cleanup_cache(self) -> tuple[int, int]:

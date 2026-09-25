@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Sequence
-from typing import Final
+from collections.abc import Callable, Sequence
+from typing import Final, Literal
 
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
@@ -18,6 +18,7 @@ from harbor_ledger_memory.domain.retrieval import (
     ContextMemory,
     SeedCandidate,
 )
+from harbor_ledger_memory.vault.links import parse_wikilinks
 
 _TOKEN_RE: Final = re.compile(r"[^\W_]+(?:[''\-_][^\W_]+)*", re.UNICODE)
 _CONTENT_WINDOW: Final = 1000
@@ -42,10 +43,15 @@ class ContextBuilder:
     creates excerpts from indexed content, and respects a token budget.
     """
 
-    def __init__(self, session: Session | Engine) -> None:
+    def __init__(
+        self,
+        session: Session | Engine,
+        path_filter: Callable[[str], bool] | None = None,
+    ) -> None:
         self._session = (
             CatalogSession(bind=session) if isinstance(session, Engine) else session
         )
+        self._path_filter = path_filter
 
     def build(
         self,
@@ -149,7 +155,11 @@ class ContextBuilder:
         results.sort(key=lambda c: (-c.combined, c.path))
         return results
 
-    def _create_excerpt(self, note: Note, query_tokens: set[str]) -> str:
+    def _create_excerpt(
+        self, note: Note, query_tokens: set[str]
+    ) -> tuple[
+        str, Literal["summary", "content_match", "content_start"], tuple[str, ...]
+    ]:
         """Create an excerpt from indexed note data.
 
         Priority:
@@ -161,14 +171,15 @@ class ContextBuilder:
         if note.summary:
             summary_tokens = {t.lower() for t in _plain_tokens(note.summary)}
             if query_tokens & summary_tokens:
-                return note.summary
+                excerpt = self._redact_wikilinks(note.summary)
+                return excerpt, "summary", self._matched_terms(excerpt, query_tokens)
 
         # Build content windows
         content = note.content or ""
         windows = self._content_windows(content)
 
         if not windows:
-            return ""
+            return "", "content_start", ()
 
         # Priority 2: Window nearest first token match
         first_match_pos = _first_token_match(content, query_tokens)
@@ -176,10 +187,30 @@ class ContextBuilder:
             for start, text in windows:
                 end = start + len(text)
                 if start <= first_match_pos < end:
-                    return text
+                    excerpt = self._redact_wikilinks(text)
+                    return (
+                        excerpt,
+                        "content_match",
+                        self._matched_terms(excerpt, query_tokens),
+                    )
 
         # Priority 3: First non-empty content window
-        return windows[0][1]
+        excerpt = self._redact_wikilinks(windows[0][1])
+        return excerpt, "content_start", self._matched_terms(excerpt, query_tokens)
+
+    def _matched_terms(self, excerpt: str, query_tokens: set[str]) -> tuple[str, ...]:
+        """Return sorted query terms that remain visible in the excerpt."""
+        excerpt_tokens = {token.lower() for token in _plain_tokens(excerpt)}
+        return tuple(sorted(query_tokens & excerpt_tokens))
+
+    def _redact_wikilinks(self, text: str) -> str:
+        """Hide wikilink targets the caller cannot read without changing notes."""
+        if self._path_filter is None:
+            return text
+        for link in parse_wikilinks(text):
+            if not self._path_filter(link.target):
+                text = text.replace(link.raw, "[[REDACTED]]")
+        return text
 
     def _content_windows(self, content: str) -> list[tuple[int, str]]:
         """Split content into bounded windows.
@@ -216,7 +247,9 @@ class ContextBuilder:
             if note is None:
                 continue
 
-            excerpt = self._create_excerpt(note, query_tokens)
+            excerpt, citation_source, matched_terms = self._create_excerpt(
+                note, query_tokens
+            )
             tokens = _estimate_tokens(excerpt)
 
             # Check budget — skip if exceeds (unless no first fit yet)
@@ -227,12 +260,18 @@ class ContextBuilder:
                 ContextMemory(
                     path=candidate.path,
                     title=note.title,
-                    summary=note.summary,
+                    summary=(
+                        self._redact_wikilinks(note.summary)
+                        if note.summary is not None
+                        else None
+                    ),
                     excerpt=excerpt,
                     retrieval_score=candidate.retrieval_score,
                     activation_score=candidate.activation_score,
                     reasons=candidate.reasons,
                     estimated_tokens=tokens,
+                    citation_source=citation_source,
+                    matched_terms=matched_terms,
                 )
             )
             total_tokens += tokens

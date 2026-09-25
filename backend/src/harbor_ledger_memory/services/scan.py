@@ -64,6 +64,30 @@ class ScanResult:
     changed_paths: tuple[str, ...] = ()
     deleted_paths: tuple[str, ...] = ()
     topology_paths: tuple[str, ...] = ()
+    content_hashes: dict[str, str] | None = None
+    links: dict[str, tuple[str, ...]] | None = None
+
+
+def visible_scan_paths(
+    paths: tuple[str, ...], can_read: Any
+) -> tuple[str, ...]:
+    """Keep scan path evidence within the caller's effective read scope."""
+    return tuple(path for path in paths if can_read(path))
+
+
+def projection_identity(result: ScanResult) -> dict[str, object]:
+    """Return the deterministic identity of the vault-derived projection."""
+    return {
+        "paths": tuple(sorted(result.indexed_paths)),
+        "content_hashes": tuple(sorted((result.content_hashes or {}).items())),
+        "links": tuple(sorted((result.links or {}).items())),
+        "diagnostics": tuple(
+            sorted(
+                (d.code, d.message, d.path, d.severity, d.line)
+                for d in result.diagnostics
+            )
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -321,6 +345,17 @@ class ScanService:
             changed_paths=changed_paths,
             deleted_paths=deleted_paths,
             topology_paths=topology_paths,
+            content_hashes={
+                path: content_hash
+                for path, _, content_hash, _, _ in parsed_files
+            },
+            links={
+                path: tuple(
+                    f"{row['normalized_target']}:{row['resolution_status']}"
+                    for row in rows
+                )
+                for path, rows in link_rows.items()
+            },
         )
         for sequence, path in enumerate(
             sorted(result.indexed_paths), sequence_start + 1
@@ -511,5 +546,7 @@ __all__ = [
     "ScanDiagnostic",
     "ScanResult",
     "ScanService",
+    "projection_identity",
+    "visible_scan_paths",
     "resolve_target",
 ]

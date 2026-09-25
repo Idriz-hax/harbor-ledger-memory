@@ -28,6 +28,9 @@ const pendingProposal: WriteProposal = {
   requested_at: minutesAgo(4),
   resolved_at: null,
   failure_reason: null,
+  diff: '--- a/AI/new.md\n+++ b/AI/new.md\n@@\n+# New note',
+  base_hash: 'abc123',
+  base_status: 'current',
 }
 
 type FetchCall = { url: string; method: string }
@@ -90,13 +93,15 @@ describe('Settings · vault writes', () => {
     expect(screen.queryByRole('button', { name: /save folder settings/i })).toBeNull()
   })
 
-  it('renders pending proposals with path, operation, rule access, and a content preview', async () => {
+  it('renders pending proposals with a server diff and base metadata', async () => {
     mockWrites([{ proposals: [pendingProposal] }])
     render(<Approvals />)
     const card = await screen.findByRole('article', { name: 'write proposal for AI/new.md' })
     expect(within(card).getByText('create')).toBeTruthy()
     expect(within(card).getByText('propose-write')).toBeTruthy()
-    expect(within(card).getByText(/Some body text/)).toBeTruthy()
+    expect(within(card).getByRole('region', { name: 'Proposal diff for AI/new.md' })).toHaveTextContent('+++ b/AI/new.md')
+    expect(within(card).getByText('Base hash: abc123')).toBeTruthy()
+    expect(within(card).getByText('Base status: current')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Approve AI/new.md' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Reject AI/new.md' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Approve AI/new.md' })).toHaveClass('write-btn')
@@ -221,20 +226,12 @@ describe('Settings · vault writes', () => {
     await waitFor(() => expect(calls.some(c => c.url === '/api/v1/writes/7/approve' && c.method === 'POST')).toBe(true))
   })
 
-  it('keeps long content previews safe and truncated', async () => {
-    const long = { ...pendingProposal, content: 'word '.repeat(120) }
-    mockWrites([{ proposals: [long] }])
-    const { container } = render(<Approvals />)
-    await waitFor(() => {
-      const preview = container.querySelector('.write-preview')
-      expect(preview?.textContent).toContain('…')
-    })
-    const preview = container.querySelector('.write-preview')
-    const text = preview?.textContent ?? ''
-    expect(text).not.toBe(long.content)
-    expect(text.length).toBeLessThanOrEqual(162)
-    /* The tooltip reuses the same capped preview — no raw content exposure. */
-    expect(preview?.getAttribute('title')).toBe(text)
+  it('does not expose proposal content when the server provides no diff', async () => {
+    mockWrites([{ proposals: [{ ...pendingProposal, diff: null, base_hash: null, base_status: null }] }])
+    render(<Approvals />)
+    const card = await screen.findByRole('article', { name: 'write proposal for AI/new.md' })
+    expect(within(card).getByText('Diff unavailable for this proposal.')).toBeInTheDocument()
+    expect(within(card).queryByText('Some body text')).toBeNull()
   })
 
   it('moves the proposal to the audit before the post-success refresh settles', async () => {
@@ -373,7 +370,7 @@ describe('Settings · vault writes', () => {
   it('does not repeat the page title — the app shell header owns it', async () => {
     mockWrites([{ proposals: [] }])
     render(<Settings />)
-    await screen.findByText('External access')
+    await screen.findByText('Tokens')
     expect(screen.queryByRole('heading', { name: 'Settings' })).toBeNull()
     /* The subtitle below the shell's page title is preserved. */
     expect(screen.getByText('Configure vault access, trusted tokens, and the read-only audit trail.')).toBeTruthy()
@@ -382,7 +379,7 @@ describe('Settings · vault writes', () => {
   it('keeps write review controls out of Settings', async () => {
     mockWrites([{ proposals: [pendingProposal] }])
     render(<Settings />)
-    await screen.findByText('External access')
+    await screen.findByText('Tokens')
     expect(screen.queryByRole('button', { name: 'Approve AI/new.md' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Reject AI/new.md' })).toBeNull()
   })

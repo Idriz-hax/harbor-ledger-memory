@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,6 +16,8 @@ class QueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2_000)
     active_project: str | None = None
     include_excluded: bool = False
+    scope_kind: str | None = None
+    scope_id: str | None = None
 
 
 class SeedCandidate(BaseModel):
@@ -74,6 +77,10 @@ class ContextMemory(BaseModel):
     activation_score: float
     reasons: tuple[str, ...]
     estimated_tokens: int
+    citation_source: Literal["summary", "content_match", "content_start"] = (
+        "content_start"
+    )
+    matched_terms: tuple[str, ...] = ()
 
 
 class ShortTermEvidence(BaseModel):

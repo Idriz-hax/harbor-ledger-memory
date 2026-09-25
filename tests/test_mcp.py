@@ -3,14 +3,18 @@
 import asyncio
 import json
 from pathlib import Path, PurePosixPath
+from queue import Empty
 
 import pytest
 from fastapi.testclient import TestClient
 from mcp.server.mcpserver.exceptions import ToolError
+from sqlalchemy import select
 
 from harbor_ledger_memory.api.app import create_app
 from harbor_ledger_memory.api.auth import hlm_internal_request, hlm_mcp_token
 from harbor_ledger_memory.api.mcp_server import build_mcp_server
+from harbor_ledger_memory.catalog.database import CatalogSession, create_database
+from harbor_ledger_memory.catalog.models import ActivationVisit, ContextSelection
 from harbor_ledger_memory.config import (
     FolderAccess,
     FolderRule,
@@ -25,7 +29,7 @@ from harbor_ledger_memory.services.tokens import TokenService
 
 def test_mcp_exposes_status_and_write_lifecycle_tools(tmp_path: Path) -> None:
     settings = Settings(
-        HLM_VAULT_PATH=tmp_path,
+        vault_path=tmp_path,
         folder_rules=(
             FolderRule(path=PurePosixPath("Public"), access=FolderAccess.PROPOSE_WRITE),
         ),
@@ -127,6 +131,38 @@ def test_mcp_status_policy_shape(tmp_path: Path) -> None:
         activity.close()
 
 
+def test_mcp_scan_hides_unreadable_paths_for_limited_token(tmp_path: Path) -> None:
+    (tmp_path / "AI" / "Public").mkdir(parents=True)
+    (tmp_path / "AI" / "Private").mkdir()
+    (tmp_path / "AI" / "Public" / "visible.md").write_text("# visible")
+    (tmp_path / "AI" / "Private" / "hidden.md").write_text("# hidden")
+    rules = [
+        FolderRule(path=PurePosixPath("AI/Public"), access=FolderAccess.PROPOSE_WRITE),
+        FolderRule(path=PurePosixPath("AI/Private"), access=FolderAccess.NONE),
+    ]
+    settings = Settings(
+        HLM_VAULT_PATH=tmp_path,
+        index_root="AI",
+        database_url=f"sqlite:///{tmp_path / 'mcp.db'}",
+    )
+    activity = ActivityService(settings.database_url)
+    token_service = TokenService(settings.database_url)
+    caller, _ = token_service.create("limited", rules=rules)
+    token = hlm_mcp_token.set(caller)
+    try:
+        transport, manager = build_mcp_server(
+            settings, activity, token_service, live_traversal=LiveTraversalPublisher()
+        )
+        result = asyncio.run(transport.state.mcp_server.call_tool("scan", {}))
+        payload = json.loads(result.content[0].text)
+        assert payload["rebuild"]["indexed_paths"] == ["AI/Public/visible.md"]
+        assert manager is not None
+    finally:
+        hlm_mcp_token.reset(token)
+        token_service.close()
+        activity.close()
+
+
 def test_mcp_query_and_write_publish_to_supplied_live_traversal(tmp_path: Path) -> None:
     (tmp_path / "source.md").write_text("# Source\n\n[[target]]", encoding="utf-8")
     (tmp_path / "target.md").write_text(
@@ -176,6 +212,169 @@ def test_mcp_query_and_write_publish_to_supplied_live_traversal(tmp_path: Path) 
         subscription.close()
         hlm_mcp_token.reset(token)
         hlm_internal_request.reset(internal)
+        token_service.close()
+        activity.close()
+
+
+def test_restricted_mcp_query_filters_outputs_and_side_effects(tmp_path: Path) -> None:
+    (tmp_path / "Public").mkdir()
+    (tmp_path / "Private").mkdir()
+    (tmp_path / "Public" / "readable.md").write_text(
+        "---\nsummary: See [[Private/secret.md]]\n---\n\n# Readable\n\npublic phrase",
+        encoding="utf-8",
+    )
+    (tmp_path / "Private" / "secret.md").write_text(
+        "# Secret\n\nunreadable secret phrase", encoding="utf-8"
+    )
+    settings = Settings(
+        HLM_VAULT_PATH=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'restricted-query.db'}",
+    )
+    activity = ActivityService(settings.database_url)
+    token_service = TokenService(settings.database_url)
+    caller, _ = token_service.create(
+        "restricted-query",
+        rules=[FolderRule(path=PurePosixPath("Private"), access=FolderAccess.NONE)],
+    )
+    publisher = LiveTraversalPublisher()
+    subscription = publisher.subscribe()
+    token = hlm_mcp_token.set(caller)
+    try:
+        ScanService.from_settings(settings).full_scan()
+        transport, _ = build_mcp_server(
+            settings, activity, token_service, live_traversal=publisher
+        )
+        result = json.loads(
+            asyncio.run(
+                transport.state.mcp_server.call_tool(
+                    "query", {"text": "unreadable secret phrase"}
+                )
+            ).content[0].text
+        )
+
+        serialized = json.dumps(result)
+        assert "Private/secret.md" not in serialized
+        assert result["selected_memories"] == []
+        assert result["excluded_nodes"] == []
+        assert result["short_term_evidence"]["hit_paths"] == []
+        with pytest.raises(Empty):
+            subscription.get_nowait()
+
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        try:
+            assert session.scalars(select(ContextSelection)).all() == []
+            assert session.scalars(select(ActivationVisit)).all() == []
+        finally:
+            session.close()
+            engine.dispose()
+    finally:
+        subscription.close()
+        hlm_mcp_token.reset(token)
+        token_service.close()
+        activity.close()
+
+
+def test_restricted_mcp_query_redacts_unreadable_summary_link(tmp_path: Path) -> None:
+    (tmp_path / "Public").mkdir()
+    (tmp_path / "Private").mkdir()
+    (tmp_path / "Public" / "readable.md").write_text(
+        "---\nsummary: See [[Private/secret.md]]\n---\n\n# Readable\n\npublic phrase",
+        encoding="utf-8",
+    )
+    (tmp_path / "Private" / "secret.md").write_text(
+        "# Secret\n\nsecret phrase", encoding="utf-8"
+    )
+    settings = Settings(
+        HLM_VAULT_PATH=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'restricted-summary.db'}",
+    )
+    activity = ActivityService(settings.database_url)
+    token_service = TokenService(settings.database_url)
+    caller, _ = token_service.create(
+        "restricted-summary",
+        rules=[FolderRule(path=PurePosixPath("Private"), access=FolderAccess.NONE)],
+    )
+    token = hlm_mcp_token.set(caller)
+    try:
+        ScanService.from_settings(settings).full_scan()
+        transport, _ = build_mcp_server(
+            settings,
+            activity,
+            token_service,
+            live_traversal=LiveTraversalPublisher(),
+        )
+        result = json.loads(
+            asyncio.run(
+                transport.state.mcp_server.call_tool(
+                    "query", {"text": "public phrase"}
+                )
+            ).content[0].text
+        )
+        summary = result["selected_memories"][0]["summary"]
+        assert "[[REDACTED]]" in summary
+        assert "Private/secret.md" not in summary
+    finally:
+        hlm_mcp_token.reset(token)
+        token_service.close()
+        activity.close()
+
+
+def test_restricted_mcp_feedback_rejects_unreadable_trace_path(tmp_path: Path) -> None:
+    (tmp_path / "Private").mkdir()
+    (tmp_path / "Private" / "secret.md").write_text(
+        "# Secret\n\nunreadable feedback phrase", encoding="utf-8"
+    )
+    settings = Settings(
+        HLM_VAULT_PATH=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'restricted-feedback.db'}",
+    )
+    activity = ActivityService(settings.database_url)
+    token_service = TokenService(settings.database_url)
+    unrestricted, _ = token_service.create(
+        "unrestricted-feedback",
+        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)],
+    )
+    restricted, _ = token_service.create(
+        "restricted-feedback",
+        rules=[
+            FolderRule(path=PurePosixPath("Public"), access=FolderAccess.PROPOSE_WRITE),
+            FolderRule(path=PurePosixPath("Private"), access=FolderAccess.NONE),
+        ],
+    )
+    try:
+        ScanService.from_settings(settings).full_scan()
+        transport, _ = build_mcp_server(
+            settings, activity, token_service, live_traversal=LiveTraversalPublisher()
+        )
+        server = transport.state.mcp_server
+        unrestricted_token = hlm_mcp_token.set(unrestricted)
+        try:
+            queried = json.loads(
+                asyncio.run(
+                    server.call_tool(
+                        "query", {"text": "unreadable feedback phrase"}
+                    )
+                ).content[0].text
+            )
+        finally:
+            hlm_mcp_token.reset(unrestricted_token)
+
+        token = hlm_mcp_token.set(restricted)
+        try:
+            with pytest.raises(ToolError):
+                asyncio.run(
+                    server.call_tool(
+                        "feedback",
+                        {
+                            "trace_id": queried["trace_id"],
+                            "relevant_paths": ["Private/secret.md"],
+                        },
+                    )
+                )
+        finally:
+            hlm_mcp_token.reset(token)
+    finally:
         token_service.close()
         activity.close()
 
@@ -241,7 +440,8 @@ def test_mcp_feedback_applies_to_query_trace_and_rejects_invalid_paths(
         )
         assert json.loads(applied.content[0].text) == {
             "applied": True,
-            "adjustments_count": 1,
+            "adjustments_count": 0,
+            "recorded_count": 1,
         }
         with pytest.raises(ToolError):
             asyncio.run(

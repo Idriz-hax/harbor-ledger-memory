@@ -246,6 +246,7 @@ describe('TideAtlas controls and viewport', () => {
     fireEvent.click(screen.getByRole('button', { name: /rescan/i }))
     await waitFor(() => expect(fetchMock.mock.calls.some(call => String(call[0]).includes('/api/v1/scan') && call[1]?.method === 'POST')).toBe(true))
     await waitFor(() => expect(fetchMock.mock.calls.filter(call => String(call[0]).includes('/api/v1/graph/view')).length).toBe(2))
+    expect(await screen.findByRole('status')).toHaveTextContent('Catalog rebuilt from Markdown')
   })
 
   it('updates in place across a LOD boundary without refitting', async () => {
@@ -396,6 +397,23 @@ describe('TideAtlas controls and viewport', () => {
     const empty = render(<TideAtlas events={[]} />)
     expect(screen.getByText('No recent activity')).toBeInTheDocument()
     empty.unmount()
+  })
+
+  it('shows the newest five events in the activity radar', () => {
+    mockAtlas([view(2, null)])
+    const events = Array.from({ length: 6 }, (_, index) => ({
+      id: index + 1,
+      event_type: `event-${index + 1}`,
+      created_at: new Date().toISOString(),
+      payload: { path: `note-${index + 1}.md` },
+    }))
+
+    render(<TideAtlas events={events} />)
+
+    expect(screen.queryByText('Event 1')).not.toBeInTheDocument()
+    for (let index = 2; index <= 6; index += 1) {
+      expect(screen.getByText(`Event ${index}`)).toBeInTheDocument()
+    }
   })
 
   it('formats activity values without exposing raw event names', () => {
