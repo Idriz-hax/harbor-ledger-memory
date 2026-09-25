@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import getpass
+import io
 import ipaddress
 import json
 import os
+import sys
 from collections.abc import Generator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
@@ -33,7 +35,13 @@ from harbor_ledger_memory.config import (
 )
 from harbor_ledger_memory.domain.retrieval import QueryRequest
 from harbor_ledger_memory.graph.builder import GraphBuilder
+from harbor_ledger_memory.migrate import upgrade_to_head
 from harbor_ledger_memory.services.activity import ActivityService
+from harbor_ledger_memory.services.doctor import run_doctor
+from harbor_ledger_memory.services.memory_marks import (
+    MemoryMarkScope,
+    MemoryMarkService,
+)
 from harbor_ledger_memory.services.query import QueryService
 from harbor_ledger_memory.services.scan import ScanService
 from harbor_ledger_memory.services.search import SearchService
@@ -63,6 +71,8 @@ token_app = typer.Typer(
     name="token", help="Create, update, list, and revoke API tokens."
 )
 app.add_typer(token_app, name="token")
+marks_app = typer.Typer(name="marks", help="Manage scoped explicit memory marks.")
+app.add_typer(marks_app, name="marks")
 
 
 def sync_opencode_skill() -> None:
@@ -82,6 +92,7 @@ def sync_opencode_skill() -> None:
 
 @app.callback()
 def cli_options(
+    ctx: typer.Context,
     vault_path: str | None = typer.Option(
         None, "--vault-path", help="Override the configured vault directory."
     ),
@@ -96,10 +107,13 @@ def cli_options(
     ),
 ) -> None:
     """Apply one-shot CLI configuration overrides before a command runs."""
-    try:
-        sync_opencode_skill()
-    except OSError as exc:
-        typer.echo(f"Warning: could not synchronize OpenCode skill: {exc}", err=True)
+    if ctx.invoked_subcommand != "doctor" and "doctor" not in sys.argv:
+        try:
+            sync_opencode_skill()
+        except OSError as exc:
+            typer.echo(
+                f"Warning: could not synchronize OpenCode skill: {exc}", err=True
+            )
     overrides = {
         "HLM_VAULT_PATH": vault_path,
         "HLM_INDEX_ROOT": index_root,
@@ -114,6 +128,8 @@ def cli_options(
 @contextmanager
 def _catalog(settings: Settings) -> Generator[Session, None, None]:
     engine = create_database(settings.database_url)
+    with redirect_stderr(io.StringIO()):
+        upgrade_to_head(settings.database_url)
     session = CatalogSession(bind=engine)
     try:
         yield session
@@ -193,6 +209,11 @@ def _scan_payload(result: Any) -> dict[str, Any]:
         "broken_links": result.broken_links,
         "ambiguous_links": result.ambiguous_links,
         "indexed_paths": list(result.indexed_paths),
+        "rebuild": {
+            "mode": "full_scan",
+            "derived_index_is_disposable": True,
+            "content_hashes": result.content_hashes or {},
+        },
         "diagnostics": [
             {
                 "code": diagnostic.code,
@@ -445,8 +466,7 @@ def token_update(
     approve_own_proposals: bool | None = typer.Option(
         None,
         "--approve-own-proposals/--no-approve-own-proposals",
-        help="Set (or clear) approve-own-proposals; omitted leaves it "
-        "unchanged.",
+        help="Set (or clear) approve-own-proposals; omitted leaves it unchanged.",
     ),
     clear_rules: bool = typer.Option(
         False,
@@ -556,6 +576,26 @@ def status(
         ).read()
     payload = canonical_status_payload(settings, current)
     _emit(payload, json_output)
+
+
+@app.command()
+def doctor(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON output."),
+    url: str | None = typer.Option(None, "--url", help="Probe a local server URL."),
+) -> None:
+    """Run read-only offline diagnostics for the local installation."""
+    report = run_doctor(url=url)
+    if json_output:
+        _emit(report, True)
+    else:
+        typer.echo("hlm doctor")
+        checks = cast(list[dict[str, Any]], report["checks"])
+        for check in checks:
+            typer.echo(
+                f"{check['status'].upper():5} {check['name']}: {check['message']}"
+            )
+        typer.echo(f"exit code: {report['exit_code']}")
+    raise typer.Exit(code=int(cast(int, report["exit_code"])))
 
 
 @app.command()
@@ -863,6 +903,8 @@ def query(
             query=query_text,
             active_project=project,
             include_excluded=include_excluded,
+            scope_kind="cli",
+            scope_id="local",
         )
         result = service.query(request)
 
@@ -910,6 +952,8 @@ def _query_payload(result: Any, include_excluded: bool) -> dict[str, Any]:
                 "activation_score": mem.activation_score,
                 "reasons": list(mem.reasons),
                 "estimated_tokens": mem.estimated_tokens,
+                "citation_source": mem.citation_source,
+                "matched_terms": list(mem.matched_terms),
             }
             for mem in result.selected_memories
         ],
@@ -972,6 +1016,65 @@ def update(
         raise typer.Exit(code=1)
 
 
+@marks_app.command("list")
+def marks_list() -> None:
+    """List marks owned by the trusted local CLI scope."""
+    settings = _load_settings()
+    with _catalog(settings) as session:
+        marks = MemoryMarkService(session).list_marks(
+            MemoryMarkScope("cli", "local"), VaultBoundary(settings).is_admitted
+        )
+        _emit(
+            [
+                {"trace_id": mark.trace_uuid, "path": mark.path, "kind": mark.kind}
+                for mark in marks
+            ],
+            True,
+        )
+
+
+@marks_app.command("pin")
+def marks_pin(
+    trace_id: str = typer.Option(..., "--trace-id"),
+    path: str = typer.Option(..., "--path"),
+) -> None:
+    """Pin an admitted path for a trace in the trusted local scope."""
+    settings = _load_settings()
+    with _catalog(settings) as session:
+        MemoryMarkService(session).create_mark(
+            MemoryMarkScope("cli", "local"),
+            trace_id,
+            path,
+            "pin",
+            VaultBoundary(settings).is_admitted,
+        )
+        session.commit()
+    typer.echo(f"pinned {path}")
+
+
+@marks_app.command("reset")
+def marks_reset() -> None:
+    """Revoke all readable marks in the trusted local scope."""
+    settings = _load_settings()
+    with _catalog(settings) as session:
+        count = MemoryMarkService(session).reset(
+            MemoryMarkScope("cli", "local"), VaultBoundary(settings).is_admitted
+        )
+        session.commit()
+    typer.echo(f"reset {count} mark(s)")
+
+
+@marks_app.command("status")
+def marks_status() -> None:
+    """Show explicit mark count for the trusted local scope."""
+    settings = _load_settings()
+    with _catalog(settings) as session:
+        marks = MemoryMarkService(session).list_marks(
+            MemoryMarkScope("cli", "local"), VaultBoundary(settings).is_admitted
+        )
+    _emit({"scope_kind": "cli", "scope_id": "local", "count": len(marks)}, True)
+
+
 @app.command()
 def feedback(
     trace_id: str = typer.Argument(..., help="The trace ID to provide feedback for"),
@@ -982,28 +1085,31 @@ def feedback(
         None, "--irrelevant", "-i", help="Paths that were irrelevant"
     ),
 ) -> None:
-    """Provide feedback on a query trace to adjust adaptive weights."""
+    """Record feedback on a query trace without changing ranking weights."""
     s = _load_settings()
     with _catalog(s) as session:
-        from harbor_ledger_memory.services.adaptive import (
-            AdaptiveService,
-            FeedbackValidationError,
-        )
-
         boundary = VaultBoundary(s)
-
-        adaptive = AdaptiveService(session, s.memory)
         try:
-            adjustments = adaptive.apply_trace_feedback(
-                trace_uuid=trace_id,
-                relevant_paths=relevant,
-                irrelevant_paths=irrelevant,
-                path_filter=boundary.is_admitted,
-            )
-        except FeedbackValidationError as exc:
+            if not relevant and not irrelevant:
+                raise ValueError("feedback must include at least one path")
+            scope = MemoryMarkScope("cli", "local")
+            marks = MemoryMarkService(session)
+            marks.validate_trace(scope, trace_id)
+            recorded = 0
+            for path in relevant or ():
+                marks.create_mark(
+                    scope, trace_id, path, "relevant", boundary.is_admitted
+                )
+                recorded += 1
+            for path in irrelevant or ():
+                marks.create_mark(
+                    scope, trace_id, path, "irrelevant", boundary.is_admitted
+                )
+                recorded += 1
+        except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
         session.commit()
-        typer.echo(f"Applied {adjustments} adjustment(s) for trace {trace_id}")
+        typer.echo(f"Recorded {recorded} feedback mark(s) for trace {trace_id}")
 
 
 def main() -> None:

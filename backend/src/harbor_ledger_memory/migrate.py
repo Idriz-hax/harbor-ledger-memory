@@ -15,9 +15,10 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, inspect, text
 
 from harbor_ledger_memory.catalog.database import resolve_database_url
+from harbor_ledger_memory.catalog.models import Base
 
 # Columns added by migration 0007_activity_graph_metadata
 _ACTIVITY_METADATA_COLUMNS = {
@@ -59,6 +60,8 @@ def _column_names(engine: Engine, table: str) -> set[str]:
 
 def _add_missing_activity_columns(engine: Engine) -> None:
     """Add the 0007 metadata columns to activity_events if missing."""
+    if not inspect(engine).has_table("activity_events"):
+        return
     existing = _column_names(engine, "activity_events")
     missing = {
         col: dtype
@@ -70,6 +73,35 @@ def _add_missing_activity_columns(engine: Engine) -> None:
     with engine.begin() as conn:
         for col, dtype in missing.items():
             conn.execute(text(f"ALTER TABLE activity_events ADD COLUMN {col} {dtype}"))
+
+
+def _add_missing_query_trace_scope_columns(engine: Engine) -> None:
+    """Bring an untracked pre-M4 create_all catalog to the current trace shape."""
+    if not inspect(engine).has_table("query_traces"):
+        return
+    existing = _column_names(engine, "query_traces")
+    missing = {
+        "scope_kind": "VARCHAR(32)",
+        "scope_id": "VARCHAR(128)",
+    }
+    with engine.begin() as conn:
+        for column, dtype in missing.items():
+            if column not in existing:
+                conn.execute(
+                    text(f"ALTER TABLE query_traces ADD COLUMN {column} {dtype}")
+                )
+
+
+def _add_missing_proposal_columns(engine: Engine) -> None:
+    """Bring an untracked proposal table to the current additive shape."""
+    if not inspect(engine).has_table("memory_write_proposals"):
+        return
+    if "base_diff" in _column_names(engine, "memory_write_proposals"):
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE memory_write_proposals ADD COLUMN base_diff TEXT")
+        )
 
 
 def _has_alembic_version(engine: Engine) -> bool:
@@ -123,6 +155,9 @@ def upgrade_to_head(database_url: str) -> None:
         # Alembic upgrade skips the table-creating migrations.
         if not _has_alembic_version(engine):
             _add_missing_activity_columns(engine)
+            _add_missing_query_trace_scope_columns(engine)
+            _add_missing_proposal_columns(engine)
+            Base.metadata.create_all(engine)
             command.stamp(cfg, "head")
             return
     finally:

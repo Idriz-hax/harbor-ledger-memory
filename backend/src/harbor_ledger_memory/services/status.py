@@ -85,6 +85,8 @@ class CatalogStatus:
     ambiguous_links: int
     last_scan_status: str | None
     last_scan_completed_at: str | None
+    latest_scan_attempt: dict[str, object]
+    latest_successful_scan: dict[str, object] | None
 
 
 class CatalogStatusService:
@@ -138,6 +140,23 @@ class CatalogStatusService:
         latest = self._session.scalar(
             select(ScanRun).order_by(ScanRun.id.desc()).limit(1)
         )
+        successful = self._session.scalar(
+            select(ScanRun)
+            .where(ScanRun.status == "complete")
+            .order_by(ScanRun.id.desc())
+            .limit(1)
+        )
+        def scan_evidence(run: ScanRun | None) -> dict[str, object] | None:
+            if run is None:
+                return None
+            return {
+                "id": run.id,
+                "status": run.status,
+                "started_at": run.started_at,
+                "completed_at": run.completed_at,
+                "files_indexed": run.notes_indexed,
+                "diagnostics": run.diagnostics_count,
+            }
         return CatalogStatus(
             indexed_notes=indexed_notes,
             scan_runs=scan_runs,
@@ -146,6 +165,8 @@ class CatalogStatusService:
             ambiguous_links=ambiguous_links,
             last_scan_status=None if latest is None else latest.status,
             last_scan_completed_at=(None if latest is None else latest.completed_at),
+            latest_scan_attempt=scan_evidence(latest) or {},
+            latest_successful_scan=scan_evidence(successful),
         )
 
 
@@ -180,6 +201,12 @@ def canonical_status_payload(
         "vault_scope": settings.index_root.as_posix(),
         "effective_read_scope": settings.effective_read_scope,
         **asdict(catalog),
+        "admitted_index_root": settings.index_root.as_posix(),
+        "embedding_mode": (
+            "configured" if settings.memory.embedding_model else "disabled"
+        ),
+        "embedding_model": settings.memory.embedding_model,
+        "derived_index_is_disposable": True,
     }
 
 
@@ -222,6 +249,12 @@ def token_status_payload(
         "vault_scope": root,
         "effective_read_scope": effective_read_scope_for_policy(policy, root),
         **asdict(catalog),
+        "admitted_index_root": root,
+        "embedding_mode": (
+            "configured" if settings.memory.embedding_model else "disabled"
+        ),
+        "embedding_model": settings.memory.embedding_model,
+        "derived_index_is_disposable": True,
     }
 
 

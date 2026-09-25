@@ -80,6 +80,8 @@ class TestSummaryPreference:
 
         assert len(results) == 1
         assert results[0].excerpt == "memory systems are important"
+        assert results[0].citation_source == "summary"
+        assert results[0].matched_terms == ("memory",)
 
     def test_summary_not_used_when_no_query_token(self, tmp_path: Path) -> None:
         """Summary without a matching query token should not be used."""
@@ -140,6 +142,8 @@ class TestNearestMatchExcerpt:
         assert len(results) == 1
         # The excerpt should contain "memory"
         assert "memory" in results[0].excerpt
+        assert results[0].citation_source == "content_match"
+        assert results[0].matched_terms == ("memory",)
 
     def test_fallback_to_first_content_window(self, tmp_path: Path) -> None:
         """When no token matches in content, use the first non-empty window."""
@@ -163,6 +167,8 @@ class TestNearestMatchExcerpt:
         assert len(results) == 1
         # Should get first content window
         assert results[0].excerpt == "nothing relevant in this paragraph of text"
+        assert results[0].citation_source == "content_start"
+        assert results[0].matched_terms == ()
 
 
 # ---------------------------------------------------------------------------

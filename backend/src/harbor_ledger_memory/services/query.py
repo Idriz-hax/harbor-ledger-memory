@@ -31,13 +31,16 @@ from harbor_ledger_memory.domain.retrieval import (
 from harbor_ledger_memory.graph.activation import spread_activation
 from harbor_ledger_memory.graph.builder import GraphBuilder
 from harbor_ledger_memory.services.activity import ActivityService, graph_refs
-from harbor_ledger_memory.services.adaptive import AdaptiveService
 from harbor_ledger_memory.services.context import ContextBuilder
 from harbor_ledger_memory.services.live_traversal import (
     NullLiveTraversalPublisher,
     TraversalEvent,
 )
 from harbor_ledger_memory.services.memory import MemoryService
+from harbor_ledger_memory.services.memory_marks import (
+    MemoryMarkScope,
+    MemoryMarkService,
+)
 from harbor_ledger_memory.services.retrieval import HybridRetrievalService
 
 _TRACE_SCHEMA_VERSION = 1
@@ -87,7 +90,13 @@ class QueryService:
         # --- Stage 1: Seed retrieval ---
         memory_service = MemoryService(self._session, self._memory_settings)
         removed_expired, removed_missing = memory_service.cleanup_cache()
-        cache_candidates = memory_service.cache_candidates()
+        MemoryMarkService(self._session).expire()
+        pin_boosts: dict[str, float] = {}
+        if request.scope_kind and request.scope_id:
+            pin_boosts = MemoryMarkService(self._session).pin_boosts(
+                MemoryMarkScope(request.scope_kind, request.scope_id),
+                self._path_filter or (lambda _: True),
+            )
         retrieval = HybridRetrievalService(
             self._session,
             settings=self._settings,
@@ -97,9 +106,9 @@ class QueryService:
         seeds: tuple[SeedCandidate, ...] = retrieval.seeds(
             request.query,
             active_project=request.active_project,
-            recent_paths=cache_candidates,
+            recent_paths=pin_boosts,
         )
-        hit_paths = tuple(seed.path for seed in seeds if seed.path in cache_candidates)
+        hit_paths: tuple[str, ...] = ()
 
         # --- Stage 2: Graph activation ---
         activated: tuple[ActivatedNode, ...] = ()
@@ -114,9 +123,7 @@ class QueryService:
                 decay=self._settings.decay,
                 minimum_activation=self._settings.minimum_activation,
                 edge_types=frozenset({"links_to", "contains", "parent_of"}),
-                adaptive_deltas=AdaptiveService(
-                    self._session, self._memory_settings
-                ).get_deltas("__query__"),
+                adaptive_deltas=None,
             )
             # The activated nodes already carry the selected-edge provenance
             # (structural source/target, direction, edge key) chosen inside
@@ -127,14 +134,16 @@ class QueryService:
             # the endpoints NULL.
 
         # --- Stage 3: Context building ---
-        context_builder = ContextBuilder(self._session)
+        context_builder = ContextBuilder(self._session, path_filter=self._path_filter)
         selected: tuple[ContextMemory, ...] = context_builder.build(
             request.query,
             seeds,
             activated,
             self._settings.context_token_budget,
         )
-        refresh = memory_service.refresh_selected([memory.path for memory in selected])
+        refresh = memory_service.refresh_selected(
+            [memory.path for memory in selected], path_filter=self._path_filter
+        )
         short_term_evidence = ShortTermEvidence(
             hit_paths=hit_paths,
             refreshed_paths=refresh.refreshed_paths,
@@ -160,6 +169,8 @@ class QueryService:
             trace_uuid=str(trace_uuid),
             query=request.query,
             active_project=request.active_project,
+            scope_kind=request.scope_kind,
+            scope_id=request.scope_id,
             retrieval_settings=settings_snapshot,
             schema_version=_TRACE_SCHEMA_VERSION,
             status="completed",
@@ -236,6 +247,8 @@ class QueryService:
                 "trace_id": str(trace_uuid),
                 "selected_paths": [memory.path for memory in selected],
                 "total_estimated_tokens": total_tokens,
+                "scope_kind": request.scope_kind,
+                "scope_id": request.scope_id,
                 "graph_refs": graph_refs(touched_paths),
                 "graph_path": _activation_segments(activated),
             },

@@ -22,3 +22,4 @@ class FeedbackResponse(BaseModel):
 
     applied: bool
     adjustments_count: int
+    recorded_count: int = 0

@@ -139,7 +139,7 @@ def test_cli_invalid_feedback_is_reported_cleanly(monkeypatch, tmp_path: Path) -
         app, ["feedback", "missing-trace", "--relevant", "AI/missing.md"]
     )
     assert result.exit_code != 0
-    assert "Trace missing-trace not found" in result.output
+    assert "trace is not owned by this scope" in result.output
 
 
 def test_cli_config_set_and_show_use_persistent_toml(

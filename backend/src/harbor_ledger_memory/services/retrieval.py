@@ -150,10 +150,21 @@ class HybridRetrievalService:
             if token_set & {t.lower() for t in tags}:
                 tag_match_paths.add(path)
 
+        active_project_paths: set[str] = set()
+        if active_project:
+            active_note = self._session.scalar(
+                select(Note.path).where(Note.path == active_project)
+            )
+            if active_note is not None and (
+                self._path_filter is None or self._path_filter(active_note)
+            ):
+                active_project_paths.add(active_note)
+
         # --- Phase 3: Bulk-load all candidate notes from catalog ---
         candidate_paths = (
             fts_paths
             | tag_match_paths
+            | active_project_paths
             | {
                 path
                 for path in (recent_paths or ())
@@ -235,6 +246,8 @@ class HybridRetrievalService:
                     reasons.append("Summary match")
 
             # Active project match
+            if path in active_project_paths:
+                reasons.append("Active project anchor")
             if active_project and active_project in path:
                 score += _PROJECT_WEIGHT
                 reasons.append("Active project match")
