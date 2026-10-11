@@ -15,6 +15,8 @@ LAN password and sign in. See [Passwordless LAN mode](README.md#passwordless-lan
 
 - Unauthenticated LAN visitors no longer receive a privileged UI session.
 - LAN health requests honor the configured CIDR allowlist.
+- Locked dependencies now use PyJWT 2.15.1, Mako 1.4.3,
+  `source-map-js` 1.2.2, and `undici` 8.11.2.
 
 ## Write lifecycle
 
