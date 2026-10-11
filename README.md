@@ -176,6 +176,20 @@ HLM_NETWORK__ALLOWED_CIDRS='["192.168.1.0/24"]' \
 hlm serve --host 0.0.0.0 --port 8443
 ```
 
+### Passwordless LAN mode
+
+Without a LAN password, visitors can browse the graph only; Approvals, Settings,
+token management, and write APIs remain protected. An explicit CIDR allowlist is
+required. For an existing passwordless LAN installation, set the actual trusted
+network range and restart:
+
+```text
+hlm config set --allowed-cidrs '["192.168.1.0/24"]'
+```
+
+To use the protected UI over LAN, configure a password with
+`hlm config set-password` and sign in.
+
 In a trusted network, insecure LAN HTTP requires an explicit acknowledgement
 and no TLS files:
 
@@ -183,6 +197,7 @@ and no TLS files:
 HLM_FRONTEND__ENABLED=true HLM_FRONTEND__MODE=lan \
 HLM_NETWORK__ENABLED=true HLM_NETWORK__INSECURE_HTTP=true \
 HLM_FRONTEND__PUBLIC_ORIGIN=http://memory.local \
+HLM_NETWORK__ALLOWED_CIDRS='["192.168.1.0/24"]' \
 hlm serve --host 0.0.0.0
 ```
 
