@@ -538,6 +538,13 @@ class GraphViewResponse(BaseModel):
     next_cursor: str | None = None
 
 
+def _package_version() -> str:
+    try:
+        return importlib_metadata.version("harbor-ledger-memory")
+    except importlib_metadata.PackageNotFoundError:
+        return "unknown"
+
+
 def create_app(
     settings: Settings,
     *,
@@ -644,7 +651,7 @@ def create_app(
     application = FastAPI(
         title="Harbor Ledger Memory",
         description="Neural memory service for AI agents with local vault controls",
-        version="1.3.2",
+        version=_package_version(),
         lifespan=lifespan,
     )
     application.state.activity_service = activity_service
@@ -1839,10 +1846,7 @@ def create_app(
         )
 
     def _get_current_version() -> str:
-        try:
-            return importlib_metadata.version("harbor-ledger-memory")
-        except importlib_metadata.PackageNotFoundError:
-            return "unknown"
+        return _package_version()
 
     def _check_update_available() -> tuple[bool, str]:
         """Return (update_available, latest_version)."""
