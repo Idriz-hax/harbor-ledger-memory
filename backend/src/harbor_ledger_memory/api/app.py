@@ -147,7 +147,7 @@ class _LanSourceMiddleware:
         path = scope.get("path", "")
         protected = (
             path == "/"
-            or path in {"/login", "/logout", "/status", "/query", "/settings"}
+            or path in {"/health", "/login", "/logout", "/status", "/query", "/settings"}
             or path.startswith("/api/v1/")
         )
         if scope.get("type") == "http" and protected and self.networks:
@@ -586,6 +586,17 @@ def create_app(
                 from harbor_ledger_memory.catalog.migrate import upgrade_to_head
 
                 upgrade_to_head(settings.database_url)
+                recovery_engine = create_database(settings.database_url)
+                recovery_session = CatalogSession(bind=recovery_engine)
+                try:
+                    VaultMutationService.from_settings(
+                        recovery_session,
+                        settings,
+                        activity_service=activity_service,
+                    ).recover_interrupted_applies()
+                finally:
+                    recovery_session.close()
+                    recovery_engine.dispose()
                 # Legacy scope-based tokens keep working: derive their per-folder
                 # rules from the global config so read-sweeps apply to them too.
                 token_service.backfill_legacy_tokens(settings.folder_rules)
@@ -654,6 +665,11 @@ def create_app(
         settings.frontend.password_verifier
     )
     application.state.ui_auth_required = ui_auth_required
+    application.state.public_graph_only = bool(
+        settings.frontend.enabled
+        and settings.frontend.mode == "lan"
+        and not settings.frontend.password_verifier
+    )
     application.state.secure_cookies = bool(
         ui_origin and ui_origin.startswith("https://")
     )
@@ -695,6 +711,8 @@ def create_app(
         return SettingsResponse.model_validate(payload)
 
     def _require_ui_page(request: Request) -> None:
+        if application.state.public_graph_only:
+            raise HTTPException(status_code=401, detail="authentication required")
         if ui_auth_required and not ui_session_service.authenticate(
             request.cookies.get(UI_SESSION_COOKIE)
         ):
@@ -741,7 +759,11 @@ def create_app(
         new_session = None
         if ui_auth_required and not ui_session_service.authenticate(session):
             return RedirectResponse("/login", status_code=303)
-        if settings.frontend.enabled and not ui_session_service.authenticate(session):
+        if (
+            settings.frontend.enabled
+            and not application.state.public_graph_only
+            and not ui_session_service.authenticate(session)
+        ):
             try:
                 new_session = ui_session_service.new_session()
             except UiSessionCapacityError:
@@ -838,6 +860,8 @@ def create_app(
 
     @application.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:  # pyright: ignore[reportUnusedFunction]
+        if application.state.public_graph_only:
+            raise HTTPException(status_code=401, detail="authentication required")
         return HealthResponse(
             status="ok",
             read_only=vault_is_read_only(settings),
@@ -846,6 +870,12 @@ def create_app(
                 active_tokens=token_service.count_active(),
             ),
         )
+
+    @application.get("/api/v1/ui-mode")
+    async def ui_mode(request: Request, response: Response) -> dict[str, bool]:  # pyright: ignore[reportUnusedFunction]
+        if not application.state.public_graph_only:
+            await authenticated(request, response)
+        return {"public_graph_only": application.state.public_graph_only}
 
     @application.get("/api/v1/status", response_model=StatusResponse)
     def status(  # pyright: ignore[reportUnusedFunction]

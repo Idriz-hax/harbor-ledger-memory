@@ -151,9 +151,9 @@ class VaultMutationService:
         the boundary's folder rules.
 
         Raises :class:`VaultWriteDenied` when the path is denied or
-        read-only. For ``auto-write`` access the write may be applied
-        immediately (managed update) or queued pending (creates /
-        unmanaged updates / conflicts).
+        read-only. For ``auto-write`` access, creates and directories are
+        applied immediately; updates are applied only when managed and
+        conflict-free. Other updates remain pending.
         """
         identity = self.validate_path(path)
         self._start_traversal()
@@ -200,6 +200,25 @@ class VaultMutationService:
         self.validate_path(proposal.path)
         self._apply(proposal, origin="approve", policy=policy)
         return proposal
+
+    def recover_interrupted_applies(self) -> int:
+        """Resolve durable ``applying`` proposals left by a crashed process.
+
+        Recovery records uncertainty only: it deliberately does not inspect or
+        modify vault files, since disk state cannot establish whether an apply
+        completed before the interruption.
+        """
+        interrupted = self._session.scalars(
+            select(MemoryWriteProposal).where(
+                MemoryWriteProposal.status == STATUS_APPLYING
+            )
+        ).all()
+        for proposal in interrupted:
+            self._persist_reconciliation(
+                proposal,
+                "reconciliation-required: process was interrupted during apply",
+            )
+        return len(interrupted)
 
     def reject(self, proposal_id: int) -> MemoryWriteProposal:
         """Reject a pending proposal without writing to disk."""
@@ -271,8 +290,11 @@ class VaultMutationService:
         else:
             if access is not FolderAccess.AUTO_WRITE:
                 return  # Access no longer allows auto-writes — keep pending.
-            if proposal.operation in ("create", "mkdir"):
-                return  # Auto-writes never create files — keep pending.
+            if any(
+                self._access_for(policy, path) is not FolderAccess.AUTO_WRITE
+                for path in affected
+            ):
+                return  # Every affected path must grant auto-write.
 
         # (2) Re-read the target and pin the version to write against.
         snapshot: AdmittedFileSnapshot | None = None

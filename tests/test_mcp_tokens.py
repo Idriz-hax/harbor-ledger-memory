@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from mcp.server.mcpserver.exceptions import ToolError
 
 from harbor_ledger_memory.api.app import create_app
-from harbor_ledger_memory.api.auth import hlm_internal_request, hlm_mcp_token
+from harbor_ledger_memory.api.auth import hlm_mcp_token
 from harbor_ledger_memory.api.mcp_server import build_mcp_server
 from harbor_ledger_memory.catalog.database import CatalogSession, create_database
 from harbor_ledger_memory.catalog.models import MemoryWriteProposal
@@ -548,9 +548,13 @@ def test_mcp_internal_bypass_and_unauthenticated(tmp_path: Path) -> None:
             _call(server, "query", {"text": "anything"})
         assert "authentication required" in str(exc_info.value)
 
-        # The internal bypass can create a proposal without a token, but it
-        # cannot approve one without an opted-in creator token.
-        token = hlm_internal_request.set(True)
+        # Internal requests receive AUTO_WRITE semantics, so use a regular
+        # PROPOSE_WRITE caller to exercise the approval authorization guard.
+        creator, _ = service.create(
+            "creator",
+            rules=[FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE)],
+        )
+        token = hlm_mcp_token.set(creator)
         try:
             proposed = _call(
                 server, "propose_write", {"path": "AI/int.md", "content": "# I"}
@@ -561,7 +565,7 @@ def test_mcp_internal_bypass_and_unauthenticated(tmp_path: Path) -> None:
             assert "approve-own-proposals" in str(exc_info.value)
             assert not (tmp_path / "AI" / "int.md").exists()
         finally:
-            hlm_internal_request.reset(token)
+            hlm_mcp_token.reset(token)
     finally:
         activity.close()
         service.close()

@@ -181,6 +181,18 @@ async def authenticated(request: Request, response: Response) -> AuthContext:
     """
     if hlm_internal_request.get():
         return AuthContext(None, _FULL_ACCESS)
+    if (
+        request.method == "GET"
+        and request.url.path == "/api/v1/graph/view"
+        and request.app.state.public_graph_only
+    ):
+        return AuthContext(
+            None,
+            AccessPolicy(
+                rules=(FolderRule(path=PurePosixPath("."), access=FolderAccess.READ),),
+                admin=False,
+            ),
+        )
     service: TokenService = request.app.state.token_service
     bearer = _extract_token(request)
     if _is_rest_api(request) and not request.app.state.api_enabled and bearer:
@@ -194,6 +206,7 @@ async def authenticated(request: Request, response: Response) -> AuthContext:
             bearer is None
             and request.method in {"GET", "HEAD", "OPTIONS"}
             and not request.app.state.ui_auth_required
+            and not request.app.state.public_graph_only
             and request.cookies.get(UI_SESSION_COOKIE) is not None
         ):
             return AuthContext(

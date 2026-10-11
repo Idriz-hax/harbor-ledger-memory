@@ -233,6 +233,9 @@ function TokenEditor({ open, mode, tokenName, rules, folders, admin, approveOwn,
 
 /* --- App shell --- */
 export function App() {
+  const [publicGraphOnly, setPublicGraphOnly] = useState(false)
+  const [uiModeLoaded, setUiModeLoaded] = useState(false)
+  const [uiModeError, setUiModeError] = useState('')
   const [screen, setScreen] = useState<Screen>(() => {
     const saved = sessionStorage.getItem(RETURN_SCREEN_KEY)
     sessionStorage.removeItem(RETURN_SCREEN_KEY)
@@ -246,16 +249,30 @@ export function App() {
   const [preset, setPreset] = useState<ChartPreset>(DEFAULT_PRESET)
   const [pendingApprovals, setPendingApprovals] = useState(0)
 
+  const loadUiMode = useCallback(() => {
+    setUiModeLoaded(false)
+    setUiModeError('')
+    api<{ public_graph_only?: boolean }>('/api/v1/ui-mode').then(mode => {
+      setPublicGraphOnly(mode.public_graph_only === true)
+      if (mode.public_graph_only) setScreen('graph')
+      setUiModeLoaded(true)
+    }).catch(error => setUiModeError(error instanceof Error ? error.message : 'Unable to determine UI mode'))
+  }, [])
+
   const refresh = useCallback(() => {
+    if (publicGraphOnly) return
     api<Status>('/api/v1/status')
       .then(() => setError(''))
       .catch(e => setError(e.message))
     api<{ events?: Activity[] }>('/api/v1/activity?limit=40').then(r => setEvents(current => mergeActivityEvents(r.events ?? [], current))).catch(() => undefined)
-  }, [])
+  }, [publicGraphOnly])
 
-  useEffect(() => { refresh() }, [refresh])
+  useEffect(() => { loadUiMode() }, [loadUiMode])
+
+  useEffect(() => { if (uiModeLoaded && !publicGraphOnly) refresh() }, [refresh, uiModeLoaded, publicGraphOnly])
 
   useEffect(() => {
+    if (!uiModeLoaded || publicGraphOnly) return
     const renew = () => { api<Status>('/api/v1/status').catch(e => setError(e instanceof Error ? e.message : 'status check failed')) }
     let timer: number | undefined
     const schedule = () => { if (document.visibilityState === 'visible') timer = window.setInterval(renew, KEEPALIVE_MS) }
@@ -267,29 +284,33 @@ export function App() {
     schedule()
     document.addEventListener('visibilitychange', visibility)
     return () => { if (timer !== undefined) window.clearInterval(timer); document.removeEventListener('visibilitychange', visibility) }
-  }, [])
+  }, [uiModeLoaded, publicGraphOnly])
 
   useEffect(() => {
+    if (!uiModeLoaded || publicGraphOnly) return
     const expired = () => { sessionStorage.setItem(RETURN_SCREEN_KEY, screen); window.location.assign('/login') }
     window.addEventListener('hlm-ui-session-expired', expired)
     return () => window.removeEventListener('hlm-ui-session-expired', expired)
-  }, [screen])
+  }, [screen, uiModeLoaded, publicGraphOnly])
 
   useEffect(() => {
+    if (!uiModeLoaded || publicGraphOnly) return
     api<{ theme?: { preset?: string } }>('/api/v1/settings')
       .then(r => setPreset(presetFor(r?.theme?.preset)))
       .catch(() => undefined)
-  }, [])
+  }, [uiModeLoaded, publicGraphOnly])
 
   const refreshPendingApprovals = useCallback(() => {
+    if (publicGraphOnly) return
     api<{ proposals: WriteProposal[] }>('/api/v1/writes')
       .then(r => setPendingApprovals((r.proposals ?? []).filter(proposal => proposal.status === 'pending').length))
       .catch(() => undefined)
-  }, [])
+  }, [publicGraphOnly])
 
-  useEffect(() => { refreshPendingApprovals() }, [refreshPendingApprovals])
+  useEffect(() => { if (uiModeLoaded && !publicGraphOnly) refreshPendingApprovals() }, [refreshPendingApprovals, uiModeLoaded, publicGraphOnly])
 
   useEffect(() => {
+    if (!uiModeLoaded || publicGraphOnly) return
     const stream = new EventSource('/api/v1/activity/stream')
     stream.onopen = () => setConnected(true)
     stream.onerror = () => setConnected(false)
@@ -298,11 +319,16 @@ export function App() {
       setEvents(old => [...old.filter(item => item.id !== next.id), next].slice(-80))
     })
     return () => stream.close()
-  }, [])
+  }, [uiModeLoaded, publicGraphOnly])
 
   return (
     <ThemeProvider theme={makeAppTheme(preset)}>
       <CssBaseline />
+      {!uiModeLoaded ? <Box component="main" role={uiModeError ? undefined : 'status'} aria-live="polite" sx={{ minHeight: '100vh', display: 'grid', placeItems: 'center', p: 3 }}>
+        {uiModeError
+          ? <Alert severity="error" role="alert" action={<Button color="inherit" onClick={loadUiMode}>Retry</Button>}>Unable to load the application mode. {uiModeError}</Alert>
+          : <Typography color="text.secondary">Loading application…</Typography>}
+      </Box> :
       <Box className="app-shell" sx={{ display: 'flex', minHeight: '100vh', background: 'transparent' }}>
         <Box component="aside" className="app-sidebar" sx={{ width: 252, flexShrink: 0, p: 3, borderRight: 1, borderColor: 'divider', bgcolor: 'background.paper', display: 'flex', flexDirection: 'column', gap: 1 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, pb: 3, mb: 2, borderBottom: 1, borderColor: 'divider' }}>
@@ -314,7 +340,7 @@ export function App() {
           </Box>
           <nav className="app-primary-nav" aria-label="Primary navigation">
             <List disablePadding>
-              {(['graph', 'approvals', 'settings'] as Screen[]).map((item, index) => (
+              {(publicGraphOnly ? ['graph'] as Screen[] : ['graph', 'approvals', 'settings'] as Screen[]).map((item, index) => (
                 <ListItem key={item} disablePadding sx={{ mb: 1 }}>
                   <ListItemButton
                     selected={screen === item}
@@ -330,10 +356,10 @@ export function App() {
               ))}
             </List>
           </nav>
-          <Box sx={{ mt: 'auto', pt: 2, borderTop: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', gap: 1, color: 'text.secondary', fontSize: 12 }}>
+          {!publicGraphOnly && <Box sx={{ mt: 'auto', pt: 2, borderTop: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', gap: 1, color: 'text.secondary', fontSize: 12 }}>
             <Box component="span" aria-hidden sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: connected ? 'success.main' : 'error.main', display: 'inline-block', flexShrink: 0 }} />
             <span>{connected ? 'activity connected' : 'reconnecting'}</span>
-          </Box>
+          </Box>}
         </Box>
         <Box component="main" sx={{ flexGrow: 1, width: '100%', minWidth: 0, p: { xs: 2, sm: 3, md: 4 }, display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 'none' }}>
           <Box component="header" sx={{ mb: 1 }}>
@@ -341,11 +367,12 @@ export function App() {
             <Typography variant="h1" sx={{ fontSize: { xs: '2.2rem', md: '3.2rem' } }}>{SCREEN_META[screen].label}</Typography>
           </Box>
           {error && <Alert severity="error">{error}</Alert>}
-          {screen === 'graph' && <TideAtlas events={events} onRefresh={refresh} />}
+          {screen === 'graph' && uiModeLoaded && <TideAtlas events={events} onRefresh={refresh} publicGraphOnly={publicGraphOnly} />}
           {screen === 'approvals' && <Approvals onPendingCountChange={setPendingApprovals} />}
           {screen === 'settings' && <Settings />}
         </Box>
       </Box>
+      }
     </ThemeProvider>
   )
 }
@@ -1300,6 +1327,8 @@ const normalizeMemoryState = (payload: unknown): MemoryState => {
 
 export function Settings({ approvals = false, onPendingCountChange }: { approvals?: boolean; onPendingCountChange?: (count: number) => void } = {}) {
   const [settings, setSettings] = useState<any>(null)
+  const [settingsError, setSettingsError] = useState('')
+  const [settingsLoading, setSettingsLoading] = useState(false)
   const [fallbackFolders, setFallbackFolders] = useState<string[]>([])
   const [writes, setWrites] = useState<WriteProposal[] | null>(null)
   const [writesError, setWritesError] = useState('')
@@ -1336,27 +1365,38 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
   const [clearingMemoryState, setClearingMemoryState] = useState(false)
   const [confirmClearMemoryState, setConfirmClearMemoryState] = useState(false)
   const [trustStatus, setTrustStatus] = useState<Status | null>(null)
+  const [trustStatusError, setTrustStatusError] = useState('')
+  const loadTrustStatus = useCallback(() => {
+    setTrustStatus(null); setTrustStatusError('')
+    return api<Status>('/api/v1/status').then(status => { setTrustStatus(status); setTrustStatusError('') }).catch(error => setTrustStatusError(error instanceof Error ? error.message : 'failed to load trust status'))
+  }, [])
   const confirmTimer = useRef<number | null>(null)
 
-  useEffect(() => {
+  const loadSettings = useCallback(async () => {
     if (approvals) return
-    api<any>('/api/v1/settings').then(r => {
+    setSettingsLoading(true); setSettingsError(''); setSettings(null); setFallbackFolders([])
+    try {
+      const r = await api<any>('/api/v1/settings')
       setSettings(r)
       /* Older running services do not expose `folders` yet. Derive a useful
          tree from the graph so the settings page never collapses to an empty
          vault while the service is being upgraded. */
       if (!Array.isArray(r.folders) || r.folders.length === 0) {
-        api<GraphSnapshot>('/api/v1/graph').then(graph => {
-          const paths = new Set<string>()
-          graph.nodes.forEach(node => {
+          try {
+            const graph = await api<GraphSnapshot>('/api/v1/graph')
+            const paths = new Set<string>()
+            ;(graph.nodes ?? []).forEach(node => {
             const parts = node.path.split('/').filter(Boolean)
             for (let index = 1; index < parts.length; index++) paths.add(parts.slice(0, index).join('/'))
           })
-          setFallbackFolders([...paths].sort())
-        }).catch(() => undefined)
+            setFallbackFolders([...paths].sort())
+          } catch (error) { setSettingsError(error instanceof Error ? error.message : 'failed to load folders') }
       }
-    }).catch(() => setFallbackFolders([]))
+    } catch (error) { setSettingsError(error instanceof Error ? error.message : 'failed to load settings') }
+    finally { setSettingsLoading(false) }
   }, [approvals])
+
+  useEffect(() => { void loadSettings() }, [loadSettings])
 
   const loadMemoryState = useCallback(() => {
     setMemoryState(null); setMemoryStateError('')
@@ -1367,10 +1407,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
 
   useEffect(() => { if (!approvals) loadMemoryState() }, [approvals, loadMemoryState])
 
-  useEffect(() => {
-    if (approvals) return
-    api<Status>('/api/v1/status').then(setTrustStatus).catch(() => setTrustStatus(null))
-  }, [approvals])
+  useEffect(() => { if (!approvals) void loadTrustStatus() }, [approvals, loadTrustStatus])
 
   /* Proposals this session resolved via POST — guards against an older list
      snapshot re-exposing them as pending (and thus actionable) again. */
@@ -1586,6 +1623,8 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
       <Box sx={{ mb: 1 }}>
          {!approvals && <Typography variant="body1" color="text.secondary">Configure vault access, trusted tokens, and the read-only audit trail.</Typography>}
       </Box>
+      {!approvals && settingsError && <Alert severity="error" role="alert" action={<Button color="inherit" size="small" aria-label="Retry settings" onClick={() => void loadSettings()} disabled={settingsLoading}>Retry</Button>}>{settingsError}</Alert>}
+      {!approvals && settingsLoading && <Typography role="status" variant="body2">Loading settings…</Typography>}
       {!approvals && <Box component="form" onSubmit={event => { event.preventDefault(); proposeFolder() }} sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, flexWrap: 'wrap', p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1.5, bgcolor: 'background.default' }}>
         <TextField size="small" label="New folder path" value={newFolderPath} onChange={event => setNewFolderPath(event.target.value)} placeholder="AI/Inbox" inputProps={{ spellCheck: false }} sx={{ flex: '1 1 220px' }} />
         <Button type="submit" variant="contained" size="small" disabled={creatingFolder} aria-busy={creatingFolder}>{creatingFolder ? 'Creating…' : 'Create folder'}</Button>
@@ -1655,7 +1694,9 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
         </Paper>
         <Box className="trust-summary" sx={{ mt: 2, p: { xs: 2, md: 2.5 }, border: 1, borderColor: 'divider', borderRadius: 2, bgcolor: 'background.default' }} aria-labelledby="trust-summary-heading">
           <Typography variant="h3" id="trust-summary-heading">Trust summary</Typography>
-          {!trustStatus
+           {trustStatusError
+             ? <Alert severity="error" role="alert" sx={{ mt: 1 }} action={<Button color="inherit" size="small" aria-label="Retry trust status" onClick={() => void loadTrustStatus()}>Retry</Button>}>Trust status unavailable — {trustStatusError}</Alert>
+             : !trustStatus
             ? <Typography role="status" variant="body2" color="text.secondary" sx={{ mt: 1 }}>Loading trust status…</Typography>
             : <Box component="dl" sx={{ mt: 1.5, mb: 0, display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' }, gap: 1.5, '& dt': { color: 'text.secondary', fontSize: 12 }, '& dd': { m: 0, fontWeight: 600, overflowWrap: 'anywhere' } }}>
                 <Box><Typography component="dt">Last successful scan</Typography><Typography component="dd">{trustStatus.last_scan_completed_at ? formatCreated(trustStatus.last_scan_completed_at) : 'unavailable'}</Typography></Box>

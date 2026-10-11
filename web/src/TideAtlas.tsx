@@ -252,7 +252,7 @@ const islandsFromFinalPositions = (instance: Core, islands: Island[]): Island[] 
   return { ...island, center, radius }
 })
 
-export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh?: () => void }) {
+export function TideAtlas({ events, onRefresh, publicGraphOnly = false }: { events: Activity[]; onRefresh?: () => void; publicGraphOnly?: boolean }) {
   const container = useRef<HTMLDivElement>(null)
   const chartContainer = useRef<HTMLDivElement>(null)
   const coreRef = useRef<Core | null>(null)
@@ -517,6 +517,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
 
   /* Traversal is deliberately separate from the activity history stream. */
   useEffect(() => {
+    if (publicGraphOnly) return
     if (typeof EventSource === 'undefined') return
     const stream = new EventSource('/api/v1/graph/traversal/stream')
     stream.onopen = () => setTraversalConnected(true)
@@ -526,7 +527,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
     }
     stream.addEventListener('traversal', onTraversal)
     return () => { stream.removeEventListener('traversal', onTraversal); stream.close(); setTraversalConnected(false) }
-  }, [])
+  }, [publicGraphOnly])
 
   /* Apply view data without a global layout. Every node stays draggable. */
   useEffect(() => {
@@ -692,14 +693,14 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
         <Typography color="text.secondary">A bounded survey of the local ledger. Zoom in to enter an archive; zoom out to read its coastline.</Typography>
       </Box>
       <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
-        <Box className="live-indicator">
+        {!publicGraphOnly && <Box className="live-indicator">
           <Box className={!traversalConnected ? 'live-dot disconnected' : 'live-dot'} />
           <span>{traversalConnected ? `LIVE • ${activeTraversalCount} active` : 'RECONNECTING'}</span>
-        </Box>
+        </Box>}
         <Chip icon={<Terrain />} label={scanning ? 'scanning' : 'active'} color="primary" variant="outlined" sx={{ borderColor: 'rgba(118, 163, 174, .3)', color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }} />
-        <Button startIcon={<Refresh />} onClick={handleRescan} disabled={scanning} sx={{ color: 'text.secondary', border: 1, borderColor: 'rgba(118, 163, 174, .3)', borderRadius: 6, '&:hover': { borderColor: 'rgba(230, 191, 105, .5)', background: 'rgba(230, 191, 105, .06)' } }}>
+        {!publicGraphOnly && <Button startIcon={<Refresh />} onClick={handleRescan} disabled={scanning} sx={{ color: 'text.secondary', border: 1, borderColor: 'rgba(118, 163, 174, .3)', borderRadius: 6, '&:hover': { borderColor: 'rgba(230, 191, 105, .5)', background: 'rgba(230, 191, 105, .06)' } }}>
           {scanning ? 'Scanning…' : 'Rescan'}
-        </Button>
+        </Button>}
         {rescanSuccess && <Alert severity="success" role="status" sx={{ flexBasis: '100%', py: 0.75 }}>Catalog rebuilt from Markdown · {rescanSuccess.notes} notes · {rescanSuccess.diagnostics} diagnostics. No vault files were modified.</Alert>}
       </Stack>
     </Stack>
@@ -745,7 +746,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
       </Box>
 
        {/* Activity radar — bottom-right */}
-       <Box className="activity-radar glass-panel" aria-label="Recent activity">
+       {!publicGraphOnly && <Box className="activity-radar glass-panel" aria-label="Recent activity">
          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: .75 }}>
            <Box className="radar-title">ACTIVITY</Box>
            <Typography component="span" sx={{ fontSize: 10, color: 'rgba(233, 243, 242, .45)', fontFamily: '"IBM Plex Mono", monospace' }}>
@@ -769,7 +770,7 @@ export function TideAtlas({ events, onRefresh }: { events: Activity[]; onRefresh
              </Box>
            )
          })}
-       </Box>
+       </Box>}
     </Paper>
 
     {/* Node detail drawer */}

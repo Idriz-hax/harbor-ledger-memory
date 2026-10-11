@@ -287,6 +287,13 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_scope(self) -> Settings:
         validate_scope_values(self.index_root, self.folder_rules)
+        if (
+            self.frontend.enabled
+            and self.frontend.mode == "lan"
+            and not self.frontend.password_verifier
+            and not self.network.allowed_cidrs
+        ):
+            raise ValueError("passwordless LAN frontend requires network.allowed_cidrs")
         return self
 
     @property
