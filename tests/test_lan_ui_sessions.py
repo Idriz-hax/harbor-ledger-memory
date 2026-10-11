@@ -124,25 +124,107 @@ def test_lan_login_flags_failures_and_logout_csrf(tmp_path: Path) -> None:
 
 
 def test_lan_without_verifier_disables_ui_auth(tmp_path: Path) -> None:
-    app = _app(tmp_path, password_verifier=None)
-    with TestClient(app, base_url="http://hlm.local") as client:
-        # / renders the app, not a redirect to login
-        root = client.get("/", follow_redirects=False)
-        assert root.status_code == 200
-        assert root.headers.get("location") is None
-        # The login surface is unavailable: both directions go back to /
-        assert client.get("/login", follow_redirects=False).status_code == 303
-        assert (
-            client.post(
+    app = _app(tmp_path, password_verifier=None, cidrs=("10.0.0.0/8",))
+
+    async def exercise() -> tuple[httpx.Response, httpx.Response]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("10.1.2.3", 1)),
+            base_url="http://hlm.local",
+        ) as client:
+            return await client.get("/"), await client.get("/api/v1/graph/view")
+
+    root, graph = asyncio.run(exercise())
+    assert root.status_code == graph.status_code == 200
+    assert UI_SESSION_COOKIE not in root.headers.get("set-cookie", "")
+
+
+def test_passwordless_lan_is_graph_only_without_ui_session(tmp_path: Path) -> None:
+    app = _app(tmp_path, password_verifier=None, cidrs=("10.0.0.0/8",))
+
+    async def exercise() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("10.1.2.3", 1)),
+            base_url="http://hlm.local",
+        ) as client:
+            return (
+                await client.get("/api/v1/ui-mode"),
+                await client.get("/"),
+                await client.get("/api/v1/status"),
+            )
+
+    mode, root, status = asyncio.run(exercise())
+    assert mode.json() == {"public_graph_only": True}
+    assert UI_SESSION_COOKIE not in root.headers.get("set-cookie", "")
+    assert status.status_code == 401
+
+
+def test_ui_mode_requires_authentication_outside_public_graph_mode(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+
+    async def exercise() -> tuple[int, int, int, dict[str, object] | None]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://hlm.local"
+        ) as client:
+            anonymous = await client.get("/api/v1/ui-mode")
+            login = await client.post(
                 "/login",
-                data={"password": "anything"},
+                data={"password": "correct horse"},
                 headers={"Origin": "http://hlm.local"},
-                follow_redirects=False,
-            ).status_code
-            == 303
-        )
-        # Session-gated UI pages stay reachable
-        assert client.get("/status", follow_redirects=False).status_code == 200
+            )
+            authenticated = await client.get("/api/v1/ui-mode")
+            return (
+                anonymous.status_code,
+                login.status_code,
+                authenticated.status_code,
+                authenticated.json(),
+            )
+
+    anonymous_status, login_status, authenticated_status, payload = asyncio.run(exercise())
+    assert anonymous_status == 401
+    assert login_status == 303
+    assert authenticated_status == 200
+    assert payload == {"public_graph_only": False}
+
+
+def test_passwordless_lan_graph_view_is_anonymous_but_other_api_is_not(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path, password_verifier=None, cidrs=("10.0.0.0/8",))
+
+    async def exercise() -> tuple[int, int]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("10.1.2.3", 1)),
+            base_url="http://hlm.local",
+        ) as client:
+            graph = await client.get("/api/v1/graph/view")
+            tokens = await client.get("/api/v1/tokens")
+            return graph.status_code, tokens.status_code
+
+    graph_status, token_status = asyncio.run(exercise())
+    assert graph_status == 200
+    assert token_status == 401
+
+
+def test_passwordless_lan_blocks_health_and_protected_ui_pages(tmp_path: Path) -> None:
+    app = _app(tmp_path, password_verifier=None, cidrs=("10.0.0.0/8",))
+
+    async def exercise() -> tuple[list[int], int]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("10.1.2.3", 1)),
+            base_url="http://hlm.local",
+        ) as client:
+            pages = [
+                await client.get(path, follow_redirects=False)
+                for path in ("/status", "/query", "/settings")
+            ]
+            health = await client.get("/health")
+            return [response.status_code for response in pages], health.status_code
+
+    page_statuses, health_status = asyncio.run(exercise())
+    assert page_statuses == [401, 401, 401]
+    assert health_status == 401
 
 
 def test_lan_with_empty_verifier_disables_ui_auth_like_absent(
@@ -150,29 +232,34 @@ def test_lan_with_empty_verifier_disables_ui_auth_like_absent(
 ) -> None:
     # An empty-string verifier is treated as absent: the verifier itself can
     # never validate it, so the login gate must not lock the UI out.
-    app = _app(tmp_path, password_verifier="")
-    with TestClient(app, base_url="http://hlm.local") as client:
-        root = client.get("/", follow_redirects=False)
-        assert root.status_code == 200
-        assert root.headers.get("location") is None
-        assert client.get("/login", follow_redirects=False).status_code == 303
-        assert client.get("/status", follow_redirects=False).status_code == 200
+    app = _app(tmp_path, password_verifier="", cidrs=("10.0.0.0/8",))
+    async def exercise() -> tuple[int, int]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("10.1.2.3", 1)),
+            base_url="http://hlm.local",
+        ) as client:
+            root = await client.get("/")
+            protected = await client.get("/status")
+            return root.status_code, protected.status_code
+
+    assert asyncio.run(exercise()) == (200, 401)
 
 
 def test_passwordless_api_recovers_from_stale_ui_session_cookie(
     tmp_path: Path,
 ) -> None:
-    app = _app(tmp_path, password_verifier=None, api_enabled=True, mcp_enabled=False)
-    with TestClient(app, base_url="http://hlm.local") as client:
-        client.cookies.set(UI_SESSION_COOKIE, "stale-session")
+    app = _app(tmp_path, password_verifier=None, api_enabled=True, mcp_enabled=False, cidrs=("10.0.0.0/8",))
+    async def exercise() -> tuple[int, int]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("10.1.2.3", 1)),
+            base_url="http://hlm.local",
+            cookies={UI_SESSION_COOKIE: "stale-session"},
+        ) as client:
+            graph = await client.get("/api/v1/graph/view")
+            protected = await client.get("/api/v1/status")
+            return graph.status_code, protected.status_code
 
-        response = client.get("/api/v1/status")
-
-        assert response.status_code == 200
-        assert any(
-            UI_SESSION_COOKIE in value and "stale-session" not in value
-            for value in response.headers.get_list("set-cookie")
-        )
+    assert asyncio.run(exercise()) == (200, 401)
 
 
 def test_passwordless_stale_cookie_recovery_fails_closed_at_session_capacity(
@@ -186,14 +273,19 @@ def test_passwordless_stale_cookie_recovery_fails_closed_at_session_capacity(
         api_enabled=True,
         mcp_enabled=False,
         ui_session_service=service,
+        cidrs=("10.0.0.0/8",),
     )
-    with TestClient(app, base_url="http://hlm.local") as client:
-        client.cookies.set(UI_SESSION_COOKIE, "stale-session")
+    async def exercise() -> tuple[int, int]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("10.1.2.3", 1)),
+            base_url="http://hlm.local",
+            cookies={UI_SESSION_COOKIE: "stale-session"},
+        ) as client:
+            graph = await client.get("/api/v1/graph/view")
+            protected = await client.get("/api/v1/status")
+            return graph.status_code, protected.status_code
 
-        response = client.get("/api/v1/status")
-
-        assert response.status_code == 401
-        assert UI_SESSION_COOKIE not in response.headers.get("set-cookie", "")
+    assert asyncio.run(exercise()) == (200, 401)
 
 
 def test_passwordless_root_fails_closed_at_session_capacity(tmp_path: Path) -> None:
@@ -204,12 +296,18 @@ def test_passwordless_root_fails_closed_at_session_capacity(tmp_path: Path) -> N
         password_verifier=None,
         mcp_enabled=False,
         ui_session_service=service,
+        cidrs=("10.0.0.0/8",),
     )
+    async def exercise() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("10.1.2.3", 1)),
+            base_url="http://hlm.local",
+        ) as client:
+            return await client.get("/")
 
-    with TestClient(app, base_url="http://hlm.local") as client:
-        response = client.get("/")
-
-    assert response.status_code == 503
+    response = asyncio.run(exercise())
+    assert response.status_code == 200
+    assert UI_SESSION_COOKIE not in response.headers.get("set-cookie", "")
 
 
 def test_lan_login_fails_closed_at_session_capacity(tmp_path: Path) -> None:
@@ -291,6 +389,20 @@ def test_lan_source_allowlist_rejects_replayed_cookie(tmp_path: Path) -> None:
             return login.status_code, response.status_code
 
     assert asyncio.run(exercise()) == (303, 403)
+
+
+def test_lan_source_allowlist_protects_health(tmp_path: Path) -> None:
+    app = _app(tmp_path, cidrs=("10.0.0.0/8",))
+
+    async def exercise() -> int:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("192.168.1.2", 1)),
+            base_url="http://hlm.local",
+        ) as client:
+            response = await client.get("/health")
+            return response.status_code
+
+    assert asyncio.run(exercise()) == 403
 
 
 def test_lan_login_throttles_repeated_failures(tmp_path: Path) -> None:

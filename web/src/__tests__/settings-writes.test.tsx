@@ -86,6 +86,72 @@ function mockWrites(lists: unknown[], options: { getWrites?: Failure; postWrites
 const writesGets = (calls: FetchCall[]) => calls.filter(c => c.url === '/api/v1/writes' && c.method === 'GET')
 
 describe('Settings · vault writes', () => {
+  it('keeps settings load failures visible and retries settings', async () => {
+    let settingsCalls = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/settings') return ++settingsCalls === 1
+        ? { ok: false, status: 503, text: async () => 'settings offline' } as Response
+        : { ok: false, status: 503, text: async () => 'settings offline' } as Response
+      return { ok: true, json: async () => ({}) } as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Settings />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('settings offline')
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Retry settings' }))
+    await waitFor(() => expect(settingsCalls).toBe(2))
+    expect(screen.getByRole('alert')).toHaveTextContent('settings offline')
+  })
+
+  it('derives token permission folders from the legacy graph snapshot', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/settings') return { ok: true, json: async () => ({ folders: [] }) } as Response
+      if (url === '/api/v1/graph') return { ok: true, json: async () => ({ nodes: [{ path: 'AI/Research/Notes.md' }, { path: 'AI/Overview.md' }] }) } as Response
+      if (url === '/api/v1/tokens') return { ok: true, json: async () => [] } as Response
+      return { ok: true, json: async () => ({}) } as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Settings />)
+    await user.click(await screen.findByRole('button', { name: /generate token/i }))
+    expect(await screen.findByRole('combobox', { name: 'Permission for AI' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Expand AI' }))
+    expect(screen.getByRole('combobox', { name: 'Permission for AI/Research' })).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Permission for AI/Research/Notes.md' })).toBeNull()
+  })
+
+  it('keeps a graph fallback failure visible when settings have no folders', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/settings') return { ok: true, json: async () => ({ folders: [] }) } as Response
+      if (url === '/api/v1/graph') return { ok: false, status: 503, text: async () => 'graph offline' } as Response
+      return { ok: true, json: async () => ({}) } as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Settings />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('graph offline')
+    expect(screen.getByRole('button', { name: 'Retry settings' })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toBeVisible()
+  })
+
+  it('shows a retryable trust status error instead of loading forever', async () => {
+    let calls = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/v1/status') {
+        calls += 1
+        return { ok: false, status: 503, text: async () => 'status offline' } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Settings />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('status offline')
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Retry trust status' }))
+    await waitFor(() => expect(calls).toBe(2))
+    expect(screen.queryByText('Loading trust status…')).toBeNull()
+  })
+
   it('does not duplicate the folder policy editor on Settings', async () => {
     mockWrites([{ proposals: [] }])
     render(<Settings />)
@@ -403,6 +469,7 @@ describe('Settings · vault writes', () => {
     mockWrites([{ proposals: [pendingProposal] }])
     vi.stubGlobal('EventSource', class { close() {} addEventListener() {} removeEventListener() {} })
     render(<App />)
+    await screen.findByRole('button', { name: /Memory Chart/ })
     expect(screen.getByRole('button', { name: /Memory Chart/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Approvals/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Settings/ })).toBeTruthy()

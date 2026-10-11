@@ -422,6 +422,7 @@ def test_serve_requires_frontend_enabled(monkeypatch, tmp_path: Path) -> None:
             Settings(
                 vault_path=Path("."),
                 frontend=FrontendSettings(enabled=True, mode="lan"),
+                network=NetworkSettings(allowed_cidrs=("10.0.0.0/8",)),
             ),
             "127.0.0.1",
             "non-loopback",
@@ -430,7 +431,9 @@ def test_serve_requires_frontend_enabled(monkeypatch, tmp_path: Path) -> None:
             Settings(
                 vault_path=Path("."),
                 frontend=FrontendSettings(enabled=True, mode="lan"),
-                network=NetworkSettings(enabled=False),
+                network=NetworkSettings(
+                    enabled=False, allowed_cidrs=("10.0.0.0/8",)
+                ),
             ),
             "192.168.1.10",
             "network",
@@ -451,11 +454,10 @@ def test_serve_rejects_invalid_mode_combinations(
     assert message in result.output.lower()
 
 
-def test_serve_lan_without_verifier_starts_with_auth_disabled(
+def test_serve_lan_without_verifier_starts_with_allowed_cidr(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # No password_verifier: startup must succeed and create_app sees a LAN
-    # origin; the app itself then runs with UI auth disabled.
+    # Public graph mode needs an explicit CIDR allowlist and LAN origin.
     settings = Settings(
         vault_path=tmp_path,
         frontend=FrontendSettings(
@@ -463,7 +465,11 @@ def test_serve_lan_without_verifier_starts_with_auth_disabled(
             mode="lan",
             public_origin="http://hlm.local",
         ),
-        network=NetworkSettings(enabled=True, insecure_http=True),
+        network=NetworkSettings(
+            enabled=True,
+            allowed_cidrs=("192.168.1.0/24",),
+            insecure_http=True,
+        ),
     )
     calls: list[dict[str, object]] = []
     origins: list[str] = []

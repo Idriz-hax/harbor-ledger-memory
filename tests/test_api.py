@@ -866,6 +866,76 @@ def _client_with_rules(
     return TestClient(application, headers={"Authorization": f"Bearer {plaintext}"})
 
 
+def test_startup_recovers_interrupted_apply_without_touching_target(tmp_path: Path) -> None:
+    target = tmp_path / "interrupted.md"
+    original = b"# Keep these bytes\n"
+    target.write_bytes(original)
+    settings = Settings(
+        vault_path=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'recovery.db'}",
+    )
+    engine = create_database(settings.database_url)
+    session = CatalogSession(bind=engine)
+    proposal = MemoryWriteProposal(
+        path="interrupted.md",
+        content="# Proposed\n",
+        operation="update",
+        status="applying",
+        rule_access="propose-write",
+        requested_at="2026-01-01T00:00:00+00:00",
+        applying_at="2026-01-01T00:00:01+00:00",
+        expected_source_hash="old-hash",
+        base_diff="old diff",
+        affected_paths=["interrupted.md"],
+    )
+    session.add(proposal)
+    session.commit()
+    proposal_id = proposal.id
+    session.close()
+    engine.dispose()
+
+    app = create_app(settings)
+    token = app.state.token_service.create("recovery-reader").plaintext
+    with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as client:
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        recovered = session.get(MemoryWriteProposal, proposal_id)
+        assert recovered is not None
+        assert recovered.status == "reconciliation_required"
+        assert recovered.resolved_at is not None
+        assert "interrupted during apply" in (recovered.failure_reason or "")
+        assert recovered.applying_at == "2026-01-01T00:00:01+00:00"
+        assert recovered.expected_source_hash == "old-hash"
+        assert recovered.base_diff == "old diff"
+        assert target.read_bytes() == original
+        session.close()
+        engine.dispose()
+
+        listed = client.get("/api/v1/writes").json()["proposals"]
+        terminal = next(item for item in listed if item["id"] == proposal_id)
+        assert terminal["status"] == "reconciliation_required"
+        assert terminal["resolved_at"] is not None
+        events = app.state.activity_service.history()
+        assert any(
+            event.event_type == "vault.mutation.failed"
+            and event.payload["proposal_id"] == proposal_id
+            for event in events
+        )
+
+    restarted = create_app(settings)
+    restarted_token = restarted.state.token_service.create("recovery-reader-2").plaintext
+    with TestClient(
+        restarted, headers={"Authorization": f"Bearer {restarted_token}"}
+    ):
+        events = restarted.state.activity_service.history()
+        assert sum(
+            event.event_type == "vault.mutation.failed"
+            and event.payload["proposal_id"] == proposal_id
+            for event in events
+        ) == 1
+        assert target.read_bytes() == original
+
+
 def test_proposal_requires_approval_then_writes(tmp_path: Path) -> None:
     """POST /api/v1/writes queues a pending proposal; approve applies it."""
     settings = _write_settings(tmp_path)
@@ -982,7 +1052,10 @@ def test_folder_request_denies_unwritable_missing_parent_before_persisting(
 def test_proposal_rejection_keeps_vault_unchanged(tmp_path: Path) -> None:
     """POST /api/v1/writes/{id}/reject resolves without touching the vault."""
     settings = _write_settings(tmp_path)
-    client = authed_client(settings)
+    client = _client_with_rules(
+        settings,
+        [FolderRule(path=PurePosixPath("AI/proposed"), access=FolderAccess.PROPOSE_WRITE)],
+    )
 
     created = client.post(
         "/api/v1/writes",
@@ -1278,7 +1351,7 @@ def test_write_events_reach_preconnected_sse_and_rest_history(tmp_path: Path) ->
     application = create_app(settings)
     _, plaintext = application.state.token_service.create(
         "test-admin",
-        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)],
+        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.PROPOSE_WRITE)],
         admin=True,
     )
 
@@ -1424,8 +1497,8 @@ def test_auto_write_applies_managed_update_immediately(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == updated
 
 
-def test_auto_write_keeps_create_proposals_pending(tmp_path: Path) -> None:
-    """Auto-writes never create files; create proposals stay pending."""
+def test_auto_write_applies_create_immediately(tmp_path: Path) -> None:
+    """Auto-write creates are applied immediately without approval."""
     settings = _auto_write_settings(tmp_path)
     client = authed_client(settings)
 
@@ -1434,10 +1507,10 @@ def test_auto_write_keeps_create_proposals_pending(tmp_path: Path) -> None:
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "pending"
+    assert data["status"] == "applied"
     assert data["operation"] == "create"
-    assert data["resolved_at"] is None
-    assert not (settings.vault_path / "AI" / "auto" / "new.md").exists()
+    assert data["resolved_at"] is not None
+    assert (settings.vault_path / "AI" / "auto" / "new.md").read_text(encoding="utf-8") == "# New\n"
 
 
 def test_auto_write_keeps_unmanaged_update_proposals_pending(tmp_path: Path) -> None:
@@ -1539,11 +1612,11 @@ def test_approval_revalidates_access_rules_after_changes(tmp_path: Path) -> None
     assert approved.json()["status"] == "applied"
     assert target.read_text(encoding="utf-8") == original.replace("v1", "v2")
 
-    # Creates stay pending even under an auto-write grant.
+    # A create under propose-write remains pending for approval.
     create_resp = client.post(
         "/api/v1/writes",
         json={"path": "AI/managed/later.md", "content": "later"},
-        headers=headers["auto"],
+        headers=headers["propose"],
     )
     assert create_resp.status_code == 200
     assert create_resp.json()["status"] == "pending"
@@ -1648,7 +1721,10 @@ def test_unrecovered_create_write_escalates_to_reconciliation_and_is_listed(
         raise OSError("disk full during fsync")
 
     monkeypatch.setattr(app_module.VaultBoundary, "atomic_create", boom)
-    client = authed_client(settings)
+    client = _client_with_rules(
+        settings,
+        [FolderRule(path=PurePosixPath("AI/proposed"), access=FolderAccess.PROPOSE_WRITE)],
+    )
 
     created = client.post(
         "/api/v1/writes", json={"path": "AI/proposed/r.md", "content": "# R\n"}
@@ -1700,7 +1776,7 @@ def test_post_write_scan_reaches_application_activity_service(
     application = create_app(settings)
     _, plaintext = application.state.token_service.create(
         "test-admin",
-        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)],
+        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.PROPOSE_WRITE)],
         admin=True,
     )
     client = TestClient(application, headers={"Authorization": f"Bearer {plaintext}"})

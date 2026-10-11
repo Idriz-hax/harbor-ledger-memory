@@ -374,7 +374,7 @@ class TestAutoWriteManaged:
         assert proposal.status == "applied"
         assert existing.read_text(encoding="utf-8") == "# Updated by AI"
 
-    def test_auto_write_queues_create_as_pending(self, tmp_path: Path) -> None:
+    def test_auto_write_applies_create_immediately(self, tmp_path: Path) -> None:
         settings = _build_settings(
             tmp_path,
             folder_rules=(
@@ -386,9 +386,26 @@ class TestAutoWriteManaged:
         )
         service, vault, _ = _make_service(settings)
         proposal = service.request("AI/managed/new.md", "# New")
-        assert proposal.status == "pending"
+        assert proposal.status == "applied"
         assert proposal.operation == "create"
-        assert not (vault / "AI" / "managed" / "new.md").exists()
+        assert (vault / "AI" / "managed" / "new.md").read_text(encoding="utf-8") == "# New"
+
+    def test_auto_write_applies_mkdir_immediately(self, tmp_path: Path) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI/managed"), access=FolderAccess.AUTO_WRITE),
+            ),
+        )
+        service, vault, _ = _make_service(settings)
+        proposal = service.request("AI/managed/new/deep", "", operation="mkdir")
+        assert proposal.status == "applied"
+        assert proposal.created_paths == [
+            "AI/managed",
+            "AI/managed/new",
+            "AI/managed/new/deep",
+        ]
+        assert (vault / "AI/managed/new/deep").is_dir()
 
 
 class TestAutoWriteUnmanaged:
@@ -430,7 +447,7 @@ class TestAutoWriteUnmanaged:
         assert proposal.operation == "update"
         assert existing.read_text(encoding="utf-8") == "# Human note"
 
-    def test_unmanaged_create_queued(self, tmp_path: Path) -> None:
+    def test_unmanaged_create_auto_applied(self, tmp_path: Path) -> None:
         settings = _build_settings(
             tmp_path,
             folder_rules=(
@@ -442,7 +459,8 @@ class TestAutoWriteUnmanaged:
         )
         service, vault, _ = _make_service(settings)
         proposal = service.request("AI/managed/brand_new.md", "# New")
-        assert proposal.status == "pending"
+        assert proposal.status == "applied"
+        assert (vault / "AI/managed/brand_new.md").read_text(encoding="utf-8") == "# New"
         assert proposal.operation == "create"
 
     def test_auto_write_race_file_changed(self, tmp_path: Path) -> None:

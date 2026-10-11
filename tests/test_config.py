@@ -118,6 +118,15 @@ def test_network_allowed_cidrs_rejects_invalid_env_json(
         Settings.load_from(tmp_path / "missing.toml")
 
 
+def test_passwordless_lan_frontend_requires_allowed_cidrs(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="allowed_cidrs"):
+        Settings(
+            vault_path=tmp_path,
+            frontend=FrontendSettings(enabled=True, mode="lan"),
+            network=NetworkSettings(enabled=True),
+        )
+
+
 def test_settings_require_an_existing_vault(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

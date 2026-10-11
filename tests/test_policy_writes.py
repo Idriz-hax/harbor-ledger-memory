@@ -182,6 +182,31 @@ def test_token_policy_rejects_writable_target_when_missing_parent_is_denied(
     assert not (tmp_path / "AI" / "new" / "deep.md").exists()
 
 
+def test_auto_write_create_stays_pending_when_missing_parent_is_propose_only(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    engine = create_database(settings.database_url)
+    with CatalogSession(bind=engine) as session:
+        service = VaultMutationService.from_settings(session, settings)
+        policy = AccessPolicy(
+            (
+                FolderRule(
+                    path=PurePosixPath("AI/new"), access=FolderAccess.PROPOSE_WRITE
+                ),
+                FolderRule(
+                    path=PurePosixPath("AI/new/deep.md"), access=FolderAccess.AUTO_WRITE
+                ),
+            )
+        )
+
+        proposal = service.request("AI/new/deep.md", "# pending", policy=policy)
+
+        assert proposal.status == "pending"
+        assert not (tmp_path / "AI" / "new" / "deep.md").exists()
+    engine.dispose()
+
+
 def test_token_policy_revalidates_pending_approval_after_parent_denied(
     tmp_path: Path,
 ) -> None:

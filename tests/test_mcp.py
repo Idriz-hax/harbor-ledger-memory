@@ -39,7 +39,7 @@ def test_mcp_exposes_status_and_write_lifecycle_tools(tmp_path: Path) -> None:
     token_service = TokenService(settings.database_url)
     caller, _ = token_service.create(
         "lifecycle",
-        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE)],
+        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.PROPOSE_WRITE)],
         approve_own_proposals=True,
     )
     token = hlm_mcp_token.set(caller)
@@ -174,10 +174,13 @@ def test_mcp_query_and_write_publish_to_supplied_live_traversal(tmp_path: Path) 
     )
     activity = ActivityService(settings.database_url)
     token_service = TokenService(settings.database_url)
-    caller, _ = token_service.create("telemetry", approve_own_proposals=True)
+    caller, _ = token_service.create(
+        "telemetry",
+        rules=[FolderRule(path=PurePosixPath("."), access=FolderAccess.PROPOSE_WRITE)],
+        approve_own_proposals=True,
+    )
     publisher = LiveTraversalPublisher()
     subscription = publisher.subscribe()
-    internal = hlm_internal_request.set(True)
     token = hlm_mcp_token.set(caller)
     try:
         ScanService.from_settings(settings).full_scan()
@@ -211,7 +214,6 @@ def test_mcp_query_and_write_publish_to_supplied_live_traversal(tmp_path: Path) 
     finally:
         subscription.close()
         hlm_mcp_token.reset(token)
-        hlm_internal_request.reset(internal)
         token_service.close()
         activity.close()
 

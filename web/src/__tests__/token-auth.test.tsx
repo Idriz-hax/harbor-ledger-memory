@@ -52,6 +52,7 @@ const streamUrls = () => MockEventSource.instances.map(stream => stream.url)
 /* App renders the Graph screen by default; these defaults keep its mount
    effects from crashing or triggering the settings-folder fallback. */
 const appResponses = () => ({
+  '/api/v1/ui-mode': { body: { public_graph_only: false } },
   '/api/v1/activity': { body: { events: [] } },
   '/api/v1/settings': { body: { folders: ['AI'] } },
   '/api/v1/graph/view': { body: { level: 2, scope: null, clusters: [], edges: [], generation: 'test' } },
@@ -358,6 +359,56 @@ describe('Browser session API protection', () => {
 })
 
 describe('App shell semantics', () => {
+  it('keeps the shell protected until ui-mode confirms authenticated mode', async () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    let resolveMode: (value: Response) => void = () => undefined
+    const fetchMock = vi.fn((input: RequestInfo | URL) => String(input) === '/api/v1/ui-mode'
+      ? new Promise<Response>(resolve => { resolveMode = resolve })
+      : Promise.resolve({ ok: true, status: 200, json: async () => ({}) } as Response))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    expect(screen.getByRole('status')).toHaveTextContent(/loading/i)
+    expect(screen.queryByRole('navigation', { name: 'Primary navigation' })).toBeNull()
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(['/api/v1/ui-mode'])
+    await act(async () => resolveMode({ ok: true, status: 200, json: async () => ({ public_graph_only: false }) } as Response))
+    expect(screen.getByRole('navigation', { name: 'Primary navigation' }).querySelectorAll('li')).toHaveLength(3)
+  })
+
+  it('keeps protected controls hidden after ui-mode failure until retry confirms a mode', async () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    let retryMode: (value: Response) => void = () => undefined
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/v1/ui-mode') {
+        if (fetchMock.mock.calls.length === 1) return { ok: false, status: 503, text: async () => 'offline' } as Response
+        return new Promise<Response>(resolve => { retryMode = resolve })
+      }
+      return { ok: true, status: 200, json: async () => ({}) } as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('offline')
+    expect(screen.queryByRole('navigation', { name: 'Primary navigation' })).toBeNull()
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(['/api/v1/ui-mode'])
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Retry' }))
+    expect(screen.getByRole('status')).toHaveTextContent(/loading/i)
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(['/api/v1/ui-mode', '/api/v1/ui-mode'])
+    await act(async () => retryMode({ ok: true, status: 200, json: async () => ({ public_graph_only: false }) } as Response))
+    expect(screen.getByRole('navigation', { name: 'Primary navigation' }).querySelectorAll('li')).toHaveLength(3)
+  })
+
+  it('limits a public graph shell to the anonymous graph view', async () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    const { calls } = mockApi({ 'GET /api/v1/ui-mode': { body: { public_graph_only: true } }, ...appResponses() })
+    render(<App />)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Memory Chart' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Primary navigation' }).querySelectorAll('li')).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: /approvals|settings|login/i })).toBeNull()
+    await waitFor(() => expect(calls.some(call => call.url.startsWith('/api/v1/graph/view'))).toBe(true))
+    expect(calls.map(call => call.url)).toEqual(expect.arrayContaining(['/api/v1/ui-mode']))
+    expect(calls.every(call => call.url.startsWith('/api/v1/ui-mode') || call.url.startsWith('/api/v1/graph/view'))).toBe(true)
+    expect(streamUrls()).toEqual([])
+  })
+
   it('uses a page-level h1 and list semantics for primary navigation', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('EventSource', MockEventSource)
@@ -381,6 +432,7 @@ describe('App · automatic local UI session', () => {
     localStorage.setItem('hlm_api_token', 'hlm_external_only')
     const { calls } = mockApi(appResponses())
     render(<App />)
+    await waitFor(() => expect(calls.some(call => call.url === '/api/v1/ui-mode')).toBe(true))
     expect(window.location.hash).toBe('')
     await waitFor(() => expect(calls.some(call => call.url === '/api/v1/status')).toBe(true))
     await waitFor(() => expect(calls.some(call => call.url === '/api/v1/activity?limit=40')).toBe(true))
@@ -425,6 +477,7 @@ describe('App · automatic local UI session', () => {
     vi.stubGlobal('EventSource', MockEventSource)
     const { calls } = mockApi(appResponses())
     render(<App />)
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() })
 
     await act(async () => { await vi.advanceTimersByTimeAsync(25 * 60 * 1000) })
 
@@ -454,6 +507,7 @@ describe('App · automatic local UI session', () => {
     vi.stubGlobal('EventSource', MockEventSource)
     const { fetchMock } = mockApi(appResponses())
     const view = render(<App />)
+    await screen.findByRole('navigation', { name: 'Primary navigation' })
     await userEvent.setup().click(screen.getByRole('button', { name: /approvals/i }))
     fetchMock.mockResolvedValueOnce({ ok: false, status: 401, statusText: 'Unauthorized', text: async () => JSON.stringify({ detail: 'expired' }) } as Response)
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -461,7 +515,7 @@ describe('App · automatic local UI session', () => {
     expect(sessionStorage.getItem('hlm_ui_return_screen')).toBe('approvals')
     view.unmount()
     render(<App />)
-    expect(screen.getByRole('heading', { name: 'Approvals', level: 1 })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Approvals', level: 1 })).toBeInTheDocument()
   })
 
   it('shows a 403 renewal error without leaving the visible Approvals view', async () => {
@@ -476,6 +530,7 @@ describe('App · automatic local UI session', () => {
       return { ok: !forbidden, status: forbidden ? 403 : 200, statusText: forbidden ? 'Forbidden' : 'OK', text: async () => JSON.stringify(body), json: async () => body } as Response
     })
     render(<App />)
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() })
 
     await act(async () => { await vi.advanceTimersByTimeAsync(25 * 60 * 1000) })
 
