@@ -10,6 +10,8 @@
 ### Security
 - Unauthenticated LAN viewers can no longer manage tokens or access protected
   pages; `/health` now honors the LAN CIDR allowlist.
+- Updated the Python and web lockfiles to patched PyJWT, Mako, `source-map-js`,
+  and `undici` releases.
 
 ### Added
 - `AUTO_WRITE` can create files and folders immediately when every affected
