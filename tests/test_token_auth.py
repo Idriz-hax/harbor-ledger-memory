@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from importlib.metadata import version as package_version
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlencode
 
@@ -81,12 +82,12 @@ def test_zero_tokens_is_locked(tmp_path: Path) -> None:
         assert client.post("/api/v1/writes/1/approve").status_code == 401
 
 
-def test_application_version_matches_release(tmp_path: Path) -> None:
+def test_application_version_matches_installed_package(tmp_path: Path) -> None:
     settings = Settings(
         vault_path=tmp_path,
         database_url=f"sqlite:///{tmp_path / 'version.db'}",
     )
-    assert create_app(settings).version == "1.3.2"
+    assert create_app(settings).version == package_version("harbor-ledger-memory")
 
 
 def test_valid_token_unlocks(tmp_path: Path) -> None:
