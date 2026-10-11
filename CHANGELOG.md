@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.3.3 - 2026-10-11
+
+### Breaking
+- Passwordless LAN mode now requires `network.allowed_cidrs` and is read-only
+  graph access. Configure the allowlist before upgrading; see the
+  [upgrade instructions](README.md#passwordless-lan-mode).
+
+### Security
+- Unauthenticated LAN viewers can no longer manage tokens or access protected
+  pages; `/health` now honors the LAN CIDR allowlist.
+
+### Added
+- `AUTO_WRITE` can create files and folders immediately when every affected
+  path, including missing parents, grants auto-write.
+- Interrupted write proposals are surfaced as `reconciliation_required`
+  instead of remaining stuck in `applying`.
+
+### Fixed
+- Settings and Trust summary now show retryable errors when their data cannot
+  be loaded.
+
+See the [1.3.3 release notes](RELEASE_NOTES-1.3.3.md).
+
 ## 1.3.2 - 2026-09-19
 
 - Released the API and package metadata as version 1.3.2.
