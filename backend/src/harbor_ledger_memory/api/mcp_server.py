@@ -148,6 +148,7 @@ def build_mcp_server(
                 session,
                 retrieval_settings=settings.retrieval,
                 memory_settings=settings.memory,
+                vault_path=settings.vault_path,
                 path_filter=readable_admitted,
                 activity_service=activity_service,
                 live_traversal=live_traversal,

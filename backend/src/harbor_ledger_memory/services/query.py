@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Sequence
+from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
@@ -60,6 +61,7 @@ class QueryService:
         *,
         retrieval_settings: QuerySettings | None = None,
         memory_settings: MemorySettings | None = None,
+        vault_path: Path | None = None,
         path_filter: Callable[[str], bool] | None = None,
         activity_service: ActivityService | None = None,
         live_traversal: Any | None = None,
@@ -69,6 +71,7 @@ class QueryService:
         )
         self._settings = retrieval_settings or QuerySettings()
         self._memory_settings = memory_settings or MemorySettings()
+        self._vault_path = vault_path
         self._path_filter = path_filter
         self._activity_service = activity_service or ActivityService(self._session)
         self._live_traversal = live_traversal or NullLiveTraversalPublisher()
@@ -86,6 +89,9 @@ class QueryService:
         """
         start = time.monotonic()
         trace_uuid = uuid4()
+        active_project = _normalize_active_project(
+            request.active_project, self._vault_path
+        )
 
         # --- Stage 1: Seed retrieval ---
         memory_service = MemoryService(self._session, self._memory_settings)
@@ -105,7 +111,7 @@ class QueryService:
         )
         seeds: tuple[SeedCandidate, ...] = retrieval.seeds(
             request.query,
-            active_project=request.active_project,
+            active_project=active_project,
             recent_paths=pin_boosts,
         )
         hit_paths: tuple[str, ...] = ()
@@ -168,7 +174,7 @@ class QueryService:
         trace = QueryTrace(
             trace_uuid=str(trace_uuid),
             query=request.query,
-            active_project=request.active_project,
+            active_project=active_project,
             scope_kind=request.scope_kind,
             scope_id=request.scope_id,
             retrieval_settings=settings_snapshot,
@@ -263,6 +269,30 @@ class QueryService:
             total_estimated_tokens=total_tokens,
             short_term_evidence=short_term_evidence,
         )
+
+
+def _normalize_active_project(value: str | None, vault_path: Path | None) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        path = Path(value)
+        if path.is_absolute():
+            if vault_path is not None:
+                try:
+                    return (
+                        path.resolve(strict=False)
+                        .relative_to(vault_path.expanduser().resolve(strict=False))
+                        .as_posix()
+                    )
+                except ValueError:
+                    pass
+            return path.name or None
+        candidate = PurePosixPath(value)
+        if candidate.is_absolute() or ".." in candidate.parts or "\x00" in value:
+            return None
+        return candidate.as_posix()
+    except (OSError, ValueError):
+        return None
 
 
 def _activation_segments(

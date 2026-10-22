@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.4 - 2026-10-22
+
+### Fixed
+- Memory queries accept absolute `active_project` paths without failing: paths
+  inside the vault are normalized, and external paths use their final directory
+  name as a relevance hint.
+
+See the [1.3.4 release notes](RELEASE_NOTES-1.3.4.md).
+
 ## 1.3.3 - 2026-10-11
 
 ### Breaking
