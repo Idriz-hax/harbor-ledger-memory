@@ -38,6 +38,10 @@ data/
 token-optimizer/
 .worktrees/
 .slim/deepwork/
+
+# macOS metadata.
+.DS_Store
+
 docs/
 !docs/
 docs/*
