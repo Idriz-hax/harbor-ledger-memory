@@ -897,6 +897,7 @@ def query(
             session,
             retrieval_settings=settings.retrieval,
             memory_settings=settings.memory,
+            vault_path=settings.vault_path,
             path_filter=VaultBoundary(settings).is_admitted,
         )
         request = QueryRequest(

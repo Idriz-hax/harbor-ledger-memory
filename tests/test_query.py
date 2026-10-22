@@ -31,7 +31,20 @@ from harbor_ledger_memory.services.live_traversal import (
     TraversalEvent,
 )
 from harbor_ledger_memory.services.memory import MemoryService
-from harbor_ledger_memory.services.query import QueryService
+from harbor_ledger_memory.services.query import QueryService, _normalize_active_project
+
+
+def test_active_project_path_normalization(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    assert (
+        _normalize_active_project(str(vault / "AI" / "Project"), vault) == "AI/Project"
+    )
+    assert (
+        _normalize_active_project("/Users/me/Checkpoint/checkpoint", vault)
+        == "checkpoint"
+    )
+    assert _normalize_active_project("", vault) is None
+    assert _normalize_active_project("\x00", vault) is None
 
 
 def test_context_excerpt_redacts_unreadable_wikilink_targets(tmp_path: Path) -> None:

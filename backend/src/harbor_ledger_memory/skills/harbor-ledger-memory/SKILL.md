@@ -12,6 +12,11 @@ the configured vault scope.
 
 ## Query feedback
 
+When querying, pass `active_project` as a vault-relative POSIX path when possible.
+Absolute paths inside the configured vault are normalized; external absolute
+paths are reduced to their final directory name. Empty or malformed hints are
+ignored.
+
 Retain the `trace_id` returned by `query`. Use `feedback` with
 `relevant_paths` and/or `irrelevant_paths` to submit judgments for selected,
 admitted paths only:
