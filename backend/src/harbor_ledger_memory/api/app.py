@@ -1325,6 +1325,7 @@ def create_app(
                 session,
                 retrieval_settings=settings.retrieval,
                 memory_settings=settings.memory,
+                vault_path=settings.vault_path,
                 path_filter=lambda path: (
                     boundary.is_admitted(path) and auth.policy.can_read(path)
                 ),
