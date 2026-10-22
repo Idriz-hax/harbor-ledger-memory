@@ -4,7 +4,7 @@
 
 **Goal:** Make HLM the selected OpenClaw long-term memory provider and route memory access and proposals through the shared HLM service.
 
-**Architecture:** Add a separate TypeScript plugin package using OpenClaw's exclusive memory slot and `providerRuntime`; use HLM REST for query, note get, and proposals. Provider references are identifiers only, never authorization. The HLM note-content API plan is a prerequisite.
+**Architecture:** Add a separate TypeScript plugin package using OpenClaw's exclusive memory slot and `providerRuntime`; use HLM REST for query, note get, and proposals. Provider references are identifiers only, never authorization. Provider scaffolding and query/proposal work can proceed independently from Hermes; `get` implementation and service integration are blocked until `docs/plans/2026-10-22-v2-note-content-api.md` passes.
 
 **Tech Stack:** TypeScript, OpenClaw plugin SDK, Node.js, built-in test runner via `tsx`.
 
@@ -26,6 +26,7 @@
 ## Task 2: Implement client and native memory runtime
 
 - [ ] Implement `HlmClient` with configured local/remote base URL, bearer token, `AbortSignal.timeout(10_000)`, and explicit error mapping; do not log credentials or cache note content.
+- [ ] Before implementing or merging `get`, require `docs/plans/2026-10-22-v2-note-content-api.md` and its security tests to pass; keep any earlier mock aligned to its exact URL, response, and 401/404/413/422 errors.
 - [ ] Set `openclaw.plugin.json` fields `id`, `kind: "memory"`, `configSchema`, and `contracts.tools`; register with the supported package entrypoint and read secrets through the host's supported configuration mechanism.
 - [ ] Implement the provider using SDK-derived types, not guessed local interfaces:
 

@@ -4,7 +4,7 @@
 
 **Goal:** Make HLM selectable as Hermes' shared long-term memory provider while preserving HLM policy and approval controls.
 
-**Architecture:** Add a separately installable Python Hermes provider that calls the HLM REST service; it never imports HLM internals or reads vault files. It uses the shared note-content API plan, query and proposal endpoints, and Hermes' `MemoryProvider` lifecycle. The HLM API plan is a prerequisite; this provider can be developed independently from OpenClaw after that contract is fixed.
+**Architecture:** Add a separately installable Python Hermes provider that calls the HLM REST service; it never imports HLM internals or reads vault files. It uses the shared note-content API plan, query and proposal endpoints, and Hermes' `MemoryProvider` lifecycle. Provider scaffolding and query/proposal work can proceed independently from OpenClaw; `hlm_get_note` implementation and service integration are blocked until `docs/plans/2026-10-22-v2-note-content-api.md` passes.
 
 **Tech Stack:** Python 3.12, Hermes `MemoryProvider`, HTTPX, pytest.
 
@@ -26,6 +26,7 @@
 ## Task 2: Implement the provider package
 
 - [ ] Implement `HLMClient` with HTTPX, configured service URL and Hermes profile-scoped secret; validate `http`/`https` base URL and never log the token.
+- [ ] Before implementing or merging `hlm_get_note`, require `docs/plans/2026-10-22-v2-note-content-api.md` and its security tests to pass; keep any earlier mock aligned to its exact URL, response, and 401/404/413/422 errors.
 - [ ] Implement `HLMProvider(MemoryProvider)` with `name`, local-only `is_available`, `initialize`, schemas, handlers for `hlm_query`, `hlm_get_note`, `hlm_propose_write`, `hlm_propose_folder`, and `hlm_pending_proposals`, plus query-only `prefetch`; do not ingest each `sync_turn` automatically.
 - [ ] Bind each provider instance to the `hermes_home` passed to `initialize`; do not use global mutable client/profile state.
 - [ ] Use the same HLM API token for read/propose access; do not expose raw vault writes. Only expose `hlm_approve_proposal` and `hlm_reject_proposal` if the pinned Hermes host confirms a per-action user-confirmed gate that cannot be bypassed; otherwise return the web review route for pending proposals.
