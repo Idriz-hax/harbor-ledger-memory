@@ -1,6 +1,6 @@
 # Harbor Ledger Memory 2.0: Shared Agent Memory Design
 
-**Status:** Approved design direction; pending user review of this document
+**Status:** Approved by user
 **Date:** 2026-10-22
 
 ## Summary
