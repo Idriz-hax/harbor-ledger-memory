@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.5 - 2026-10-22
+
+### Fixed
+- Token permission editors refresh the folder list when opened, so newly added
+  folders show their inherited access and can receive explicit overrides.
+
+See the [1.3.5 release notes](RELEASE_NOTES-1.3.5.md).
+
 ## 1.3.4 - 2026-10-22
 
 ### Fixed
