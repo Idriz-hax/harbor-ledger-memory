@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import re
 import secrets
 import subprocess
 import sys
@@ -104,7 +105,11 @@ from harbor_ledger_memory.services.vault_mutations import (
     VaultMutationService,
     VaultWriteDenied,
 )
-from harbor_ledger_memory.vault.boundary import VaultBoundary
+from harbor_ledger_memory.vault.boundary import (
+    VaultBoundary,
+    VaultFileTooLarge,
+    VaultPathError,
+)
 from harbor_ledger_memory.watcher import VaultWatchService
 
 
@@ -117,6 +122,15 @@ class MemoryMarkRequest(BaseModel):
 logger = logging.getLogger(__name__)
 
 RECENT_RESOLVED_WRITE_LIMIT = 100
+MAX_NOTE_BYTES = 1024 * 1024
+
+
+class NoteContentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    content: str
+    revision: str
 
 
 class _HSTSMiddleware:
@@ -900,6 +914,67 @@ def create_app(
             engine.dispose()
         payload = token_status_payload(auth.policy, settings, catalog_status)
         return StatusResponse.model_validate(payload)
+
+    @application.get("/api/v1/notes/content", response_model=NoteContentResponse)
+    def note_content(  # pyright: ignore[reportUnusedFunction]
+        response: Response,
+        path: str = Query(...),
+        auth: AuthContext = Depends(authenticated),
+    ) -> NoteContentResponse:
+        response.headers["Cache-Control"] = "no-store"
+        boundary = VaultBoundary(settings)
+        if re.search(r"%[0-9a-fA-F]{2}", path):
+            raise HTTPException(
+                status_code=422,
+                detail="invalid note path",
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            identity = boundary.validate_identity(path)
+        except (VaultPathError, ValueError):
+            raise HTTPException(
+                status_code=422,
+                detail="invalid note path",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        if identity.suffix.lower() != ".md":
+            raise HTTPException(
+                status_code=422,
+                detail="invalid note path",
+                headers={"Cache-Control": "no-store"},
+            )
+        if not boundary.is_admitted(identity) or not auth.policy.can_read(
+            identity.as_posix()
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="note unavailable",
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            snapshot = boundary.read_file(identity, max_bytes=MAX_NOTE_BYTES)
+            content = snapshot.content.decode("utf-8")
+        except VaultFileTooLarge:
+            raise HTTPException(
+                status_code=413,
+                detail="note too large",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        except UnicodeDecodeError:
+            raise HTTPException(
+                status_code=422,
+                detail="invalid note content",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        except VaultPathError:
+            raise HTTPException(
+                status_code=404,
+                detail="note unavailable",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        return NoteContentResponse(
+            path=identity.as_posix(), content=content, revision=snapshot.sha256
+        )
 
     @application.post(
         "/api/v1/scan",
