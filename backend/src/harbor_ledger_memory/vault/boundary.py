@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import re
 import stat
 from collections.abc import Generator, Iterator
 from dataclasses import dataclass
@@ -28,6 +29,10 @@ class DirectoryCreationError(VaultPathError):
     def __init__(self, message: str, created_paths: tuple[PurePosixPath, ...]) -> None:
         super().__init__(message)
         self.created_paths = created_paths
+
+
+class VaultFileTooLarge(VaultPathError):
+    """Raised when a snapshot exceeds its caller's fixed byte ceiling."""
 
 
 def _no_follow_flag() -> int:
@@ -217,14 +222,23 @@ class VaultBoundary:
     # Safe read API (held dir-fd, no-follow)
     # ------------------------------------------------------------------
 
-    def read_file(self, identity: PurePosixPath) -> AdmittedFileSnapshot:
+    def read_file(
+        self, identity: PurePosixPath, *, max_bytes: int | None = None
+    ) -> AdmittedFileSnapshot:
         """Return an immutable snapshot through no-follow dir-FD traversal.
 
         Raises :class:`VaultPathError` when the path is outside the index
         root, escapes via traversal, names a symlinked target/parent, or
         the index root has been replaced.
         """
-        return self._read_snapshot(identity)
+        return self._read_snapshot(identity, max_bytes=max_bytes)
+
+    def validate_identity(self, relative: PurePosixPath | str) -> PurePosixPath:
+        """Validate and return one stable vault-relative identity."""
+        identity = self._validated_identity(relative)
+        if re.search(r"%[0-9a-fA-F]{2}", identity.as_posix()):
+            raise VaultPathError("path contains residual percent-encoded escapes")
+        return identity
 
     # ------------------------------------------------------------------
     # atomic_create / atomic_replace / remove_if_version
@@ -1168,7 +1182,9 @@ class VaultBoundary:
     # Read snapshot (uses held FD and returns FileVersion)
     # ------------------------------------------------------------------
 
-    def _read_snapshot(self, identity: PurePosixPath) -> AdmittedFileSnapshot:
+    def _read_snapshot(
+        self, identity: PurePosixPath, *, max_bytes: int | None = None
+    ) -> AdmittedFileSnapshot:
         """Read one admitted identity through no-follow directory handles."""
         self._check_index_root_integrity()
         if not self.is_readable(identity):
@@ -1191,9 +1207,13 @@ class VaultBoundary:
                     f"admitted path {identity.as_posix()} is not a regular file "
                     f"(may be a symlink)"
                 )
+            if max_bytes is not None and before.st_size > max_bytes:
+                raise VaultFileTooLarge("file exceeds snapshot byte limit")
             with os.fdopen(file_descriptor, "rb") as stream:
                 file_descriptor = -1
-                content = stream.read()
+                content = (
+                    stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+                )
                 after = os.fstat(stream.fileno())
         finally:
             if file_descriptor >= 0:
@@ -1201,6 +1221,10 @@ class VaultBoundary:
 
         if _file_signature(before) != _file_signature(after):
             raise VaultPathError("file changed while it was being snapshotted")
+        if max_bytes is not None and (
+            len(content) > max_bytes or after.st_size > max_bytes
+        ):
+            raise VaultFileTooLarge("file exceeds snapshot byte limit")
         if len(content) != after.st_size:
             raise VaultPathError("file size changed while it was being snapshotted")
 
