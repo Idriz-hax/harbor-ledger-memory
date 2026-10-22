@@ -1497,6 +1497,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
 
   const beginTokenEdit = (row: TokenSummary) => {
     if (row.revoked_at) return
+    void loadSettings()
     setJustCreated(null)
     setEditingToken(row.name)
     setEditorRules(row.rules ?? [])
@@ -1527,6 +1528,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
   }
 
   const openTokenCreator = () => {
+    void loadSettings()
     setTokenName(''); setEditorRules([]); setTokenAdmin(false); setApproveOwnProposals(false)
     setTokenError(''); setJustCreated(null); setTokenEditor('create')
   }
