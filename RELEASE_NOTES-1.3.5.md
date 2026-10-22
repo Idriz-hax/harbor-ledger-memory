@@ -1,6 +1,6 @@
 # Harbor Ledger Memory 1.3.5
 
-Prepared 2026-10-22.
+Released 2026-10-22.
 
 ## Fixed
 
