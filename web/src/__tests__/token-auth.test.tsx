@@ -272,6 +272,29 @@ describe('Settings · API tokens', () => {
     ])
   })
 
+  it('refreshes folders when opening an existing token editor', async () => {
+    const user = userEvent.setup()
+    let settingsCalls = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/v1/settings') {
+        settingsCalls += 1
+        const folders = settingsCalls === 1 ? ['AI'] : ['AI', 'AI/NewFolder']
+        return { ok: true, status: 200, json: async () => ({ folders, folder_rules: [] }), text: async () => '' } as Response
+      }
+      if (String(input) === '/api/v1/tokens') return { ok: true, status: 200, json: async () => [{ name: 'agent', rules: [{ path: 'AI', access: 'propose-write' }], admin: false, approve_own_proposals: false, created_at: '2026-01-02T00:00:00Z' }] } as Response
+      return { ok: true, status: 200, json: async () => ({}), text: async () => '' } as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Settings />)
+
+    await user.click(await screen.findByRole('button', { name: /edit token agent/i }))
+    const dialog = screen.getByRole('dialog', { name: /edit token agent/i })
+    await user.click(within(dialog).getByRole('button', { name: 'Expand AI' }))
+    expect(await within(dialog).findByRole('combobox', { name: 'Permission for AI/NewFolder' })).toHaveValue('propose-write')
+    expect(within(dialog).getByText('inherited from AI')).toBeInTheDocument()
+    expect(settingsCalls).toBe(2)
+  })
+
   it('closes the shared modal from the token row and clears edit state', async () => {
     const user = userEvent.setup()
     mockApi({ '/api/v1/tokens': { body: [{ name: 'agent', rules: [], admin: false, approve_own_proposals: false, created_at: '2026-01-02T00:00:00Z' }] } })
