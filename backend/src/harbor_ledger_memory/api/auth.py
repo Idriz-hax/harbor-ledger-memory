@@ -86,7 +86,7 @@ async def token_auth_error_handler(request: Request, exc: Exception) -> Response
     assert isinstance(exc, TokenAuthError)
     headers = (
         {"Cache-Control": "no-store"}
-        if request.url.path == "/api/v1/notes/content"
+        if request.url.path == "/api/v1/notes/content" or request.url.path.startswith("/api/v1/agent/writes")
         else None
     )
     return Response(
