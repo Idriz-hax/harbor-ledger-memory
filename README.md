@@ -2,6 +2,8 @@
 
 Harbor Ledger Memory is local neural memory for AI agents that works with an existing Markdown vault. Obsidian is a compatible vault application, not a product requirement. It builds a rebuildable index with lexical search, optional semantic search, knowledge-graph context, and Model Context Protocol (MCP) tools. Your Markdown files remain authoritative: the service never rewrites vault content outside its policy-controlled proposal and approval workflow.
 
+HLM 2.0 connects existing HLM clients and native Hermes/OpenClaw memory providers to the same local-first Markdown source of truth. It adds bearer-authenticated note-content reads and bounded, proposal-only agent writes; existing web, CLI, REST, and MCP behavior remains compatible. No database or vault migration is required. See the [Hermes provider guide](integrations/hermes/README.md), [OpenClaw plugin guide](integrations/openclaw/README.md), [2.0.0 release notes](RELEASE_NOTES-2.0.0.md), and [upgrade guide](docs/upgrading-to-2.0.0.md).
+
 <p align="center">
   <img src="docs/assets/harbor-ledger-memory.png" alt="Harbor Ledger Memory map showing connected agent context routes across a local-first ledger." width="960" />
 </p>
@@ -430,6 +432,16 @@ persist only application configuration and do not mutate a running watcher.
 `GET /api/v1/graph/traversal/stream` is an authenticated SSE feed of newly
 published, policy-filtered traversal events. It has no history or replay cursor;
 slow subscribers may miss events.
+
+`GET /api/v1/notes/content?path=...` is bearer-authenticated and path-policy
+checked; it returns `path`, `content`, and `revision`, sends `Cache-Control:
+no-store`, and caps note content at 1 MiB. Native agent providers use
+`POST /api/v1/agent/writes` (content up to 64 KiB UTF-8, path up to 4 KiB UTF-8,
+raw request up to 512 KiB) to create forced proposal-only writes, and
+`GET /api/v1/agent/writes/pending` for paginated summaries only. Bounded summary
+approve/reject routes are also available. These limits apply to the agent-only
+routes; legacy `/api/v1/writes` and MCP behavior remains unchanged and has no
+new global quota. This is not global resource-exhaustion protection.
 
 The `@Memory` agent can load vault context before tasks by querying the API:
 
