@@ -63,6 +63,6 @@ return NoteContentResponse(
 
 - [x] Run `uv run pytest tests/test_note_content_api.py tests/test_vault_boundary_writes.py tests/test_token_auth.py -q` and `uv run pyright backend/src`.
 - [x] Run `uv run ruff check --extend-ignore E501 backend/src/harbor_ledger_memory/api/app.py backend/src/harbor_ledger_memory/api/auth.py backend/src/harbor_ledger_memory/vault/boundary.py tests/test_note_content_api.py tests/test_vault_boundary_writes.py` and `uv run ruff format --check` on the touched files. The endpoint and boundary tests passed; `app.py` retains unrelated pre-existing formatter differences.
-- [ ] Commit the API implementation and tests as `feat: add policy-checked note content API`.
+- [x] Commit the API implementation and tests as `feat: add policy-checked note content API` (`0a7abf0`).
 
 **Verification record:** Focused API/boundary/auth tests passed (96). Pyright still reports seven pre-existing `reportUnusedFunction` errors also present on `main`; there are no new diagnostics for `note_content`. `ruff check` passed with the existing long-line rule ignored for this targeted run; formatting-only changes to unrelated `app.py` lines were intentionally avoided.

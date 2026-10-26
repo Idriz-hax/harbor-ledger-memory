@@ -23,6 +23,7 @@ HLM 2.0 should preserve the current product while adding native Hermes and OpenC
 - Support a locally running HLM service and a remotely hosted HLM service; this is a client-to-service relationship, not in-process embedding of HLM internals.
 - Give agents read/query and context-retrieval capabilities, graph/context inspection, retrieval feedback/marks, and proposal-based memory/folder writes through shared HLM behavior.
 - Let agents surface pending proposals to the user. Preserve web approval and use safe host-mediated chat approval when available.
+- Provide a bounded write/list/resolve API for native agent integrations, without changing the existing web, REST, or MCP write contracts.
 - Keep Markdown as the durable, human-readable, portable source of truth.
 - Document installation, configuration, supported host versions, security, and troubleshooting for both integrations.
 
@@ -33,6 +34,7 @@ HLM 2.0 should preserve the current product while adding native Hermes and OpenC
 - Embedding Python HLM services directly inside Hermes or OpenClaw processes.
 - Maintaining a separate HLM memory database or storage model for each agent.
 - Allowing agents to bypass HLM access policies or write directly to vault files.
+- Narrowing the existing `/api/v1/writes` or MCP tool contracts; the bounded limits apply to the new native-agent routes only.
 - Automatically ingesting every conversation without an explicit host integration policy and user consent.
 - Requiring chat approval when a host/runtime cannot reliably establish user-confirmed authorization; web approval remains available.
 
@@ -56,6 +58,17 @@ The shared agent memory contract should cover the following existing HLM capabil
 - Approve or reject a proposal only through an authorized user-confirmed flow; a normal agent response is not itself approval.
 
 Host adapters must use the same user/token policy and scope rules as other HLM clients. Integration setup must make clear which HLM identity and vault the agent can access. Agent write access is proposal access, not direct vault mutation access.
+
+## Bounded native-agent write contract
+
+Native Hermes/OpenClaw providers use additive, agent-specific routes so model-originated proposal traffic has bounded resource use while existing web, REST, CLI, and MCP behavior remains compatible:
+
+- `POST /api/v1/agent/writes` accepts the existing `{path, content, operation}` shape, but caps raw JSON at **512 KiB**, UTF-8 content at **64 KiB**, and the path at **4 KiB**. The raw body cap is enforced while streaming and before JSON parsing. Agent writes always create proposals, even if a token would auto-apply through the legacy write route.
+- `GET /api/v1/agent/writes/pending?limit=20&before_id=...` returns a deterministic, paginated summary of pending proposals only. `limit` defaults to 20 and is capped at 100. Summaries omit content, diff, and failure details; unreadable paths are never returned.
+- `POST /api/v1/agent/writes/{id}/approve` and `/reject` return proposal summaries only. They re-check path policy and require the active token to have `approve_own_proposals` enabled and to be the proposal creator; host adapters still require explicit user confirmation before invoking these routes.
+- Provider clients cap request content before serialization and cap response bytes before JSON parsing. A note read is limited by the existing 1 MiB note-content endpoint; provider response caps allow its JSON encoding overhead but remain finite.
+
+The legacy `/api/v1/writes` endpoints and existing MCP tool contracts remain unchanged for existing clients. The bounded agent routes protect the native providers when they use this contract; they are not a claim that legacy authenticated routes have a global resource quota.
 
 ## Approval and notification flow
 
@@ -107,12 +120,13 @@ The 2.0 implementation is acceptable when:
 4. Both integrations work with local-service and authenticated remote-service configurations.
 5. A proposal submitted by either host appears in HLM's pending approval lifecycle, remains unapplied before approval, and is visible after approval through all clients.
 6. Approve/reject from chat succeeds only through a supported explicit user-confirmed host flow; otherwise the integration routes to web UI approval.
-7. Unauthorized scopes, rejected proposals, inaccessible HLM service, and failed writes are reported without bypassing policy or creating misleading success states.
-8. Installation and troubleshooting instructions identify tested host versions and explain how to make HLM the shared long-term memory source.
+7. Agent proposal requests over 64 KiB content, 4 KiB paths, or 512 KiB raw JSON are rejected before mutation; pending and resolution responses contain summaries rather than note bodies.
+8. Unauthorized scopes, rejected proposals, inaccessible HLM service, oversized responses, and failed writes are reported without bypassing policy or creating misleading success states.
+9. Installation and troubleshooting instructions identify tested host versions and explain how to make HLM the shared long-term memory source.
 
 ## Implementation sequencing
 
-The implementation should first define and verify the minimal shared agent-memory contract against current HLM services, then build the Hermes and OpenClaw native providers over that contract. Provider work can proceed in parallel only after the shared contract and approval semantics are agreed. Local and remote connection modes should exercise the same contract and security checks. This document defines product intent; specific package layout, host API versions, and any necessary MCP/API additions belong in the implementation plan after this spec is reviewed.
+The implementation first adds the policy-checked note-content API, then the additive bounded agent write/list/resolve contract, and then builds the Hermes and OpenClaw providers over those routes. Provider work can proceed in parallel only after the shared API and approval semantics are verified. Local and remote connection modes use the same contract and security checks. This document defines product intent; package layout and host API pins are specified in the implementation plans.
 
 ## Reference findings
 
