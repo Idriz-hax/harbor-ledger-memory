@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.0.0 - 2026-10-27
+
+### Added
+- Added bearer-authenticated, path-policy-checked note-content reads at
+  `GET /api/v1/notes/content?path=...`, with no-store responses and a 1 MiB
+  content cap.
+- Added bounded agent-only proposal submission and paginated pending summaries;
+  native provider writes are forced proposal-only. These write-specific bounds
+  do not alter legacy `/api/v1/writes` or MCP tool operations, and are not a
+  global write quota.
+- Added native Hermes and OpenClaw memory providers. Hermes uses an optional,
+  trust-gated chat approval path or the web UI; OpenClaw uses one-shot
+  `allow-once`/deny approval or web review.
+
+HLM remains local-first and Markdown remains the source of truth. Existing web,
+CLI, REST, and MCP tools/operations remain compatible. MCP Streamable HTTP
+sessions now use the Python MCP SDK 2.2.0 defaults: 30 minutes idle expiry and
+a 10,000-session per-manager cap. An expired session ID returns `404` and
+requires a new session; a new session request at capacity returns `503`. No
+database or vault migration is required. The cap is shared across MCP clients;
+only issue MCP bearer tokens to trusted agents.
+
+See the [2.0.0 release notes](RELEASE_NOTES-2.0.0.md) and
+[upgrade guide](docs/upgrading-to-2.0.0.md).
+
 ## 1.3.5 - 2026-10-22
 
 ### Fixed

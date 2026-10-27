@@ -1,0 +1,12 @@
+{
+  "name": "harbor-ledger-memory-openclaw",
+  "version": "2.0.0",
+  "type": "module",
+  "exports": "./dist/index.js",
+  "openclaw": { "extensions": ["./dist/index.js"] },
+  "files": ["dist", "openclaw.plugin.json", "README.md"],
+  "scripts": { "test": "tsx --test test/*.test.ts", "typecheck": "tsc --noEmit", "build": "tsc -p tsconfig.build.json", "prepack": "npm run build" },
+  "dependencies": { "@sinclair/typebox": "^0.34.0" },
+  "devDependencies": { "openclaw": "2026.10.5", "tsx": "^4.20.0", "typescript": "^5.9.0" },
+  "peerDependencies": { "openclaw": "2026.10.5" }
+}
