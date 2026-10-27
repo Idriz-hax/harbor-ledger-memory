@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.0.1 - 2026-10-27
+
+### Security
+- Raised the `certifi` floor to `>=2026.10.19` (the lock resolves `2026.10.23`)
+  to address the critical emSign certificate bundle issue; raised
+  `opentelemetry-api` to `>=1.45.1`.
+- Raised optional `embeddings` floors to `filelock>=4.2.1` and
+  `setuptools>=84.1.0`.
+- The OpenClaw plugin's production-only npm audit is clean. Its full development
+  dependency tree still reports seven alerts, including unpatched
+  `http-cache-semantics` and pinned-host transitive findings. The pinned OpenClaw
+  host remains `2026.10.5`; not all repository dependency alerts are resolved.
+
+No database or vault migration is required. MCP SDK remains pinned to 2.2.0,
+with the documented 30-minute idle timeout and 10,000-session cap unchanged.
+This is a GitHub-only follow-up; there is no PyPI publish.
+
+See the [2.0.1 release notes](RELEASE_NOTES-2.0.1.md).
+
 ## 2.0.0 - 2026-10-27
 
 ### Added
