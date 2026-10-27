@@ -39,7 +39,8 @@
 - CLI/REST/MCP compatibility subset (`tests/test_cli.py`, `tests/test_api.py`, `tests/test_mcp.py`, `tests/test_mcp_tokens.py`): 106 passed.
 - `uv run --with hermes-agent==0.18.1 pytest integrations/hermes/tests -q`: 43 passed.
 - OpenClaw: 20 npm tests passed, `npm run typecheck` passed, and `npm pack --dry-run` built and inspected `harbor-ledger-memory-openclaw-2.0.0.tgz`.
-- `npm ci && npm run build` passed for the web UI (Vite emitted its existing large-chunk warning); `npm audit --omit=dev` found 0 production dependency vulnerabilities in both npm packages.
+- Web: Vite 8.2.4 and Vitest 4.1.12; `npm ci`, 146 tests (6 skipped), build, and full `npm audit` passed with 0 vulnerabilities. OpenClaw `npm audit --omit=dev` also found 0 production dependency vulnerabilities.
+- Python MCP SDK pinned to 2.2.0 to address the Streamable HTTP session accumulation advisory. Its default 30-minute idle expiry and 10,000-session cap are documented; existing MCP tool tests pass.
 - `uv build` produced the 2.0.0 sdist and wheel; archive inspection confirmed application modules and migration assets in both. Runtime API version and installed package metadata both report 2.0.0.
 - Full Ruff check and format check still report pre-existing repository diagnostics in migrations, tests, and existing API code. New agent API/auth additions were reformatted; targeted Ruff check now has only the pre-existing `app.py` E501. Pyright reports 7 existing `reportUnusedFunction` diagnostics in API/MCP route functions.
 - Node 24.16.0 OpenClaw host install/inspect smoke and local cross-client smoke passed. No authenticated remote-service smoke was run. Ruff and Pyright have baseline diagnostics as noted above.
