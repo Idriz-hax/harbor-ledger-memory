@@ -2,7 +2,7 @@
 
 Harbor Ledger Memory is local neural memory for AI agents that works with an existing Markdown vault. Obsidian is a compatible vault application, not a product requirement. It builds a rebuildable index with lexical search, optional semantic search, knowledge-graph context, and Model Context Protocol (MCP) tools. Your Markdown files remain authoritative: the service never rewrites vault content outside its policy-controlled proposal and approval workflow.
 
-HLM 2.0 connects existing HLM clients and native Hermes/OpenClaw memory providers to the same local-first Markdown source of truth. It adds bearer-authenticated note-content reads and bounded, proposal-only agent writes; existing web, CLI, REST, and MCP behavior remains compatible. No database or vault migration is required. See the [Hermes provider guide](integrations/hermes/README.md), [OpenClaw plugin guide](integrations/openclaw/README.md), [2.0.0 release notes](RELEASE_NOTES-2.0.0.md), and [upgrade guide](docs/upgrading-to-2.0.0.md).
+HLM 2.0 connects existing HLM clients and native Hermes/OpenClaw memory providers to the same local-first Markdown source of truth. It adds bearer-authenticated note-content reads and bounded, proposal-only agent writes; existing web, CLI, and REST behavior and MCP tool operations remain compatible. The MCP Streamable HTTP session lifecycle limits are documented below. No database or vault migration is required. See the [Hermes provider guide](integrations/hermes/README.md), [OpenClaw plugin guide](integrations/openclaw/README.md), [2.0.0 release notes](RELEASE_NOTES-2.0.0.md), and [upgrade guide](docs/upgrading-to-2.0.0.md).
 
 <p align="center">
   <img src="docs/assets/harbor-ledger-memory.png" alt="Harbor Ledger Memory map showing connected agent context routes across a local-first ledger." width="960" />
@@ -314,8 +314,14 @@ revoked token receives `401`; create a replacement token rather than reusing
 the old secret. This integration uses only the official remote HTTP config:
 there is no OAuth flow, relay, or plugin involved.
 
-MCP sessions are per-process: after `hlm serve` restarts, a client's cached
-session goes stale (`404 Session not found`) until the client reconnects.
+MCP tools and operations remain compatible, but Streamable HTTP session
+lifecycle follows the Python MCP SDK 2.2.0 defaults: sessions expire after 30
+minutes idle, and each session manager holds at most 10,000 sessions. After an
+idle expiry, the old session ID returns `404` and the client must initialize a
+new session. If the cap is reached, a new session request returns `503`. As
+before, restarting `hlm serve` also invalidates cached sessions; clients must
+reconnect and initialize a new session. The cap is shared across all clients, not
+per token, so issue MCP bearer tokens only to trusted agents.
 
 If MCP appears disabled to a client, check `GET /health`: the
 `mcp.active_tokens` count is the number of non-revoked bearer tokens. A count of
