@@ -84,10 +84,17 @@ class AuthContext:
 async def token_auth_error_handler(request: Request, exc: Exception) -> Response:
     """Render :class:`TokenAuthError` with the flat body it carries."""
     assert isinstance(exc, TokenAuthError)
+    headers = (
+        {"Cache-Control": "no-store"}
+        if request.url.path == "/api/v1/notes/content"
+        or request.url.path.startswith("/api/v1/agent/writes")
+        else None
+    )
     return Response(
         status_code=exc.status_code,
         content=json.dumps(exc.detail),
         media_type="application/json",
+        headers=headers,
     )
 
 

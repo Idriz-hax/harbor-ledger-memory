@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import re
 import secrets
 import subprocess
 import sys
@@ -25,6 +26,8 @@ import jinja2
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from fastapi import Depends, FastAPI, Form, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import HTTPException
 from fastapi.responses import (
     FileResponse,
@@ -104,7 +107,11 @@ from harbor_ledger_memory.services.vault_mutations import (
     VaultMutationService,
     VaultWriteDenied,
 )
-from harbor_ledger_memory.vault.boundary import VaultBoundary
+from harbor_ledger_memory.vault.boundary import (
+    VaultBoundary,
+    VaultFileTooLarge,
+    VaultPathError,
+)
 from harbor_ledger_memory.watcher import VaultWatchService
 
 
@@ -117,6 +124,15 @@ class MemoryMarkRequest(BaseModel):
 logger = logging.getLogger(__name__)
 
 RECENT_RESOLVED_WRITE_LIMIT = 100
+MAX_NOTE_BYTES = 1024 * 1024
+
+
+class NoteContentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    content: str
+    revision: str
 
 
 class _HSTSMiddleware:
@@ -439,6 +455,43 @@ class WriteRequest(BaseModel):
     operation: Literal["write", "mkdir"] = "write"
 
 
+class AgentWriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    content: str
+    operation: Literal["write", "mkdir"]
+
+
+class AgentWriteSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    path: str
+    operation: str
+    status: str
+    requested_at: str
+
+
+class AgentPendingResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposals: list[AgentWriteSummary]
+    next_before_id: int | None
+
+
+AGENT_WRITE_ERRORS: dict[int | str, dict[str, Any]] = {
+    code: {"description": description}
+    for code, description in {
+        401: "Authentication required",
+        403: "Access denied",
+        404: "Proposal unavailable",
+        413: "Request too large",
+        422: "Invalid request",
+    }.items()
+}
+
+
 class WriteProposalResponse(BaseModel):
     """Complete proposal record returned by the write endpoints."""
 
@@ -662,6 +715,39 @@ def create_app(
         settings.server_host, settings.server_port
     )
     application.add_exception_handler(TokenAuthError, token_auth_error_handler)
+    from fastapi.exceptions import RequestValidationError
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    @application.exception_handler(StarletteHTTPException)
+    async def agent_http_error(  # pyright: ignore[reportUnusedFunction]
+        request: Request, exc: StarletteHTTPException
+    ) -> Response:
+        if request.url.path.startswith("/api/v1/agent/writes"):
+            headers = dict(exc.headers or {})
+            headers["Cache-Control"] = "no-store"
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": jsonable_encoder(exc.detail)},
+                headers=headers,
+            )
+        return await http_exception_handler(request, exc)
+
+    @application.exception_handler(RequestValidationError)
+    async def agent_validation_error(  # pyright: ignore[reportUnusedFunction]
+        request: Request, exc: RequestValidationError
+    ) -> Response:
+        if request.url.path.startswith("/api/v1/agent/writes"):
+            return JSONResponse(
+                status_code=422,
+                content=jsonable_encoder({"detail": exc.errors()}),
+                headers={"Cache-Control": "no-store"},
+            )
+        from fastapi.exception_handlers import (
+            request_validation_exception_handler,
+        )
+
+        return await request_validation_exception_handler(request, exc)
+
     application.state.frontend_enabled = settings.frontend.enabled
     application.state.api_enabled = settings.api.enabled
     application.state.frontend_mode = settings.frontend.mode
@@ -901,6 +987,67 @@ def create_app(
         payload = token_status_payload(auth.policy, settings, catalog_status)
         return StatusResponse.model_validate(payload)
 
+    @application.get("/api/v1/notes/content", response_model=NoteContentResponse)
+    def note_content(  # pyright: ignore[reportUnusedFunction]
+        response: Response,
+        path: str = Query(...),
+        auth: AuthContext = Depends(authenticated),
+    ) -> NoteContentResponse:
+        response.headers["Cache-Control"] = "no-store"
+        boundary = VaultBoundary(settings)
+        if re.search(r"%[0-9a-fA-F]{2}", path):
+            raise HTTPException(
+                status_code=422,
+                detail="invalid note path",
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            identity = boundary.validate_identity(path)
+        except (VaultPathError, ValueError):
+            raise HTTPException(
+                status_code=422,
+                detail="invalid note path",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        if identity.suffix.lower() != ".md":
+            raise HTTPException(
+                status_code=422,
+                detail="invalid note path",
+                headers={"Cache-Control": "no-store"},
+            )
+        if not boundary.is_admitted(identity) or not auth.policy.can_read(
+            identity.as_posix()
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="note unavailable",
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            snapshot = boundary.read_file(identity, max_bytes=MAX_NOTE_BYTES)
+            content = snapshot.content.decode("utf-8")
+        except VaultFileTooLarge:
+            raise HTTPException(
+                status_code=413,
+                detail="note too large",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        except UnicodeDecodeError:
+            raise HTTPException(
+                status_code=422,
+                detail="invalid note content",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        except VaultPathError:
+            raise HTTPException(
+                status_code=404,
+                detail="note unavailable",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        return NoteContentResponse(
+            path=identity.as_posix(), content=content, revision=snapshot.sha256
+        )
+
     @application.post(
         "/api/v1/scan",
         response_model=ScanResponse,
@@ -967,6 +1114,234 @@ def create_app(
         finally:
             session.close()
             engine.dispose()
+
+    @application.post(
+        "/api/v1/agent/writes",
+        response_model=AgentWriteSummary,
+        responses=AGENT_WRITE_ERRORS,
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": AgentWriteRequest.model_json_schema()
+                    }
+                },
+            }
+        },
+    )
+    async def create_agent_write(  # pyright: ignore[reportUnusedFunction]
+        request: Request, auth: AuthContext = Depends(authenticated)
+    ) -> Response:
+        response_headers = {"Cache-Control": "no-store"}
+        if (
+            request.headers.get("content-length", "").isdigit()
+            and int(request.headers["content-length"]) > 512 * 1024
+        ):
+            raise HTTPException(413, "request too large", headers=response_headers)
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 512 * 1024:
+                raise HTTPException(413, "request too large", headers=response_headers)
+        try:
+            body = AgentWriteRequest.model_validate(json.loads(raw))
+        except (ValueError, TypeError):
+            raise HTTPException(
+                422, "invalid write request", headers=response_headers
+            ) from None
+        try:
+            path_bytes = len(body.path.encode("utf-8"))
+            content_bytes = len(body.content.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise HTTPException(
+                422, "invalid UTF-8 input", headers=response_headers
+            ) from None
+        if path_bytes > 4096:
+            raise HTTPException(413, "path too large", headers=response_headers)
+        if content_bytes > 65536:
+            raise HTTPException(413, "content too large", headers=response_headers)
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        try:
+            service = VaultMutationService.from_settings(
+                session,
+                settings,
+                activity_service=activity_service,
+                live_traversal=live_traversal,
+            )
+            boundary = VaultBoundary(settings)
+            try:
+                identity = boundary.validate_identity(body.path)
+            except (VaultPathError, ValueError):
+                raise HTTPException(
+                    422, "invalid write path", headers=response_headers
+                ) from None
+            canonical_path = identity.as_posix()
+            paths = _mutation_affected_paths(service, canonical_path)
+            from harbor_ledger_memory.config import FolderAccess
+
+            policy = AccessPolicy(
+                tuple(
+                    FolderRule(
+                        path=r.path,
+                        access=(
+                            FolderAccess.PROPOSE_WRITE
+                            if r.access == FolderAccess.AUTO_WRITE
+                            else r.access
+                        ),
+                    )
+                    for r in auth.policy.rules
+                ),
+                auth.policy.admin,
+            )
+            _require_mutation_paths_writable(
+                AuthContext(auth.record, policy, auth.ui_session), paths
+            )
+            proposal = service.request(
+                canonical_path,
+                body.content,
+                operation=body.operation,
+                policy=policy,
+                creator_token_id=auth.record.id if auth.record else None,
+            )
+            return JSONResponse(
+                {
+                    "id": proposal.id,
+                    "path": proposal.path,
+                    "operation": proposal.operation,
+                    "status": proposal.status,
+                    "requested_at": proposal.requested_at,
+                },
+                headers=response_headers,
+            )
+        except VaultWriteDenied as exc:
+            raise HTTPException(403, str(exc), headers=response_headers) from exc
+        finally:
+            session.close()
+            engine.dispose()
+
+    @application.get(
+        "/api/v1/agent/writes/pending",
+        response_model=AgentPendingResponse,
+        responses=AGENT_WRITE_ERRORS,
+    )
+    def agent_pending(  # pyright: ignore[reportUnusedFunction]
+        response: Response,
+        limit: int = Query(20, ge=1, le=100),
+        before_id: int | None = Query(None, ge=1),
+        auth: AuthContext = Depends(authenticated),
+    ) -> dict[str, object]:
+        response.headers["Cache-Control"] = "no-store"
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        try:
+            query = session.query(
+                MemoryWriteProposal.id,
+                MemoryWriteProposal.path,
+                MemoryWriteProposal.operation,
+                MemoryWriteProposal.status,
+                MemoryWriteProposal.requested_at,
+            ).filter(
+                MemoryWriteProposal.status == STATUS_PENDING,
+                auth.policy.readable_clause(MemoryWriteProposal.path),
+            )
+            if before_id is not None:
+                query = query.filter(MemoryWriteProposal.id < before_id)
+            rows = query.order_by(MemoryWriteProposal.id.desc()).limit(limit + 1).all()
+            has_more = len(rows) > limit
+            visible = rows[:limit]
+            return {
+                "proposals": [
+                    {
+                        "id": row.id,
+                        "path": row.path,
+                        "operation": row.operation,
+                        "status": row.status,
+                        "requested_at": row.requested_at,
+                    }
+                    for row in visible
+                ],
+                "next_before_id": visible[-1].id if has_more and visible else None,
+            }
+        finally:
+            session.close()
+            engine.dispose()
+
+    def resolve_agent_proposal(id: int, auth: AuthContext, approve: bool) -> Response:
+        headers = {"Cache-Control": "no-store"}
+        if auth.record is None or not auth.record.approve_own_proposals:
+            raise HTTPException(403, "proposal approval unavailable", headers=headers)
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        try:
+            existing = session.get(MemoryWriteProposal, id)
+            if (
+                existing is None
+                or existing.creator_token_id != auth.record.id
+                or existing.status != STATUS_PENDING
+            ):
+                raise HTTPException(404, "proposal unavailable", headers=headers)
+            policy = auth.policy
+            paths = _mutation_affected_paths(
+                VaultMutationService.from_settings(
+                    session,
+                    settings,
+                    activity_service=activity_service,
+                    live_traversal=live_traversal,
+                ),
+                existing.path,
+                existing.affected_paths,
+            )
+            if any(
+                not policy.can_read(path) or not policy.can_propose(path)
+                for path in paths
+            ):
+                raise HTTPException(403, "proposal unavailable", headers=headers)
+            service = VaultMutationService.from_settings(
+                session,
+                settings,
+                activity_service=activity_service,
+                live_traversal=live_traversal,
+            )
+            proposal = (
+                service.approve(id, policy=policy) if approve else service.reject(id)
+            )
+            return JSONResponse(
+                {
+                    "id": proposal.id,
+                    "path": proposal.path,
+                    "operation": proposal.operation,
+                    "status": proposal.status,
+                    "requested_at": proposal.requested_at,
+                },
+                headers=headers,
+            )
+        except (VaultWriteDenied, ValueError):
+            raise HTTPException(409, "proposal unavailable", headers=headers) from None
+        finally:
+            session.close()
+            engine.dispose()
+
+    @application.post(
+        "/api/v1/agent/writes/{id}/approve",
+        response_model=AgentWriteSummary,
+        responses=AGENT_WRITE_ERRORS,
+    )
+    def approve_agent_write(  # pyright: ignore[reportUnusedFunction]
+        id: int, auth: AuthContext = Depends(authenticated)
+    ) -> Response:
+        return resolve_agent_proposal(id, auth, True)
+
+    @application.post(
+        "/api/v1/agent/writes/{id}/reject",
+        response_model=AgentWriteSummary,
+        responses=AGENT_WRITE_ERRORS,
+    )
+    def reject_agent_write(  # pyright: ignore[reportUnusedFunction]
+        id: int, auth: AuthContext = Depends(authenticated)
+    ) -> Response:
+        return resolve_agent_proposal(id, auth, False)
 
     @application.get("/api/v1/writes", response_model=WritesListResponse)
     def list_writes(  # pyright: ignore[reportUnusedFunction]
