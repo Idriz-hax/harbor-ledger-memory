@@ -7,6 +7,7 @@ import hashlib
 import os
 import resource
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 import pytest
 
@@ -17,6 +18,7 @@ from harbor_ledger_memory.vault.boundary import (
     DirectoryWriteResult,
     FileVersion,
     VaultBoundary,
+    VaultFileTooLarge,
     VaultPathError,
     WriteResult,
 )
@@ -59,6 +61,53 @@ def _file_version(abs_path: Path) -> FileVersion:
         ctime_ns=st.st_ctime_ns,
         sha256=hashlib.sha256(data).hexdigest(),
     )
+
+
+def test_read_file_checks_size_before_opening_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    boundary, vault = _build_boundary(tmp_path)
+    _write_raw(vault, "AI/large.md", b"12345")
+
+    def fail_read(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("read attempted")
+
+    monkeypatch.setattr(os, "fdopen", fail_read)
+    with pytest.raises(VaultFileTooLarge):
+        boundary.read_file(PurePosixPath("AI/large.md"), max_bytes=4)
+
+
+def test_read_file_rejects_growth_during_bounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    boundary, vault = _build_boundary(tmp_path)
+    target = _write_raw(vault, "AI/growing.md", b"1234")
+    original_fdopen = os.fdopen
+
+    class GrowingStream:
+        def __init__(self, stream: Any) -> None:
+            self.stream = stream
+
+        def __enter__(self) -> GrowingStream:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            self.stream.close()
+
+        def read(self, size: int = -1) -> bytes:
+            with target.open("ab") as writer:
+                writer.write(b"5678")
+            return self.stream.read(size)
+
+        def fileno(self) -> int:
+            return self.stream.fileno()
+
+    def growing_fdopen(*args: Any, **kwargs: Any) -> GrowingStream:
+        return GrowingStream(original_fdopen(*args, **kwargs))
+
+    monkeypatch.setattr(os, "fdopen", growing_fdopen)
+    with pytest.raises((VaultFileTooLarge, VaultPathError), match="exceeds|changed"):
+        boundary.read_file(PurePosixPath("AI/growing.md"), max_bytes=8)
 
 
 # ---------------------------------------------------------------------------

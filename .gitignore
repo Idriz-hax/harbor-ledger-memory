@@ -8,6 +8,7 @@
 venv/
 env/
 ENV/
+node_modules/
 build/
 dist/
 *.egg-info/
@@ -32,6 +33,7 @@ htmlcov/
 
 # Generated application data.
 data/
+/benchmarks/
 
 # Local task tooling state.
 .superpowers/
