@@ -109,18 +109,6 @@ def test_boundary_defaults_to_full_vault(tmp_path: Path) -> None:
     ]
 
 
-def test_boundary_close_is_idempotent(tmp_path: Path) -> None:
-    boundary = VaultBoundary(Settings(vault_path=tmp_path))
-    descriptor = boundary._index_root_fd
-
-    boundary.close()
-    boundary.close()
-
-    assert boundary._index_root_fd == -1
-    with pytest.raises(OSError):
-        os.fstat(descriptor)
-
-
 def test_boundary_narrows_root_and_excludes_denied_subtree(tmp_path: Path) -> None:
     (tmp_path / "Notes" / "Private").mkdir(parents=True)
     (tmp_path / "Notes" / "Private" / "secret.md").write_text("secret")

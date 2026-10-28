@@ -1,8 +1,0 @@
-{
-  "vault_path": "/path/to/local/vault",
-  "index_root": ".",
-  "folder_rules": {
-    ".": "read",
-    "<denied-folder>": "deny"
-  }
-}

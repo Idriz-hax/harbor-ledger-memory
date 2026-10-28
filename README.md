@@ -462,22 +462,6 @@ uv run ruff format --check .
 uv run pyright backend/src
 ```
 
-The offline retrieval benchmark uses only the synthetic corpus under
-`benchmarks/retrieval/`; it never loads an embedding model or contacts a
-network. Its public `dev` and `heldout` regression splits are documented in
-`benchmarks/retrieval/README.md`; heldout is not a private canary. Run the
-committed lexical baseline check with:
-
-```text
-uv run python -m benchmarks.retrieval.runner --compare-baseline
-```
-
-Update `baseline.json` only when an intentional retrieval change is reviewed:
-
-```text
-uv run python -m benchmarks.retrieval.runner --write-baseline
-```
-
 The parser uses safe YAML loading for a leading frontmatter block and reports
 malformed frontmatter, duplicate keys, and malformed wikilink fragments as
 typed diagnostics. It ignores headings and wikilinks inside top-level,

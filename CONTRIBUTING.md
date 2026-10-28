@@ -25,7 +25,6 @@ uv run alembic -c backend/alembic.ini upgrade head
 uv run ruff check backend tests
 uv run ruff format --check .
 uv run pyright backend/src
-uv run python -m benchmarks.retrieval.runner --compare-baseline
 uv run hlm doctor --json
 ```
 

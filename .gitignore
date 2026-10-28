@@ -32,6 +32,7 @@ htmlcov/
 
 # Generated application data.
 data/
+/benchmarks/
 
 # Local task tooling state.
 .superpowers/
