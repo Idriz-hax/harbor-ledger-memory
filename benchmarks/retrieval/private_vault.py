@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -15,6 +16,7 @@ from typing import Any
 _SCOPE_FIELDS = {"vault_path", "index_root", "folder_rules"}
 _CASE_FIELDS = {"id", "query", "active_project", "expected_paths", "expect_empty"}
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -294,6 +296,63 @@ def _atomic_json(path: Path, value: Any) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _load_baseline(path: Path, case_ids: set[str]) -> dict[str, Any]:
+    try:
+        value = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("invalid baseline JSON") from exc
+    if not isinstance(value, dict) or set(value) != {
+        "scope_sha256",
+        "cases_sha256",
+        "corpus_sha256",
+        "metrics",
+        "case_results",
+    }:
+        raise ValueError("invalid baseline structure")
+    if any(
+        not isinstance(value[key], str) or not _SHA256.fullmatch(value[key])
+        for key in ("scope_sha256", "cases_sha256", "corpus_sha256")
+    ):
+        raise ValueError("invalid baseline hash")
+    metrics = value["metrics"]
+    expected_metrics = {"hit@5", "mrr", "negative_accuracy"}
+    if not isinstance(metrics, dict) or set(metrics) != expected_metrics:
+        raise ValueError("invalid baseline metrics")
+    for metric, number in metrics.items():
+        if number is None and metric != "negative_accuracy":
+            raise ValueError("invalid baseline metric value")
+        if number is not None and (
+            isinstance(number, bool)
+            or not isinstance(number, (int, float))
+            or not math.isfinite(number)
+            or not 0 <= number <= 1
+        ):
+            raise ValueError("invalid baseline metric value")
+    results = value["case_results"]
+    if not isinstance(results, dict) or set(results) != case_ids:
+        raise ValueError("invalid baseline case results")
+    for result in results.values():
+        if not isinstance(result, dict) or set(result) != {
+            "rank",
+            "selected_paths",
+            "relevant_hit",
+        }:
+            raise ValueError("invalid baseline case result")
+        if result["rank"] is not None and (
+            isinstance(result["rank"], bool) or not isinstance(result["rank"], int)
+        ):
+            raise ValueError("invalid baseline rank")
+        if not isinstance(result["selected_paths"], list) or any(
+            not isinstance(item, str) for item in result["selected_paths"]
+        ):
+            raise ValueError("invalid baseline selected paths")
+        if not isinstance(result["relevant_hit"], bool):
+            raise ValueError("invalid baseline hit label")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     local = Path(__file__).parent / "local"
@@ -382,15 +441,18 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("baseline exists; use --confirm-replace to overwrite")
         if args.compare_baseline and not baseline_path.is_file():
             raise ValueError("saved baseline is required")
+        baseline = (
+            _load_baseline(baseline_path, {case["id"] for case in cases})
+            if args.compare_baseline
+            else None
+        )
         result = run_private_benchmark(scope, cases)
         result["metrics"] = _metrics(result, cases)
         if args.write_baseline:
             _atomic_json(baseline_path, result)
             print(json.dumps({"written": True, "metrics": result["metrics"]}))
             return 0
-        baseline = json.loads(
-            baseline_path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
-        )
+        assert baseline is not None
         if (
             baseline.get("scope_sha256") != result["scope_sha256"]
             or baseline.get("cases_sha256") != result["cases_sha256"]
