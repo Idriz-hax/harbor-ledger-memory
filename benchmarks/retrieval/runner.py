@@ -30,7 +30,7 @@ BASELINE_PATH = ROOT / "benchmarks" / "retrieval" / "baseline.json"
 REQUIRED_COUNTS = {
     "direct_lexical": 12,
     "paraphrase": 12,
-    "active_project": 8,
+    "active_project": 9,
     "graph_supported": 8,
     "negative_ambiguous": 5,
     "excerpt_evidence": 5,

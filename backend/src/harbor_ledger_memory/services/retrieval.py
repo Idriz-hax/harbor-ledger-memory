@@ -151,10 +151,21 @@ class HybridRetrievalService:
                 tag_match_paths.add(path)
 
         active_project_paths: set[str] = set()
+        recent_paths_for_project = recent_paths or {}
+        active_note = None
         if active_project:
             active_note = self._session.scalar(
                 select(Note.path).where(Note.path == active_project)
             )
+            project_directory = (
+                active_project.rpartition("/")[0] if active_note else active_project
+            )
+            recent_paths_for_project = {
+                path: boost
+                for path, boost in recent_paths_for_project.items()
+                if project_directory and path.startswith(project_directory.rstrip("/") + "/")
+            }
+        if active_project:
             if active_note is not None and (
                 self._path_filter is None or self._path_filter(active_note)
             ):
@@ -167,7 +178,7 @@ class HybridRetrievalService:
             | active_project_paths
             | {
                 path
-                for path in (recent_paths or ())
+                for path in recent_paths_for_project
                 if self._path_filter is None or self._path_filter(path)
             }
         )
@@ -253,8 +264,8 @@ class HybridRetrievalService:
                 reasons.append("Active project match")
 
             # Short-term cache boost
-            if recent_paths and path in recent_paths:
-                boost = recent_paths[path]
+            if path in recent_paths_for_project:
+                boost = recent_paths_for_project[path]
                 score += boost
                 reasons.append(f"Short-term cache (+{boost:.2f})")
 
