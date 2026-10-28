@@ -74,7 +74,7 @@ def test_compare_reports_metrics_and_redacts_paths_by_default(
         "case_results": {
             "case1": {
                 "rank": None,
-                "selected_paths": ["private/path.md"],
+                "selected_paths": [],
                 "relevant_hit": False,
             }
         },
@@ -85,7 +85,7 @@ def test_compare_reports_metrics_and_redacts_paths_by_default(
         "case_results": {
             "case1": {
                 "rank": 1,
-                "selected_paths": ["private/path.md"],
+                "selected_paths": ["a.md"],
                 "relevant_hit": True,
             }
         },
@@ -112,7 +112,7 @@ def test_compare_reports_metrics_and_redacts_paths_by_default(
         == 0
     )
     output = capsys.readouterr().out
-    assert "private/path.md" not in output and "private query sentinel" not in output
+    assert "a.md" not in output and "private query sentinel" not in output
     report = json.loads(output)
     assert report["metric_deltas"]["mrr"] == 1.0
     assert report["case_deltas"]["case1"]["after_rank"] == 1
@@ -309,7 +309,7 @@ def test_show_details_exposes_paths_but_not_note_text(
         ).hexdigest(),
     }
     metrics = {"hit@5": 1.0, "mrr": 1.0, "negative_accuracy": None}
-    entry = {"rank": 1, "selected_paths": ["fixture/target.md"], "relevant_hit": True}
+    entry = {"rank": 1, "selected_paths": ["a.md"], "relevant_hit": True}
     baseline_path.write_text(
         json.dumps(
             {
@@ -344,7 +344,7 @@ def test_show_details_exposes_paths_but_not_note_text(
         == 0
     )
     output = capsys.readouterr().out
-    assert "fixture/target.md" in output
+    assert "a.md" in output
     assert "NOTE BODY" not in output and "private query sentinel" not in output
 
 
@@ -425,6 +425,32 @@ def test_negative_only_baseline_allows_null_positive_metrics(
         "mrr": None,
         "negative_accuracy": 0.0,
     }
+
+
+@pytest.mark.parametrize("invalid", ["rank", "hit", "metrics"])
+def test_baseline_rejects_inconsistent_case_and_metrics(
+    tmp_path: Path, invalid: str
+) -> None:
+    cases = [{"id": "case1", "expected_paths": ["a.md"]}]
+    result = {
+        "scope_sha256": "0" * 64,
+        "cases_sha256": "0" * 64,
+        "corpus_sha256": "0" * 64,
+        "metrics": {"hit@5": 1.0, "mrr": 1.0, "negative_accuracy": None},
+        "case_results": {
+            "case1": {"rank": 1, "selected_paths": ["a.md"], "relevant_hit": True}
+        },
+    }
+    if invalid == "rank":
+        result["case_results"]["case1"]["rank"] = 999
+    elif invalid == "hit":
+        result["case_results"]["case1"]["relevant_hit"] = False
+    else:
+        result["metrics"]["hit@5"] = 0.0
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(result))
+    with pytest.raises(ValueError):
+        private_vault._load_baseline(path, cases)
 
 
 def test_private_runner_rejects_unreadable_labels_before_database(

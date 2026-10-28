@@ -340,7 +340,8 @@ def _load_baseline(path: Path, cases: list[dict[str, Any]]) -> dict[str, Any]:
     results = value["case_results"]
     if not isinstance(results, dict) or set(results) != {case["id"] for case in cases}:
         raise ValueError("invalid baseline case results")
-    for result in results.values():
+    for case in cases:
+        result = results[case["id"]]
         if not isinstance(result, dict) or set(result) != {
             "rank",
             "selected_paths",
@@ -355,8 +356,37 @@ def _load_baseline(path: Path, cases: list[dict[str, Any]]) -> dict[str, Any]:
             not isinstance(item, str) for item in result["selected_paths"]
         ):
             raise ValueError("invalid baseline selected paths")
+        if len(result["selected_paths"]) > 5:
+            raise ValueError("invalid baseline selected paths")
+        for item in result["selected_paths"]:
+            try:
+                if _relative_path(item, "selected path") != item:
+                    raise ValueError("invalid baseline selected path")
+            except ValueError as exc:
+                raise ValueError("invalid baseline selected path") from exc
+        rank = result["rank"]
+        selected = result["selected_paths"]
+        if rank is not None and not 1 <= rank <= len(selected):
+            raise ValueError("invalid baseline rank")
+        expected = set(case["expected_paths"])
+        actual_rank = next(
+            (index for index, item in enumerate(selected, 1) if item in expected), None
+        )
+        if rank != actual_rank or result["relevant_hit"] != (rank is not None):
+            raise ValueError("inconsistent baseline case result")
         if not isinstance(result["relevant_hit"], bool):
             raise ValueError("invalid baseline hit label")
+    calculated = _metrics({"case_results": results}, cases)
+    if any(
+        not math.isclose(metrics[key], calculated[key], rel_tol=1e-12, abs_tol=1e-12)
+        for key in metrics
+        if metrics[key] is not None and calculated[key] is not None
+    ) or any(
+        metrics[key] != calculated[key]
+        for key in metrics
+        if (metrics[key] is None) != (calculated[key] is None)
+    ):
+        raise ValueError("baseline metrics do not match case results")
     return value
 
 
