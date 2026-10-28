@@ -296,7 +296,7 @@ def _atomic_json(path: Path, value: Any) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def _load_baseline(path: Path, case_ids: set[str]) -> dict[str, Any]:
+def _load_baseline(path: Path, cases: list[dict[str, Any]]) -> dict[str, Any]:
     try:
         value = json.loads(
             path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
@@ -320,8 +320,15 @@ def _load_baseline(path: Path, case_ids: set[str]) -> dict[str, Any]:
     expected_metrics = {"hit@5", "mrr", "negative_accuracy"}
     if not isinstance(metrics, dict) or set(metrics) != expected_metrics:
         raise ValueError("invalid baseline metrics")
+    has_positive = any(not case.get("expect_empty", False) for case in cases)
+    has_negative = any(case.get("expect_empty", False) for case in cases)
+    nullable = {
+        "hit@5": not has_positive,
+        "mrr": not has_positive,
+        "negative_accuracy": not has_negative,
+    }
     for metric, number in metrics.items():
-        if number is None and metric != "negative_accuracy":
+        if number is None and not nullable[metric]:
             raise ValueError("invalid baseline metric value")
         if number is not None and (
             isinstance(number, bool)
@@ -331,7 +338,7 @@ def _load_baseline(path: Path, case_ids: set[str]) -> dict[str, Any]:
         ):
             raise ValueError("invalid baseline metric value")
     results = value["case_results"]
-    if not isinstance(results, dict) or set(results) != case_ids:
+    if not isinstance(results, dict) or set(results) != {case["id"] for case in cases}:
         raise ValueError("invalid baseline case results")
     for result in results.values():
         if not isinstance(result, dict) or set(result) != {
@@ -442,9 +449,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.compare_baseline and not baseline_path.is_file():
             raise ValueError("saved baseline is required")
         baseline = (
-            _load_baseline(baseline_path, {case["id"] for case in cases})
-            if args.compare_baseline
-            else None
+            _load_baseline(baseline_path, cases) if args.compare_baseline else None
         )
         result = run_private_benchmark(scope, cases)
         result["metrics"] = _metrics(result, cases)

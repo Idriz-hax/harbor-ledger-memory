@@ -375,6 +375,58 @@ def test_failed_baseline_run_preserves_existing_file(
     assert "fixture failure" in capsys.readouterr().err
 
 
+def test_negative_only_baseline_allows_null_positive_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    scope, cases_path, baseline_path = _cli_files(tmp_path, monkeypatch)
+    cases_path.write_text(
+        json.dumps(
+            {
+                "id": "case1",
+                "query": "unsupported",
+                "expected_paths": [],
+                "expect_empty": True,
+            }
+        )
+        + "\n"
+    )
+    scope_value, cases = load_scope(scope), load_cases(cases_path)
+    hashes = {
+        "scope_sha256": hashlib.sha256(
+            json.dumps(scope_value, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "cases_sha256": hashlib.sha256(
+            json.dumps(cases, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "corpus_sha256": "a" * 64,
+    }
+    metrics = {"hit@5": None, "mrr": None, "negative_accuracy": 1.0}
+    entry = {"rank": None, "selected_paths": [], "relevant_hit": False}
+    baseline_path.write_text(
+        json.dumps({**hashes, "metrics": metrics, "case_results": {"case1": entry}})
+    )
+    monkeypatch.setattr(
+        private_vault,
+        "run_private_benchmark",
+        lambda *_: {**hashes, "metrics": metrics, "case_results": {"case1": entry}},
+    )
+    assert (
+        private_vault.main(
+            ["--scope", str(scope), "--cases", str(cases_path), "--compare-baseline"]
+        )
+        == 0
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["baseline_metrics"] == metrics
+    assert report["metric_deltas"] == {
+        "hit@5": None,
+        "mrr": None,
+        "negative_accuracy": 0.0,
+    }
+
+
 def test_private_runner_rejects_unreadable_labels_before_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
