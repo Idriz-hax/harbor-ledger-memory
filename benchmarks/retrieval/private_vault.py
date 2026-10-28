@@ -12,6 +12,15 @@ _CASE_FIELDS = {"id", "query", "active_project", "expected_paths", "expect_empty
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
 
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
 def _relative_path(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value or "\\" in value:
         raise ValueError(f"{label} must be a vault-relative POSIX path")
@@ -23,8 +32,10 @@ def _relative_path(value: Any, label: str) -> str:
 
 def load_scope(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        value = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError("invalid scope JSON") from exc
     if not isinstance(value, dict) or set(value) != _SCOPE_FIELDS:
         raise ValueError(
@@ -52,8 +63,8 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
     ids: set[str] = set()
     for number, line in enumerate(lines, 1):
         try:
-            case = json.loads(line)
-        except json.JSONDecodeError as exc:
+            case = json.loads(line, object_pairs_hook=_unique_object)
+        except (json.JSONDecodeError, ValueError) as exc:
             raise ValueError(f"malformed JSON on line {number}") from exc
         if not isinstance(case, dict) or set(case) - _CASE_FIELDS:
             raise ValueError(f"invalid case fields on line {number}")

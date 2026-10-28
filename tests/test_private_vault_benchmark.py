@@ -45,6 +45,16 @@ def test_scope_rejects_invalid_rules(tmp_path: Path, rules: dict) -> None:
         load_scope(path)
 
 
+def test_scope_rejects_duplicate_json_keys(tmp_path: Path) -> None:
+    path = tmp_path / "scope.json"
+    path.write_text(
+        '{"vault_path":"/one","vault_path":"/two",'
+        '"index_root":"/index","folder_rules":{"folder":"read"}}'
+    )
+    with pytest.raises(ValueError):
+        load_scope(path)
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -67,6 +77,16 @@ def test_cases_validate_duplicates_and_malformed_json(tmp_path: Path) -> None:
     path = tmp_path / "cases.jsonl"
     case = {"id": "a", "query": "q", "expected_paths": ["AI/x.md"]}
     path.write_text(json.dumps(case) + "\n" + json.dumps(case))
+    with pytest.raises(ValueError):
+        load_cases(path)
+
+
+def test_cases_reject_duplicate_json_keys(tmp_path: Path) -> None:
+    path = tmp_path / "cases.jsonl"
+    path.write_text(
+        '{"id":"a","query":"first","query":"second",'
+        '"expected_paths":["folder/note.md"]}\n'
+    )
     with pytest.raises(ValueError):
         load_cases(path)
     path.write_text("{")
