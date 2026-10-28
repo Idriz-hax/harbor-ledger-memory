@@ -2,7 +2,12 @@ import json
 from pathlib import Path
 
 import pytest
-from benchmarks.retrieval.private_vault import _relative_path, load_cases, load_scope
+from benchmarks.retrieval.private_vault import (
+    _relative_path,
+    load_cases,
+    load_scope,
+    run_private_benchmark,
+)
 
 
 def test_scope_validates_explicit_rules_without_touching_paths(tmp_path: Path) -> None:
@@ -187,3 +192,66 @@ def test_private_local_ignore_allows_only_placeholder_and_gitignore(
         "!.gitignore",
         "!scope.example.json",
     ]
+
+
+def test_private_runner_indexes_only_readable_snapshots_and_emits_safe_results(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    (vault / "AI" / "denied").mkdir(parents=True)
+    (vault / "AI" / "target.md").write_text("alpha beacon helpful target")
+    sentinel = "UNIQUE_DENIED_NOTE_SENTINEL"
+    (vault / "AI" / "denied" / "secret.md").write_text(sentinel)
+    scope = {
+        "vault_path": str(vault),
+        "index_root": "AI",
+        "folder_rules": {"AI": "read", "AI/denied": "deny"},
+    }
+    cases = [
+        {"id": "hit", "query": "alpha beacon", "expected_paths": ["AI/target.md"]},
+        {"id": "miss", "query": "unmatched quasar", "expected_paths": ["AI/target.md"]},
+    ]
+    result = run_private_benchmark(scope, cases)
+    assert result["readable_count"] == 1
+    assert result["case_results"]["hit"]["selected_paths"][0] == "AI/target.md"
+    assert result["case_results"]["hit"]["relevant_hit"]
+    assert not result["case_results"]["miss"]["relevant_hit"]
+    serialized = json.dumps(result)
+    assert sentinel not in serialized
+    assert "excerpt" not in serialized and "summary" not in serialized
+    assert all(
+        "secret.md" not in path
+        for case in result["case_results"].values()
+        for path in case["selected_paths"]
+    )
+
+
+def test_private_runner_hashes_content_not_scope_or_cases(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    (vault / "AI").mkdir(parents=True)
+    note = vault / "AI" / "one.md"
+    note.write_text("original text")
+    scope = {
+        "vault_path": str(vault),
+        "index_root": "AI",
+        "folder_rules": {"AI": "read"},
+    }
+    cases = [{"id": "one", "query": "original", "expected_paths": ["AI/one.md"]}]
+    first = run_private_benchmark(scope, cases)
+    note.write_text("changed text")
+    second = run_private_benchmark(scope, cases)
+    assert first["corpus_sha256"] != second["corpus_sha256"]
+    assert first["scope_sha256"] == second["scope_sha256"]
+    assert first["cases_sha256"] == second["cases_sha256"]
+
+
+def test_private_runner_rejects_missing_index_root_before_scan(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    scope = {
+        "vault_path": str(vault),
+        "index_root": "missing",
+        "folder_rules": {"missing": "read"},
+    }
+    with pytest.raises(OSError):
+        run_private_benchmark(scope, [])
