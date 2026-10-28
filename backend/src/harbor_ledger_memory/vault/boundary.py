@@ -148,11 +148,14 @@ class VaultBoundary:
 
     def __del__(self) -> None:
         """Close the held index-root FD if still open."""
-        if hasattr(self, "_index_root_fd") and self._index_root_fd >= 0:
-            try:
-                os.close(self._index_root_fd)
-            except OSError:
-                pass
+        self.close()
+
+    def close(self) -> None:
+        """Close the held index-root descriptor; safe to call repeatedly."""
+        descriptor = getattr(self, "_index_root_fd", -1)
+        if descriptor >= 0:
+            self._index_root_fd = -1
+            os.close(descriptor)
 
     # ------------------------------------------------------------------
     # Properties (unchanged)

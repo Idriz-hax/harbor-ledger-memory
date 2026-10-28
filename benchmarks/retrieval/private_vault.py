@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -123,7 +122,7 @@ def run_private_benchmark(
     scope: dict[str, Any], cases: list[dict[str, Any]]
 ) -> dict[str, Any]:
     """Run fixture/local cases against an isolated, readable-only vault copy."""
-    from harbor_ledger_memory.catalog.database import create_database
+    from harbor_ledger_memory.catalog.database import CatalogSession, create_database
     from harbor_ledger_memory.config import (
         FolderAccess,
         FolderRule,
@@ -152,84 +151,85 @@ def run_private_benchmark(
         memory=MemorySettings(embedding_model=None),
     )
     source_boundary = VaultBoundary(settings)
-    if not source_boundary.index_root.is_dir():
-        raise ValueError("index_root must be an existing directory")
-
-    digest = hashlib.sha256()
-    snapshots = tuple(source_boundary.iter_admitted_snapshots())
-    with tempfile.TemporaryDirectory(prefix="hlm-private-benchmark-") as temp:
-        vault = Path(temp) / "vault"
-        vault.mkdir()
-        for snapshot in sorted(snapshots, key=lambda item: item.path.as_posix()):
-            relative = snapshot.path.as_posix()
-            digest.update(relative.encode("utf-8") + b"\0" + snapshot.content + b"\0")
-            destination = vault.joinpath(*snapshot.path.parts)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(snapshot.content)
-        corpus_hash = digest.hexdigest()
-        database_url = f"sqlite:///{Path(temp) / 'catalog.db'}"
-        engine = create_database(database_url)
-        session = None
-        boundary = None
-        try:
-            temp_settings = Settings(
-                vault_path=vault,
-                index_root=PurePosixPath(scope["index_root"]),
-                folder_rules=rules,
-                memory=MemorySettings(embedding_model=None),
-            )
-            boundary = VaultBoundary(temp_settings)
-            ScanService(boundary, engine, embedding_model=None).full_scan()
-            service = QueryService(
-                engine,
-                memory_settings=MemorySettings(embedding_model=None),
-                vault_path=vault,
-                path_filter=boundary.is_admitted,
-            )
-            session = service._session
-            results = {}
-            for case in cases:
-                result = service.query(
-                    QueryRequest(
-                        query=case["query"],
-                        active_project=case.get("active_project"),
-                        include_excluded=False,
+    try:
+        if not source_boundary.index_root.is_dir():
+            raise ValueError("index_root must be an existing directory")
+        digest = hashlib.sha256()
+        snapshots = tuple(source_boundary.iter_admitted_snapshots())
+        with tempfile.TemporaryDirectory(prefix="hlm-private-benchmark-") as temp:
+            vault = Path(temp) / "vault"
+            vault.mkdir()
+            for snapshot in sorted(snapshots, key=lambda item: item.path.as_posix()):
+                relative = snapshot.path.as_posix()
+                digest.update(
+                    relative.encode("utf-8") + b"\0" + snapshot.content + b"\0"
+                )
+                destination = vault.joinpath(*snapshot.path.parts)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(snapshot.content)
+            corpus_hash = digest.hexdigest()
+            database_url = f"sqlite:///{Path(temp) / 'catalog.db'}"
+            engine = create_database(database_url)
+            session = None
+            boundary = None
+            try:
+                session = CatalogSession(bind=engine)
+                temp_settings = Settings(
+                    vault_path=vault,
+                    index_root=PurePosixPath(scope["index_root"]),
+                    folder_rules=rules,
+                    memory=MemorySettings(embedding_model=None),
+                )
+                boundary = VaultBoundary(temp_settings)
+                ScanService(boundary, session, embedding_model=None).full_scan()
+                service = QueryService(
+                    session,
+                    memory_settings=MemorySettings(embedding_model=None),
+                    vault_path=vault,
+                    path_filter=boundary.is_admitted,
+                )
+                results = {}
+                for case in cases:
+                    result = service.query(
+                        QueryRequest(
+                            query=case["query"],
+                            active_project=case.get("active_project"),
+                            include_excluded=False,
+                        )
                     )
-                )
-                selected = [item.path for item in result.selected_memories[:5]]
-                expected = set(case["expected_paths"])
-                rank = next(
-                    (
-                        index
-                        for index, path in enumerate(selected, 1)
-                        if path in expected
-                    ),
-                    None,
-                )
-                results[case["id"]] = {
-                    "selected_paths": selected,
-                    "rank": rank,
-                    "relevant_hit": rank is not None,
+                    selected = [item.path for item in result.selected_memories[:5]]
+                    expected = set(case["expected_paths"])
+                    rank = next(
+                        (
+                            index
+                            for index, path in enumerate(selected, 1)
+                            if path in expected
+                        ),
+                        None,
+                    )
+                    results[case["id"]] = {
+                        "selected_paths": selected,
+                        "rank": rank,
+                        "relevant_hit": rank is not None,
+                    }
+                scope_hash = hashlib.sha256(
+                    json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                cases_hash = hashlib.sha256(
+                    json.dumps(cases, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                return {
+                    "corpus_sha256": corpus_hash,
+                    "scope_sha256": scope_hash,
+                    "cases_sha256": cases_hash,
+                    "readable_count": len(snapshots),
+                    "case_results": results,
                 }
-            scope_hash = hashlib.sha256(
-                json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
-            cases_hash = hashlib.sha256(
-                json.dumps(cases, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
-            return {
-                "corpus_sha256": corpus_hash,
-                "scope_sha256": scope_hash,
-                "cases_sha256": cases_hash,
-                "readable_count": len(snapshots),
-                "case_results": results,
-            }
-        finally:
-            if session is not None:
-                session.close()
-            engine.dispose()
-            if boundary is not None:
-                os.close(boundary._index_root_fd)
-                boundary._index_root_fd = -1
-            os.close(source_boundary._index_root_fd)
-            source_boundary._index_root_fd = -1
+            finally:
+                if session is not None:
+                    session.close()
+                engine.dispose()
+                if boundary is not None:
+                    boundary.close()
+    finally:
+        source_boundary.close()
