@@ -18,7 +18,7 @@ def _relative_path(value: Any, label: str) -> str:
     path = PurePosixPath(value)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
         raise ValueError(f"{label} must be a vault-relative POSIX path")
-    return value
+    return path.as_posix()
 
 
 def load_scope(path: Path) -> dict[str, Any]:
@@ -66,8 +66,9 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
             raise ValueError(f"invalid query on line {number}")
         if not isinstance(expected, list):
             raise ValueError(f"expected_paths must be a list on line {number}")
-        for item in expected:
-            _relative_path(item, "expected path")
+        case["expected_paths"] = [
+            _relative_path(item, "expected path") for item in expected
+        ]
         empty = case.get("expect_empty", False)
         if (
             not isinstance(empty, bool)
@@ -76,7 +77,9 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
         ):
             raise ValueError(f"inconsistent negative label on line {number}")
         if "active_project" in case and case["active_project"] is not None:
-            _relative_path(case["active_project"], "active_project")
+            case["active_project"] = _relative_path(
+                case["active_project"], "active_project"
+            )
         ids.add(ident)
         cases.append(case)
     return cases

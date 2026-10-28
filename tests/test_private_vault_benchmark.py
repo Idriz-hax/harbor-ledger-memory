@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from benchmarks.retrieval.private_vault import load_cases, load_scope
+from benchmarks.retrieval.private_vault import _relative_path, load_cases, load_scope
 
 
 def test_scope_validates_explicit_rules_without_touching_paths(tmp_path: Path) -> None:
@@ -14,6 +14,23 @@ def test_scope_validates_explicit_rules_without_touching_paths(tmp_path: Path) -
     path = tmp_path / "scope.json"
     path.write_text(json.dumps(scope))
     assert load_scope(path) == scope
+
+
+def test_relative_paths_are_returned_canonically() -> None:
+    assert _relative_path("folder/note.md", "expected path") == "folder/note.md"
+    with pytest.raises(ValueError):
+        _relative_path("../note.md", "expected path")
+
+
+def test_example_scope_uses_generic_placeholders() -> None:
+    example = (
+        Path(__file__).parents[1] / "benchmarks/retrieval/local/scope.example.json"
+    )
+    scope = json.loads(example.read_text())
+    assert scope["folder_rules"] == {
+        "<readable-folder>": "read",
+        "<denied-folder>": "deny",
+    }
 
 
 @pytest.mark.parametrize("rules", [{}, {"AI": "auto-write"}, {"../private": "read"}])
