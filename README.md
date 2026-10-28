@@ -496,9 +496,6 @@ and defensive watcher are thin adapters over those services.
 
 ## Project links
 
-- [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
-- [Code of Conduct](CODE_OF_CONDUCT.md)
-- [Security policy](SECURITY.md)
 - [Report a bug or request a feature](https://github.com/Idriz-hax/harbor-ledger-memory/issues)
 - [Released versions](https://github.com/Idriz-hax/harbor-ledger-memory/releases)

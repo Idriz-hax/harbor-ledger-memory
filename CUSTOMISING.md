@@ -1,4 +1,4 @@
-# Customizing Harbor Ledger Memory
+# Customising Harbor Ledger Memory
 
 This document describes the v1.1.0 server-wide declarative theme settings and
 the stable Tide Atlas hooks exposed by the current client.
@@ -27,7 +27,7 @@ route = "#86c9c0"
 
 Palette names are alphanumeric identifiers containing `-` or `_`, at most 32
 characters. There may be at most eight entries, and each value must be a
-`#RRGGBB` or `#RRGGBBAA` color. Unknown theme keys are rejected.
+`#RRGGBB` or `#RRGGBBAA` colour. Unknown theme keys are rejected.
 
 The same object is returned as `theme` by the authenticated `GET
 /api/v1/settings` endpoint. Theme changes may be submitted as an administrator
@@ -47,8 +47,8 @@ restart. For example:
 The current Tide Atlas client reads `theme.preset` and maps it to its built-in
 chart presets. The validated `palette` and numeric fields are server-owned and
 persisted, but are not currently interpreted by the client as arbitrary CSS
-tokens. Palette customization therefore does not override the client’s
-built-in preset colors until a client version explicitly consumes those fields.
+tokens. Palette customisation therefore does not override the client’s
+built-in preset colours until a client version explicitly consumes those fields.
 The client requests the settings from `GET /api/v1/settings` and saves the
 preset selector with `PUT /api/v1/settings`.
 
@@ -69,7 +69,7 @@ are data used by the graph renderer, not user-editable CSS selectors.
 
 ## Security boundary
 
-Customization is declarative and server-wide only. No user CSS is accepted,
+Customisation is declarative and server-wide only. No user CSS is accepted,
 stored, or executed. No user JavaScript is accepted, stored, or executed.
 Theme configuration cannot contain CSS source, JavaScript source, HTML, URLs,
 or executable expressions; arbitrary theme keys are rejected by validation.

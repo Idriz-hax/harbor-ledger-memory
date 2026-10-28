@@ -41,7 +41,6 @@ application, run `(cd web && npm test -- --run)` as well.
 
 - Explain the problem and the approach in the pull request description.
 - Include tests or a clear reason tests are not applicable.
-- Update `README.md` or `CHANGELOG.md` when the documented or released surface
-  changes.
-- Keep security-sensitive details out of public issues; see [the security
-  policy](SECURITY.md).
+- Update `README.md` when the documented surface changes.
+- Keep security-sensitive details out of public issues; report them privately
+  to the project maintainers.
