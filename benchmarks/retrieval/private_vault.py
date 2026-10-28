@@ -58,6 +58,16 @@ def load_scope(path: Path) -> dict[str, Any]:
         _relative_path(folder, "folder rule", allow_root=True): rule
         for folder, rule in rules.items()
     }
+    index_root = value["index_root"]
+    if value["folder_rules"].get(index_root) != "read":
+        raise ValueError("folder_rules must explicitly allow index_root")
+    for folder in value["folder_rules"]:
+        if (
+            index_root != "."
+            and folder != index_root
+            and not folder.startswith(f"{index_root}/")
+        ):
+            raise ValueError("folder rule is outside index_root")
     for rule in value["folder_rules"].values():
         if not isinstance(rule, str) or rule not in {"read", "deny"}:
             raise ValueError("folder rules may only be read or deny")

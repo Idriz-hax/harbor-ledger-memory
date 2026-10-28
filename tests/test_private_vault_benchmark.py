@@ -28,7 +28,7 @@ def test_example_scope_uses_generic_placeholders() -> None:
     )
     scope = json.loads(example.read_text())
     assert scope["folder_rules"] == {
-        "<readable-folder>": "read",
+        ".": "read",
         "<denied-folder>": "deny",
     }
 
@@ -69,6 +69,43 @@ def test_scope_accepts_root_index_and_read_rule(tmp_path: Path) -> None:
         "vault_path": "/not/read",
         "index_root": ".",
         "folder_rules": {".": "read"},
+    }
+    path.write_text(json.dumps(scope))
+    assert load_scope(path) == scope
+
+
+@pytest.mark.parametrize(
+    ("index_root", "folder_rules"),
+    [
+        (".", {"denied-folder": "deny"}),
+        ("AI", {".": "read"}),
+        ("AI", {"AI": "deny"}),
+        ("AI", {"AI": "read", "Other": "deny"}),
+    ],
+)
+def test_scope_rejects_missing_or_outside_read_root(
+    tmp_path: Path, index_root: str, folder_rules: dict
+) -> None:
+    path = tmp_path / "scope.json"
+    path.write_text(
+        json.dumps(
+            {
+                "vault_path": "/not/read",
+                "index_root": index_root,
+                "folder_rules": folder_rules,
+            }
+        )
+    )
+    with pytest.raises(ValueError):
+        load_scope(path)
+
+
+def test_scope_accepts_explicit_read_root_with_nested_deny(tmp_path: Path) -> None:
+    path = tmp_path / "scope.json"
+    scope = {
+        "vault_path": "/not/read",
+        "index_root": "AI",
+        "folder_rules": {"AI": "read", "AI/hidden": "deny"},
     }
     path.write_text(json.dumps(scope))
     assert load_scope(path) == scope
