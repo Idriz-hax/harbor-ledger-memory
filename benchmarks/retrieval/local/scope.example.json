@@ -1,0 +1,8 @@
+{
+  "vault_path": "/path/to/local/vault",
+  "index_root": "/path/to/local/index",
+  "folder_rules": {
+    "AI": "read",
+    "AI/token-optimizer": "deny"
+  }
+}

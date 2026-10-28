@@ -1,5 +1,11 @@
 # Retrieval benchmark
 
+The optional private-vault benchmark is local-only. Keep cases and results in
+`local/` (ignored by git); only the safe `scope.example.json` placeholder is
+tracked. Validators inspect input files only and never read vault contents.
+Do not put note bodies or excerpts in benchmark data. The synthetic benchmark
+below remains the portable regression suite.
+
 The synthetic JSONL cases are split into two public regression groups:
 
 - `dev`: cases used while tuning retrieval.

@@ -1,0 +1,82 @@
+"""Strict local-only input validation for the private-vault benchmark."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+_SCOPE_FIELDS = {"vault_path", "index_root", "folder_rules"}
+_CASE_FIELDS = {"id", "query", "active_project", "expected_paths", "expect_empty"}
+_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def _relative_path(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value or "\\" in value:
+        raise ValueError(f"{label} must be a vault-relative POSIX path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
+        raise ValueError(f"{label} must be a vault-relative POSIX path")
+    return value
+
+
+def load_scope(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid scope JSON") from exc
+    if not isinstance(value, dict) or set(value) != _SCOPE_FIELDS:
+        raise ValueError(
+            "scope must contain exactly vault_path, index_root, folder_rules"
+        )
+    for key in ("vault_path", "index_root"):
+        if not isinstance(value[key], str) or not value[key].strip():
+            raise ValueError(f"{key} must be a nonempty path string")
+    rules = value["folder_rules"]
+    if not isinstance(rules, dict) or not rules:
+        raise ValueError("folder_rules must be a nonempty object")
+    for folder, rule in rules.items():
+        _relative_path(folder, "folder rule")
+        if not isinstance(rule, str) or rule not in {"read", "deny"}:
+            raise ValueError("folder rules may only be read or deny")
+    return value
+
+
+def load_cases(path: Path) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ValueError("cannot read cases JSONL") from exc
+    cases: list[dict[str, Any]] = []
+    ids: set[str] = set()
+    for number, line in enumerate(lines, 1):
+        try:
+            case = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"malformed JSON on line {number}") from exc
+        if not isinstance(case, dict) or set(case) - _CASE_FIELDS:
+            raise ValueError(f"invalid case fields on line {number}")
+        if not {"id", "query", "expected_paths"} <= set(case):
+            raise ValueError(f"missing case fields on line {number}")
+        ident, query, expected = case["id"], case["query"], case["expected_paths"]
+        if not isinstance(ident, str) or not _ID.fullmatch(ident) or ident in ids:
+            raise ValueError(f"invalid or duplicate case id on line {number}")
+        if not isinstance(query, str) or not query.strip() or len(query) > 1000:
+            raise ValueError(f"invalid query on line {number}")
+        if not isinstance(expected, list):
+            raise ValueError(f"expected_paths must be a list on line {number}")
+        for item in expected:
+            _relative_path(item, "expected path")
+        empty = case.get("expect_empty", False)
+        if (
+            not isinstance(empty, bool)
+            or (empty and expected)
+            or (not empty and not expected)
+        ):
+            raise ValueError(f"inconsistent negative label on line {number}")
+        if "active_project" in case and case["active_project"] is not None:
+            _relative_path(case["active_project"], "active_project")
+        ids.add(ident)
+        cases.append(case)
+    return cases
