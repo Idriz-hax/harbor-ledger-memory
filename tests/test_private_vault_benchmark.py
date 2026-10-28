@@ -8,8 +8,8 @@ from benchmarks.retrieval.private_vault import _relative_path, load_cases, load_
 def test_scope_validates_explicit_rules_without_touching_paths(tmp_path: Path) -> None:
     scope = {
         "vault_path": "/not/read",
-        "index_root": "/also/not/read",
-        "folder_rules": {"AI": "read", "AI/token-optimizer": "deny"},
+        "index_root": ".",
+        "folder_rules": {".": "read", "folder/denied": "deny"},
     }
     path = tmp_path / "scope.json"
     path.write_text(json.dumps(scope))
@@ -38,11 +38,40 @@ def test_scope_rejects_invalid_rules(tmp_path: Path, rules: dict) -> None:
     path = tmp_path / "scope.json"
     path.write_text(
         json.dumps(
-            {"vault_path": "/vault", "index_root": "/index", "folder_rules": rules}
+            {"vault_path": "/vault", "index_root": "index", "folder_rules": rules}
         )
     )
     with pytest.raises(ValueError):
         load_scope(path)
+
+
+@pytest.mark.parametrize(
+    "index_root", ["/absolute/index", "../outside", "nested/../outside"]
+)
+def test_scope_rejects_unsafe_index_root(tmp_path: Path, index_root: str) -> None:
+    path = tmp_path / "scope.json"
+    path.write_text(
+        json.dumps(
+            {
+                "vault_path": "/vault",
+                "index_root": index_root,
+                "folder_rules": {".": "read"},
+            }
+        )
+    )
+    with pytest.raises(ValueError):
+        load_scope(path)
+
+
+def test_scope_accepts_root_index_and_read_rule(tmp_path: Path) -> None:
+    path = tmp_path / "scope.json"
+    scope = {
+        "vault_path": "/not/read",
+        "index_root": ".",
+        "folder_rules": {".": "read"},
+    }
+    path.write_text(json.dumps(scope))
+    assert load_scope(path) == scope
 
 
 def test_scope_rejects_duplicate_json_keys(tmp_path: Path) -> None:
@@ -60,6 +89,7 @@ def test_scope_rejects_duplicate_json_keys(tmp_path: Path) -> None:
     [
         {"id": "a", "query": "q", "expected_paths": ["/abs.md"]},
         {"id": "a", "query": "q", "expected_paths": ["../escape.md"]},
+        {"id": "a", "query": "q", "expected_paths": ["."]},
         {"id": "a", "query": "q", "expected_paths": ["AI//x.md"]},
         {"id": "a", "query": "q", "expected_paths": ["AI/x.md"], "unexpected": True},
         {"id": "a", "query": "q", "expected_paths": [], "expect_empty": False},
