@@ -156,6 +156,8 @@ def run_private_benchmark(
             raise ValueError("index_root must be an existing directory")
         digest = hashlib.sha256()
         snapshots = tuple(source_boundary.iter_admitted_snapshots())
+        if not snapshots:
+            raise ValueError("no readable notes admitted by the configured scope")
         with tempfile.TemporaryDirectory(prefix="hlm-private-benchmark-") as temp:
             vault = Path(temp) / "vault"
             vault.mkdir()

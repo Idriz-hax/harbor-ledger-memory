@@ -255,3 +255,24 @@ def test_private_runner_rejects_missing_index_root_before_scan(tmp_path: Path) -
     }
     with pytest.raises(OSError):
         run_private_benchmark(scope, [])
+
+
+def test_private_runner_rejects_empty_admitted_scope_before_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harbor_ledger_memory.catalog import database
+
+    vault = tmp_path / "vault"
+    (vault / "AI").mkdir(parents=True)
+    scope = {
+        "vault_path": str(vault),
+        "index_root": "AI",
+        "folder_rules": {"AI": "read"},
+    }
+
+    def unexpected_database(*args: object, **kwargs: object) -> object:
+        pytest.fail("database must not be created without admitted notes")
+
+    monkeypatch.setattr(database, "create_database", unexpected_database)
+    with pytest.raises(ValueError, match="no readable notes"):
+        run_private_benchmark(scope, [])
