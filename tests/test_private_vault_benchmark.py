@@ -119,6 +119,13 @@ def test_cases_reject_duplicate_json_keys(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError):
         load_cases(path)
+
+
+def test_cases_reject_invalid_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "cases.jsonl"
+    path.write_bytes(b"\xff")
+    with pytest.raises(ValueError, match="cannot read cases JSONL"):
+        load_cases(path)
     path.write_text("{")
     with pytest.raises(ValueError):
         load_cases(path)

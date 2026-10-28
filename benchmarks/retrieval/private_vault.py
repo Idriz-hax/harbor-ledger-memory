@@ -67,7 +67,7 @@ def load_scope(path: Path) -> dict[str, Any]:
 def load_cases(path: Path) -> list[dict[str, Any]]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise ValueError("cannot read cases JSONL") from exc
     cases: list[dict[str, Any]] = []
     ids: set[str] = set()
