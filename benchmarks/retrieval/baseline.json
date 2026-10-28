@@ -2,16 +2,16 @@
   "version": 3,
   "profile": "lexical",
   "corpus_sha256": "c962a2dd6dd4b2e5e9dd4362915388c0ec7b2f08b7f3c0e9c8420bc6dd93e763",
-  "cases_sha256": "811bec8ec3872ecb57a2b3e9cd8e6d7d50fbe6816ff758892a2e008a59a0f77f",
+  "cases_sha256": "c91e586f946797ca9668cfb7dd165dd5320352e3fcfc3539fed32b01ef6f7184",
   "splits": {
     "dev": {
       "metrics": {
-        "hit_at_5": 0.6,
-        "mrr": 0.5524,
-        "evidence_at_5": 0.6,
+        "hit_at_5": 0.6111,
+        "mrr": 0.5648,
+        "evidence_at_5": 0.6111,
         "negative_accuracy": 1.0,
-        "latency_p50_ms": 7.919,
-        "latency_p95_ms": 9.532
+        "latency_p50_ms": 7.59,
+        "latency_p95_ms": 24.436
       },
       "case_results": {
         "lexical-01": {
@@ -183,6 +183,15 @@
           "rank": 1,
           "evidence_hit": true
         },
+        "switch-01": {
+          "selected_paths": [
+            "bluebird-status.md",
+            "bluebird-cutover.md",
+            "bluebird-rollback.md"
+          ],
+          "rank": 1,
+          "evidence_hit": true
+        },
         "graph-01": {
           "selected_paths": [],
           "rank": null,
@@ -271,8 +280,8 @@
         "mrr": 0.6333,
         "evidence_at_5": 0.8,
         "negative_accuracy": 1.0,
-        "latency_p50_ms": 8.196,
-        "latency_p95_ms": 9.542
+        "latency_p50_ms": 8.585,
+        "latency_p95_ms": 39.1
       },
       "case_results": {
         "lexical-11": {

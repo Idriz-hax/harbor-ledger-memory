@@ -185,6 +185,41 @@ class TestShortTermCache:
             "AI/z-cache.md",
         ]
 
+    def test_explicit_project_suppresses_conflicting_recent_paths(self, tmp_path: Path) -> None:
+        _, session = _make_session(tmp_path)
+        _seed_notes(session, [
+            {"path": "projects/current/status.md", "title": "Current", "content": "migration"},
+            {"path": "projects/old/notes.md", "title": "Old", "content": "unrelated"},
+        ])
+        result = HybridRetrievalService(session, _SETTINGS).seeds(
+            "migration", active_project="projects/current/status.md",
+            recent_paths={"projects/old/notes.md": 1.0},
+        )
+        assert result[0].path == "projects/current/status.md"
+
+    def test_explicit_project_retains_same_project_recent_paths(self, tmp_path: Path) -> None:
+        _, session = _make_session(tmp_path)
+        _seed_notes(session, [
+            {"path": "projects/current/status.md", "title": "Current", "content": "migration"},
+            {"path": "projects/current/notes.md", "title": "Notes", "content": "unrelated"},
+        ])
+        result = HybridRetrievalService(session, _SETTINGS).seeds(
+            "migration", active_project="projects/current/status.md",
+            recent_paths={"projects/current/notes.md": 1.0},
+        )
+        assert any(candidate.path == "projects/current/notes.md" for candidate in result)
+
+    def test_no_context_keeps_global_lexical_discovery(self, tmp_path: Path) -> None:
+        _, session = _make_session(tmp_path)
+        _seed_notes(session, [
+            {"path": "projects/one/answer.md", "title": "Answer", "content": "global discovery"},
+            {"path": "projects/two/answer.md", "title": "Answer", "content": "global discovery"},
+        ])
+        result = HybridRetrievalService(session, _SETTINGS).seeds("global discovery")
+        assert {candidate.path for candidate in result} == {
+            "projects/one/answer.md", "projects/two/answer.md"
+        }
+
 
 class TestProjectBoost:
     """Notes within the active project path should get a boost."""
