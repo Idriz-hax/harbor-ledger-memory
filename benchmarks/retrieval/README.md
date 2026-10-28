@@ -29,3 +29,23 @@ change:
 ```text
 uv run python -m benchmarks.retrieval.runner --write-baseline
 ```
+
+## Private local-vault benchmark
+
+Create `local/scope.json` and `local/cases.jsonl` from the safe scope template;
+both files and `local/baseline.json` are ignored. Defaults never write outside
+`local/`.
+
+```text
+uv run python -m benchmarks.retrieval.private_vault --dry-run
+uv run python -m benchmarks.retrieval.private_vault --write-baseline
+uv run python -m benchmarks.retrieval.private_vault --write-baseline --confirm-replace
+uv run python -m benchmarks.retrieval.private_vault --compare-baseline
+```
+
+Dry-run validates labels and reports counts/hashes without queries. Runs read
+admitted notes into a disposable local catalog; no text is sent to hosted
+services. Query text and note paths are sensitive. Results omit them by default;
+`--show-private-details` exposes paths locally, never note contents. A clean
+retrieval-only comparison requires unchanged case, scope, and corpus hashes;
+corpus drift is reported separately and is not a retrieval improvement claim.

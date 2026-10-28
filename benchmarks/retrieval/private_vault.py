@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import os
 import re
+import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -158,6 +161,18 @@ def run_private_benchmark(
         snapshots = tuple(source_boundary.iter_admitted_snapshots())
         if not snapshots:
             raise ValueError("no readable notes admitted by the configured scope")
+        readable = {snapshot.path.as_posix() for snapshot in snapshots}
+        for case in cases:
+            targets = case["expected_paths"]
+            project = case.get("active_project")
+            if any(path not in readable for path in targets) or (
+                project is not None
+                and not any(
+                    path == project or path.startswith(f"{project}/")
+                    for path in readable
+                )
+            ):
+                raise ValueError("case labels must be within readable snapshots")
         with tempfile.TemporaryDirectory(prefix="hlm-private-benchmark-") as temp:
             vault = Path(temp) / "vault"
             vault.mkdir()
@@ -235,3 +250,194 @@ def run_private_benchmark(
                     boundary.close()
     finally:
         source_boundary.close()
+
+
+def _metrics(
+    result: dict[str, Any], cases: list[dict[str, Any]]
+) -> dict[str, float | None]:
+    ranked = [
+        result["case_results"][case["id"]]["rank"]
+        for case in cases
+        if not case.get("expect_empty", False)
+    ]
+    negatives = [
+        result["case_results"][case["id"]]["selected_paths"]
+        for case in cases
+        if case.get("expect_empty", False)
+    ]
+    return {
+        "hit@5": sum(rank is not None for rank in ranked) / len(ranked)
+        if ranked
+        else None,
+        "mrr": sum(1 / rank for rank in ranked if rank is not None) / len(ranked)
+        if ranked
+        else None,
+        "negative_accuracy": sum(not paths for paths in negatives) / len(negatives)
+        if negatives
+        else None,
+    }
+
+
+def _atomic_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    local = Path(__file__).parent / "local"
+    parser.add_argument("--scope", type=Path, default=local / "scope.json")
+    parser.add_argument("--cases", type=Path, default=local / "cases.jsonl")
+    actions = parser.add_mutually_exclusive_group(required=True)
+    for action in ("dry-run", "write-baseline", "compare-baseline"):
+        actions.add_argument(f"--{action}", action="store_true")
+    parser.add_argument("--confirm-replace", action="store_true")
+    parser.add_argument("--show-private-details", action="store_true")
+    args = parser.parse_args(argv)
+    baseline_path = local / "baseline.json"
+    try:
+        scope, cases = load_scope(args.scope), load_cases(args.cases)
+        if args.dry_run:
+            # Validate root, boundary and labels without creating a catalog or querying.
+            from harbor_ledger_memory.config import (
+                FolderAccess,
+                FolderRule,
+                MemorySettings,
+                Settings,
+            )
+            from harbor_ledger_memory.vault.boundary import VaultBoundary
+
+            root = Path(scope["vault_path"]).expanduser().resolve(strict=True)
+            settings = Settings(
+                vault_path=root,
+                index_root=PurePosixPath(scope["index_root"]),
+                folder_rules=[
+                    FolderRule(
+                        path=PurePosixPath(p),
+                        access=FolderAccess.READ if a == "read" else FolderAccess.DENY,
+                    )
+                    for p, a in scope["folder_rules"].items()
+                ],
+                memory=MemorySettings(embedding_model=None),
+            )
+            boundary = VaultBoundary(settings)
+            try:
+                snapshots = tuple(boundary.iter_admitted_snapshots())
+                paths = {s.path.as_posix() for s in snapshots}
+                if not boundary.index_root.is_dir() or not snapshots:
+                    raise ValueError("configured readable scope is unavailable")
+                if any(
+                    any(p not in paths for p in c["expected_paths"])
+                    or (
+                        c.get("active_project")
+                        and not any(
+                            p == c["active_project"]
+                            or p.startswith(c["active_project"] + "/")
+                            for p in paths
+                        )
+                    )
+                    for c in cases
+                ):
+                    raise ValueError("case labels must be within readable snapshots")
+                corpus_hash = hashlib.sha256(
+                    b"".join(
+                        s.path.as_posix().encode() + b"\0" + s.content + b"\0"
+                        for s in sorted(snapshots, key=lambda x: x.path.as_posix())
+                    )
+                ).hexdigest()
+            finally:
+                boundary.close()
+            print(
+                json.dumps(
+                    {
+                        "readable_count": len(snapshots),
+                        "case_count": len(cases),
+                        "corpus_sha256": corpus_hash,
+                        "scope_sha256": hashlib.sha256(
+                            json.dumps(
+                                scope, sort_keys=True, separators=(",", ":")
+                            ).encode()
+                        ).hexdigest(),
+                        "cases_sha256": hashlib.sha256(
+                            json.dumps(
+                                cases, sort_keys=True, separators=(",", ":")
+                            ).encode()
+                        ).hexdigest(),
+                    }
+                )
+            )
+            return 0
+        if args.write_baseline and baseline_path.exists() and not args.confirm_replace:
+            raise ValueError("baseline exists; use --confirm-replace to overwrite")
+        if args.compare_baseline and not baseline_path.is_file():
+            raise ValueError("saved baseline is required")
+        result = run_private_benchmark(scope, cases)
+        result["metrics"] = _metrics(result, cases)
+        if args.write_baseline:
+            _atomic_json(baseline_path, result)
+            print(json.dumps({"written": True, "metrics": result["metrics"]}))
+            return 0
+        baseline = json.loads(
+            baseline_path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
+        )
+        if (
+            baseline.get("scope_sha256") != result["scope_sha256"]
+            or baseline.get("cases_sha256") != result["cases_sha256"]
+        ):
+            raise ValueError("baseline scope or cases hash mismatch")
+        changed = baseline.get("corpus_sha256") != result["corpus_sha256"]
+        baseline_metrics = baseline["metrics"]
+        report = {
+            "vault_changed": changed,
+            "baseline_metrics": baseline_metrics,
+            "current_metrics": result["metrics"],
+        }
+        if not changed:
+            report["metric_deltas"] = {
+                metric: (
+                    result["metrics"][metric] - baseline_metrics[metric]
+                    if result["metrics"][metric] is not None
+                    and baseline_metrics[metric] is not None
+                    else None
+                )
+                for metric in result["metrics"]
+            }
+            report["case_deltas"] = {
+                case["id"]: {
+                    "before_rank": baseline["case_results"][case["id"]]["rank"],
+                    "after_rank": result["case_results"][case["id"]]["rank"],
+                    **(
+                        {
+                            "before_paths": baseline["case_results"][case["id"]][
+                                "selected_paths"
+                            ],
+                            "after_paths": result["case_results"][case["id"]][
+                                "selected_paths"
+                            ],
+                        }
+                        if args.show_private_details
+                        else {}
+                    ),
+                }
+                for case in cases
+            }
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"private benchmark failed: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
