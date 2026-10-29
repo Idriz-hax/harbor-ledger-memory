@@ -106,7 +106,9 @@ def build_mcp_server(
             "context for a task, status to inspect catalog health, "
             "settings_snapshot to see the active configuration, "
             "neighbours to explore the link graph, and scan to rebuild the "
-            "index after vault changes. Retain the trace_id from query when "
+            "index after vault changes. After query, read selected paths with "
+            "read_note or read_notes (up to 10 explicit paths; independent "
+            "results, no automatic expansion). Retain query's trace_id "
             "using feedback to submit selected admitted paths as relevant or "
             "irrelevant."
         ),
@@ -410,7 +412,10 @@ def build_mcp_server(
 
     @mcp.tool()
     def read_notes(paths: list[str]):  # pyright: ignore[reportUnusedFunction]
-        """Read up to 10 explicitly named Markdown notes, in request order."""
+        """Read up to 10 explicitly selected Markdown paths after query.
+
+        Results are independent; paths are never expanded.
+        """
         from mcp.types import TextContent
 
         if len(paths) > 10:

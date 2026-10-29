@@ -706,10 +706,14 @@ def show_node(
 @app.command()
 def read(
     paths: list[str] = typer.Argument(
-        ..., help="Explicit vault-relative Markdown paths."
+        ...,
+        help=(
+            "Read selected vault-relative Markdown paths (1–10); use query/search "
+            "first, then pass only chosen results."
+        ),
     ),
 ) -> None:
-    """Read complete Markdown notes as one JSON object per input line."""
+    """Read selected Markdown notes as one JSON object per line; no expansion."""
     if len(paths) > 10:
         raise typer.BadParameter("at most 10 paths may be requested")
     boundary = VaultBoundary(_load_settings())

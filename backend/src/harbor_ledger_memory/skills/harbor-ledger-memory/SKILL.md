@@ -10,6 +10,13 @@ Read tools are `status` (catalog health and policy), `settings_snapshot`
 and `scan` (rebuild the catalog after vault changes). These operations honor
 the configured vault scope.
 
+## Retrieve full notes
+
+Search with `query`, then read only the paths you select from its results using
+`read_note` for one note or `read_notes` for up to 10 explicit paths. Batch
+results are independent and returned in request order; the service never
+automatically expands search results or related paths.
+
 ## Query feedback
 
 When querying, pass `active_project` as a vault-relative POSIX path when possible.

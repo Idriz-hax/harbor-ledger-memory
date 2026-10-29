@@ -169,6 +169,56 @@ class TestEmbeddingServiceBlob:
 class TestEmbeddingServiceEncode:
     """Tests for EmbeddingService encoding using a deterministic fake model."""
 
+    @pytest.mark.parametrize(
+        "model_name",
+        ["intfloat/e5-small-v2", "intfloat/multilingual-e5-small"],
+    )
+    def test_e5_prefixes_documents_and_queries(
+        self, monkeypatch: pytest.MonkeyPatch, model_name: str
+    ) -> None:
+        from harbor_ledger_memory.services.embeddings import EmbeddingService
+
+        received: list[str | list[str]] = []
+
+        class RecordingModel(_FakeSentenceTransformer):
+            def encode(self, texts, *, convert_to_numpy):  # type: ignore[no-untyped-def]
+                received.append(texts)
+                return super().encode(texts, convert_to_numpy=convert_to_numpy)
+
+        monkeypatch.setattr(
+            EmbeddingService, "_load_model", lambda _self: RecordingModel()
+        )
+        service = EmbeddingService(model_name)
+        service.encode_batch(["first note", "second note"])
+        service.encode("a search query")
+
+        assert received == [
+            ["passage: first note", "passage: second note"],
+            "query: a search query",
+        ]
+
+    @pytest.mark.parametrize("model_name", ["all-MiniLM-L6-v2", "custom/e5-like-model"])
+    def test_non_e5_text_is_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch, model_name: str
+    ) -> None:
+        from harbor_ledger_memory.services.embeddings import EmbeddingService
+
+        received: list[str | list[str]] = []
+
+        class RecordingModel(_FakeSentenceTransformer):
+            def encode(self, texts, *, convert_to_numpy):  # type: ignore[no-untyped-def]
+                received.append(texts)
+                return super().encode(texts, convert_to_numpy=convert_to_numpy)
+
+        monkeypatch.setattr(
+            EmbeddingService, "_load_model", lambda _self: RecordingModel()
+        )
+        service = EmbeddingService(model_name)
+        service.encode_batch(["first note"])
+        service.encode("a search query")
+
+        assert received == [["first note"], "a search query"]
+
     def test_encode_returns_384_dimension_vector(
         self, fake_sentence_transformer: None
     ) -> None:

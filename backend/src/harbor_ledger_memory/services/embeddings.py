@@ -104,12 +104,20 @@ class EmbeddingService:
     def encode(self, text: str) -> tuple[float, ...]:
         """Encode a text string into a 384-dimensional vector."""
         model = self._load_model()
+        if self._model_name.startswith("intfloat/e5-") or self._model_name.startswith(
+            "intfloat/multilingual-e5-"
+        ):
+            text = f"query: {text}"
         vector = model.encode(text, convert_to_numpy=True)
         return tuple(float(v) for v in vector.flatten())
 
     def encode_batch(self, texts: list[str]) -> list[tuple[float, ...]]:
         """Encode multiple texts efficiently."""
         model = self._load_model()
+        if self._model_name.startswith("intfloat/e5-") or self._model_name.startswith(
+            "intfloat/multilingual-e5-"
+        ):
+            texts = [f"passage: {text}" for text in texts]
         vectors = model.encode(texts, convert_to_numpy=True)
         return [tuple(float(v) for v in vec.flatten()) for vec in vectors]
 

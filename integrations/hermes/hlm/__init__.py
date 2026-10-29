@@ -83,7 +83,9 @@ class HLMProvider(MemoryProvider):
             ),
             tool(
                 "hlm_get_notes_batch",
-                "Read up to 10 full Markdown notes from HLM.",
+                "After searching HLM, read up to 10 explicitly selected full "
+                "Markdown note paths. Results are independent; paths are not "
+                "expanded.",
                 {
                     "paths": {
                         "type": "array",
