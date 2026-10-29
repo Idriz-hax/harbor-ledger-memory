@@ -118,115 +118,28 @@ including MiniLM, receive unchanged text. After changing model IDs, run
 `hlm scan` to regenerate model-keyed vectors. This configuration is opt-in; the
 application default remains embeddings disabled (`embedding_model = None`).
 
-### Performance and model comparison
+### Semantic search performance
 
-**Explicit note reads do not use embeddings.** `read_note` and `read_notes`
-read selected Markdown files directly; installing or loading an embedding model
-does not add model inference to those calls. Semantic `query` is a separate
-path. A long-lived MCP/API process caches its model after the first load; a
-one-shot `hlm query` process pays model initialization on each run.
+Explicit note reads (`read_note` and `read_notes`) do not use embeddings.
+Semantic queries do: on this 200-note synthetic test, warm p50 latency was
+about 2 ms without embeddings and 35–37 ms with them. Embeddings improved
+retrieval on these test queries, but the small synthetic sample does not show
+which model is generally more accurate.
 
-We compared compact SentenceTransformers models on this machine: macOS 26.6.2
-arm64, Python 3.12.13, PyTorch 2.15.0, model device `mps:0`. Only synthetic
-Markdown was used; no vault content was read. Each run used a fresh process and
-cached model weights. The English corpus had 10 target notes and 190 unrelated
-English distractors, with 10 paraphrased queries. The multilingual corpus had
-10 English target notes and 190 unrelated distractors in English, Spanish,
-French, and German; its 20 queries were 10 English and 10 Spanish, all expected
-to retrieve the English target note. Notes were short; this does not test
-truncation behavior on long real notes. Batch timings are the median of three
-runs over 200 notes. Query latency reports 10/20 warmed queries; “encode + rank”
-adds cosine scoring and sorting over those 200 precomputed vectors, but excludes
-SQLite loading and the rest of HLM retrieval. Peak RSS is the full isolated
-Python/PyTorch/model process, not memory attributable to the model alone.
+| Test set | Configuration | Top-1 | MRR@10 | Warm query p50 / p95 |
+| --- | --- | ---: | ---: | ---: |
+| English | No embeddings | 6/20 | 0.300 | 2.4 / 18.2 ms |
+| English | `all-MiniLM-L6-v2` | 20/20 | 1.000 | 34.7 / 40.1 ms |
+| English | `intfloat/e5-small-v2` | 20/20 | 1.000 | 37.0 / 41.4 ms |
+| Multilingual (EN + ES → EN) | No embeddings | 6/40 | 0.150 | 2.3 / 18.0 ms |
+| Multilingual (EN + ES → EN) | `intfloat/multilingual-e5-small` | 29/40 | 0.738 | 36.8 / 38.8 ms |
+| Multilingual (EN + ES → EN) | `paraphrase-multilingual-MiniLM-L12-v2` | 32/40 | 0.800 | 36.9 / 39.3 ms |
 
-**English-only models** (384 dimensions):
-
-| Model (max tokens) | Cached-weight load | Batch 200 notes | Query encode p50 / p95 | Encode + rank p50 / p95 | Peak RSS | Synthetic top-1 / MRR@10 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `sentence-transformers/all-MiniLM-L6-v2` (256) | 4.911 s | 0.111 s | 5.973 / 7.234 ms | 10.857 / 12.115 ms | 452.8 MiB | 10/10 / 1.00 |
-| `intfloat/e5-small-v2` (512) | 4.009 s | 0.123 s | 7.181 / 8.104 ms | 11.569 / 12.593 ms | 511.6 MiB | 10/10 / 1.00 |
-
-On this small test, MiniLM was slightly faster and used less process memory;
-both tied on the 10 known-answer queries. That is not enough evidence to call
-either model more accurate in general. MiniLM remains the compact English
-baseline; E5-small-v2 has a longer token limit and uses the E5 prefixes HLM now
-handles automatically.
-
-**Multilingual models** (384 dimensions):
-
-| Model (max tokens) | Cached-weight load | Batch 200 notes | Query encode p50 / p95 | Encode + rank p50 / p95 | Peak RSS | Synthetic top-1 / MRR@10 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `intfloat/multilingual-e5-small` (512) | 3.852 s | 0.171 s | 6.728 / 7.418 ms | 10.931 / 12.252 ms | 898.7 MiB | 19/20 / 0.95 |
-| `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (128) | 4.370 s | 0.152 s | 7.052 / 9.385 ms | 11.436 / 14.035 ms | 822.9 MiB | 20/20 / 1.00 |
-
-These tiny synthetic scores do not establish a quality winner. Multilingual
-MiniLM was a little faster to batch-index and got one more top-1 hit here, but
-its 128-token limit may truncate HLM's longer note embeddings. Multilingual E5
-has a 512-token limit and slightly faster warmed query encoding in this run;
-HLM adds its required `query: `/`passage: ` prefixes automatically. Both loaded
-in about four seconds with weights cached; first-use downloads are excluded.
-
-There is also a separate catalog-size cost in the current semantic retrieval
-implementation: it loads and scores every stored embedding for each query.
-An isolated sweep of HLM's 384-dimensional Python cosine helper (random vectors,
-10 repeats; excludes database loading and the rest of retrieval) took:
-
-| Stored vectors | Cosine-scan median | p95 |
-| ---: | ---: | ---: |
-| 200 | 6.2 ms | 6.2 ms |
-| 1,000 | 30.7 ms | 31.0 ms |
-| 5,000 | 151.9 ms | 154.5 ms |
-| 10,000 | 306.8 ms | 312.0 ms |
-
-This linear scan is independent of model choice and can dominate model-encoding
-time in a large catalog; end-to-end query latency will be higher. All figures
-are machine-, runtime-, corpus-, and query-dependent observations, not
-performance guarantees.
-
-#### HLM search versus embeddings disabled
-
-We also ran the same synthetic catalogs through HLM's `QueryService` with
-embeddings disabled (`embedding_model = None`, no vectors) and with each model.
-Each condition used a fresh SQLite catalog, the same settings, no active project
-or user scope, and no linked notes; timings are warm `QueryService.query` calls
-after model load and vector generation. They include HLM retrieval, activation,
-and context selection, but exclude transport and the one-time model download.
-English search used 200 English notes (10 target topics, 190 distractors) and 20
-queries (10 direct, 10 paraphrased). Multilingual search used 200 notes (10
-English target notes and 190 unrelated notes across English, Spanish, French,
-and German) and 40 queries: 10 direct and 10 paraphrased in English and Spanish,
-all targeting English notes. Retrieval quality is measured against these
-synthetic known answers only.
-
-**English search:**
-
-| Configuration | Direct top-1 | Paraphrase top-1 | Overall top-1 | Recall@5 | MRR@10 | Query p50 / p95 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| No embeddings | 6/10 | 0/10 | 6/20 | 6/20 | 0.300 | 2.4 / 18.2 ms |
-| `all-MiniLM-L6-v2` | 10/10 | 10/10 | 20/20 | 20/20 | 1.000 | 34.7 / 40.1 ms |
-| `intfloat/e5-small-v2` | 10/10 | 10/10 | 20/20 | 20/20 | 1.000 | 37.0 / 41.4 ms |
-
-**Multilingual search (Spanish queries target English notes):**
-
-| Configuration | EN direct | EN paraphrase | ES direct | ES paraphrase | Overall top-1 | Recall@5 | MRR@10 | Query p50 / p95 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| No embeddings | 6/10 | 0/10 | 0/10 | 0/10 | 6/40 | 6/40 | 0.150 | 2.3 / 18.0 ms |
-| `intfloat/multilingual-e5-small` | 10/10 | 9/10 | 5/10 | 5/10 | 29/40 | 30/40 | 0.738 | 36.8 / 38.8 ms |
-| `paraphrase-multilingual-MiniLM-L12-v2` | 10/10 | 10/10 | 5/10 | 7/10 | 32/40 | 32/40 | 0.800 | 36.9 / 39.3 ms |
-
-On this small set, both English models improved paraphrase retrieval versus the
-no-embedding baseline; MiniLM was a little faster. Both multilingual models
-improved cross-language retrieval over the baseline, while multilingual MiniLM
-ranked more Spanish queries correctly in this sample. These results are too
-small and synthetic to establish a general quality winner. Warm end-to-end
-search was about 35–37 ms p50 for embedding-enabled conditions on this 200-note
-catalog; this is distinct from the 6–7 ms query-encoding-only measurements
-above. Explicit note reads still do not use embeddings.
-
-These query timings do not remove the catalog-size caveat above: the current
-semantic search still scores every stored vector, so at larger catalog sizes
-that linear scan can dominate both the model and other retrieval work.
+These are warm timings on a small catalog; model startup and first-use downloads
+are additional. Semantic retrieval currently scores every stored vector, so
+that linear scan can become the larger cost as a catalog grows. See the
+[benchmark details](docs/embedding-benchmark.md) for the methodology, other
+measurements, and limitations.
 
 ## What it does
 

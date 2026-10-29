@@ -20,8 +20,8 @@ Search first, then read selected paths using `read_note`/`read_notes` or the CLI
 
 ## Performance
 
-The README includes a synthetic comparison of two compact English models and
-two multilingual models, including initialization, indexing, query latency,
-process RSS, and a separate catalog-size scoring sweep. Measurements are
-machine- and corpus-specific observations, not general speed or retrieval-
-quality guarantees; no private vault content was used.
+The README includes a concise HLM search comparison against embeddings-disabled
+search. Detailed synthetic model timings, methodology, and catalog-size scoring
+measurements are in the [embedding benchmark](docs/embedding-benchmark.md).
+Results are machine- and corpus-specific, not general speed or retrieval-quality
+guarantees; no private vault content was used.
