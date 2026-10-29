@@ -124,15 +124,18 @@ class MemoryMarkRequest(BaseModel):
 logger = logging.getLogger(__name__)
 
 RECENT_RESOLVED_WRITE_LIMIT = 100
-MAX_NOTE_BYTES = 1024 * 1024
-
-
 class NoteContentResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str
     content: str
     revision: str
+
+
+class NoteContentBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    paths: list[str] = Field(min_length=1, max_length=10)
 
 
 class _HSTSMiddleware:
@@ -1024,7 +1027,7 @@ def create_app(
                 headers={"Cache-Control": "no-store"},
             )
         try:
-            snapshot = boundary.read_file(identity, max_bytes=MAX_NOTE_BYTES)
+            snapshot = boundary.read_file(identity)
             content = snapshot.content.decode("utf-8")
         except VaultFileTooLarge:
             raise HTTPException(
@@ -1046,6 +1049,69 @@ def create_app(
             ) from None
         return NoteContentResponse(
             path=identity.as_posix(), content=content, revision=snapshot.sha256
+        )
+
+    @application.post("/api/v1/notes/content/batch")
+    async def note_content_batch(
+        request: Request,
+        auth: AuthContext = Depends(authenticated),
+    ) -> StreamingResponse:
+        body_bytes = bytearray()
+        async for chunk in request.stream():
+            if len(body_bytes) + len(chunk) > 256 * 1024:
+                raise HTTPException(
+                    status_code=413,
+                    detail="request body too large",
+                    headers={"Cache-Control": "no-store"},
+                )
+            body_bytes.extend(chunk)
+        try:
+            body = NoteContentBatchRequest.model_validate(json.loads(body_bytes))
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=422,
+                detail="invalid batch request",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        boundary = VaultBoundary(settings)
+
+        def records() -> Iterator[str]:
+            for path in body.paths:
+                record: dict[str, Any] = {
+                    "path": path,
+                    "ok": False,
+                    "error": "unavailable",
+                }
+                try:
+                    if len(path.encode("utf-8", errors="surrogatepass")) > 4096:
+                        raise ValueError("invalid path")
+                    if re.search(r"%[0-9a-fA-F]{2}", path):
+                        raise ValueError("invalid path")
+                    identity = boundary.validate_identity(path)
+                    if identity.suffix.lower() != ".md":
+                        raise ValueError("invalid path")
+                    if not boundary.is_admitted(identity) or not auth.policy.can_read(
+                        identity.as_posix()
+                    ):
+                        raise VaultPathError("unavailable")
+                    snapshot = boundary.read_file(identity)
+                    content = snapshot.content.decode("utf-8")
+                    record = {
+                        "path": identity.as_posix(),
+                        "ok": True,
+                        "content": content,
+                        "revision": snapshot.sha256,
+                    }
+                except (VaultPathError, ValueError):
+                    pass
+                except (UnicodeDecodeError, OSError):
+                    record["error"] = "unreadable"
+                yield json.dumps(record, ensure_ascii=True) + "\n"
+
+        return StreamingResponse(
+            records(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-store"},
         )
 
     @application.post(

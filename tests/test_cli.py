@@ -91,6 +91,45 @@ def test_cli_commands_use_the_read_only_service_boundary(
     assert rejected.exit_code != 0
 
 
+def test_cli_read_emits_ordered_jsonl_for_full_notes_and_independent_failures(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _make_vault(tmp_path)
+    large_content = "x" * (1024 * 1024 + 1)
+    (tmp_path / "AI" / "Knowledge" / "large.md").write_text(
+        large_content, encoding="utf-8"
+    )
+    monkeypatch.setenv("HLM_VAULT_PATH", str(tmp_path))
+    monkeypatch.setenv("HLM_INDEX_ROOT", "AI")
+    result = CliRunner().invoke(
+        app,
+        ["read", "AI/Knowledge/large.md", "AI/not-found.md", "AI/INDEX.md"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = [json.loads(line) for line in result.stdout.splitlines()]
+    assert [row["path"] for row in rows] == [
+        "AI/Knowledge/large.md", "AI/not-found.md", "AI/INDEX.md"
+    ]
+    assert rows[0]["content"] == large_content
+    assert rows[0]["revision"]
+    assert rows[1] == {"path": "AI/not-found.md", "error": "note unavailable"}
+    assert rows[2]["content"].startswith("# Root")
+
+
+def test_cli_read_rejects_more_than_ten_paths_before_reading(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _make_vault(tmp_path)
+    monkeypatch.setenv("HLM_VAULT_PATH", str(tmp_path))
+    monkeypatch.setenv("HLM_INDEX_ROOT", "AI")
+    result = CliRunner().invoke(app, ["read", *(["AI/INDEX.md"] * 11)])
+
+    assert result.exit_code != 0
+    assert "at most 10 paths" in result.output
+    assert result.stdout == ""
+
+
 def test_cli_settings_failure_is_a_clean_error(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HLM_VAULT_PATH", str(tmp_path / "missing"))
     result = CliRunner().invoke(app, ["status"])

@@ -102,3 +102,25 @@ test("oversized streamed responses cancel instead of parsing or truncating", asy
   await assert.rejects(client.pending(),/8 MiB/);
   assert.equal(cancelled,true);
 });
+test("batch retrieval streams ordered NDJSON including complete large notes and unavailable paths", async () => {
+  const large = "x".repeat(1_100_000);
+  const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode(JSON.stringify({path:"a.md",ok:true,content:large})+"\n"+JSON.stringify({path:"missing.md",ok:false,error:"unavailable"})+"\n")); controller.close(); } });
+  const client = new HlmClient("https://memory.example", "t", async (_input, init) => { assert.equal(init?.redirect,"error"); assert.deepEqual(JSON.parse(String(init?.body)),{paths:["a.md","missing.md"]}); return new Response(body); });
+  assert.deepEqual(await client.notes(["a.md","missing.md"]),[{path:"a.md",content:large},{path:"missing.md",error:"unavailable"}]);
+});
+test("batch retrieval rejects over ten paths before making a request", async () => {
+  let calls=0;
+  const client = new HlmClient("https://memory.example","t",async () => { calls++; return new Response(""); });
+  await assert.rejects(client.notes(Array.from({length:11},(_,i)=>String(i))),/1 and 10/);
+  assert.equal(calls,0);
+});
+test("batch retrieval preserves duplicate paths as independent ordered records", async () => {
+  const client = new HlmClient("https://memory.example","t",async () => new Response(
+    JSON.stringify({path:"same.md",ok:true,content:"first"})+"\n"+
+    JSON.stringify({path:"same.md",ok:false,error:"unavailable"})+"\n"));
+  assert.deepEqual(await client.notes(["same.md","same.md"]),[
+    {path:"same.md",content:"first"},{path:"same.md",error:"unavailable"},
+  ]);
+  const inconsistent = new HlmClient("https://memory.example","t",async () => new Response(JSON.stringify({path:"other.md",ok:false,error:"unavailable"})+"\n"));
+  await assert.rejects(inconsistent.notes(["same.md"]),/inconsistent batch records/);
+});

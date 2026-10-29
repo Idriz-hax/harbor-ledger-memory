@@ -703,6 +703,34 @@ def show_node(
     _emit(_node_payload(settings, path), json_output)
 
 
+@app.command()
+def read(
+    paths: list[str] = typer.Argument(
+        ..., help="Explicit vault-relative Markdown paths."
+    ),
+) -> None:
+    """Read complete Markdown notes as one JSON object per input line."""
+    if len(paths) > 10:
+        raise typer.BadParameter("at most 10 paths may be requested")
+    boundary = VaultBoundary(_load_settings())
+    for path in paths:
+        try:
+            identity = boundary.validate_identity(PurePosixPath(path))
+            if identity.suffix.lower() != ".md" or not boundary.is_admitted(identity):
+                raise VaultPathError("not readable")
+            snapshot = boundary.read_file(identity)
+            payload = {
+                "path": identity.as_posix(),
+                "content": snapshot.content.decode("utf-8"),
+                "revision": (
+                    snapshot.version.sha256 if snapshot.version else snapshot.sha256
+                ),
+            }
+        except (ValueError, OSError, UnicodeError):
+            payload = {"path": path, "error": "note unavailable"}
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+
+
 @app.command("show-neighbours")
 def show_neighbours(
     path: str = typer.Argument(..., help="Vault-relative node path."),

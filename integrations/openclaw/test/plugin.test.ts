@@ -2,7 +2,7 @@ import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import plugin, { approvalRequirement, createProviderRuntime, MAX_NOTE_BYTES, REVIEW_INSTRUCTIONS } from "../src/index.js";
+import plugin, { approvalRequirement, createProviderRuntime, REVIEW_INSTRUCTIONS } from "../src/index.js";
 import { HlmClient } from "../src/client.js";
 test("manifest registers token as a config-contract secret input", async () => {
   const manifest = JSON.parse(await readFile(fileURLToPath(new URL("../openclaw.plugin.json", import.meta.url)), "utf8"));
@@ -38,9 +38,12 @@ test("note get distinguishes 404 from oversized-response failures", async () => 
   await assert.rejects(run(413));
   assert.match(calls[0],/path=caf%C3%A9%2Fa%20b\.md/);
 });
-test("provider enforces UTF-8 note byte limit without truncation", async () => {
-  const runtime = createProviderRuntime(new HlmClient("http://localhost","t",async () => Response.json({content:"é".repeat(MAX_NOTE_BYTES / 2 + 1)})));
-  await assert.rejects((await runtime.open({} as never)).provider!.get({reference:{providerId:"harbor-ledger-memory-openclaw",id:"hlm:large"}} as never),/1048576/);
+test("provider get returns complete notes larger than 1 MiB", async () => {
+  const content = "é".repeat(600_000);
+  const runtime = createProviderRuntime(new HlmClient("http://localhost","t",async () => Response.json({content})));
+  const result = await (await runtime.open({} as never)).provider!.get({reference:{providerId:"harbor-ledger-memory-openclaw",id:"hlm:large"}} as never);
+  assert.equal(result.status,"ok");
+  if (result.status === "ok") assert.equal(result.text,content);
 });
 test("health uses status endpoint only and maps ok to ready", async () => {
   const urls: string[] = [];
@@ -91,4 +94,17 @@ test("registered approval hook gates resolution execute and pending result guide
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+test("batch retrieval tool invokes client and returns per-path results", async () => {
+  const originalFetch = globalThis.fetch;
+  const tools = new Map<string, any>();
+  globalThis.fetch = async (_input, init) => {
+    assert.deepEqual(JSON.parse(String(init?.body)),{paths:["a.md","missing.md"]});
+    return new Response(JSON.stringify({path:"a.md",ok:true,content:"full note"})+"\n"+JSON.stringify({path:"missing.md",ok:false,error:"unavailable"})+"\n");
+  };
+  try {
+    (plugin as any).register({pluginConfig:{baseUrl:"https://hlm.example",token:"secret"},registerMemoryCapability(){},registerTool(tool:any){tools.set(tool.name,tool);},on(){}});
+    const result = await tools.get("hlm_get_notes").execute("1",{paths:["a.md","missing.md"]});
+    assert.deepEqual(result.details,[{path:"a.md",content:"full note"},{path:"missing.md",error:"unavailable"}]);
+  } finally { globalThis.fetch=originalFetch; }
 });

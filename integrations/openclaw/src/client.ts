@@ -20,7 +20,6 @@ function projectAgentWriteSummary(value: unknown): AgentWriteSummary {
 }
 
 export class HlmClient {
-  static readonly MAX_NOTE_BYTES = 1_048_576;
   static readonly MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
   private readonly baseUrl: URL;
   constructor(baseUrl: string, private readonly token: string, private readonly fetcher: typeof fetch = fetch) {
@@ -31,13 +30,13 @@ export class HlmClient {
       throw new Error("HLM baseUrl must use HTTPS, or HTTP on explicit loopback, without userinfo, query, or fragment");
     }
   }
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, maxResponseBytes = HlmClient.MAX_RESPONSE_BYTES): Promise<T> {
     const response = await this.fetcher(new URL(path, this.baseUrl), { ...init, redirect: "error", signal: AbortSignal.timeout(10_000), headers: { authorization: `Bearer ${this.token}`, ...(init.body ? { "content-type": "application/json" } : {}), ...init.headers } });
     if (!response.ok) throw new HlmHttpError(response.status);
     const length = Number(response.headers.get("content-length"));
-    if (Number.isFinite(length) && length > HlmClient.MAX_RESPONSE_BYTES) {
+    if (Number.isFinite(length) && length > maxResponseBytes) {
       await response.body?.cancel();
-      throw new Error(`HLM response exceeds ${HlmClient.MAX_RESPONSE_BYTES} byte limit (8 MiB)`);
+      throw new Error(`HLM response exceeds ${maxResponseBytes === HlmClient.MAX_RESPONSE_BYTES ? "8 MiB" : `${maxResponseBytes} byte`} limit`);
     }
     if (!response.body) throw new Error("HLM returned invalid JSON");
     const reader = response.body.getReader();
@@ -47,9 +46,9 @@ export class HlmClient {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > HlmClient.MAX_RESPONSE_BYTES) {
+      if (size > maxResponseBytes) {
         await reader.cancel();
-        throw new Error(`HLM response exceeds ${HlmClient.MAX_RESPONSE_BYTES} byte limit (8 MiB)`);
+        throw new Error(`HLM response exceeds ${maxResponseBytes === HlmClient.MAX_RESPONSE_BYTES ? "8 MiB" : `${maxResponseBytes} byte`} limit`);
       }
       chunks.push(value);
     }
@@ -67,10 +66,43 @@ export class HlmClient {
     return data;
   }
   async note(path: string) {
-    const data = await this.request<{ content: string }>(`/api/v1/notes/content?path=${encodeURIComponent(path)}`);
+    const data = await this.request<{ content: string }>(`/api/v1/notes/content?path=${encodeURIComponent(path)}`, {}, Infinity);
     if (typeof data.content !== "string") throw new Error("HLM returned invalid note content");
-    if (new TextEncoder().encode(data.content).byteLength > HlmClient.MAX_NOTE_BYTES) throw new Error(`HLM note exceeds ${HlmClient.MAX_NOTE_BYTES} byte limit`);
     return data;
+  }
+  async notes(paths: string[]) {
+    if (!Array.isArray(paths) || paths.length < 1 || paths.length > 10 || paths.some(path => typeof path !== "string" || !path.length)) throw new Error("Batch paths must contain between 1 and 10 non-empty paths");
+    const response = await this.fetcher(new URL("/api/v1/notes/content/batch", this.baseUrl), { method: "POST", body: JSON.stringify({ paths }), redirect: "error", signal: AbortSignal.timeout(10_000), headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json" } });
+    if (!response.ok) throw new HlmHttpError(response.status);
+    if (!response.body) throw new Error("HLM returned invalid NDJSON");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const results: Array<{ path: string; content?: string; error?: string }> = [];
+    let pending = "";
+    const consume = (line: string) => {
+      if (!line.trim()) return;
+      let record: unknown;
+      try { record = JSON.parse(line); } catch { throw new Error("HLM returned invalid NDJSON"); }
+      if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error("HLM returned invalid batch record");
+      const item = record as Record<string, unknown>;
+      if (typeof item.path !== "string" || typeof item.ok !== "boolean") throw new Error("HLM returned invalid batch record");
+      if (results.length >= paths.length || item.path !== paths[results.length]) throw new Error("HLM returned inconsistent batch records");
+      if (item.ok && typeof item.content === "string") results.push({ path: item.path, content: item.content });
+      else if (!item.ok) results.push({ path: item.path, error: typeof item.error === "string" ? item.error : "unavailable" });
+      else throw new Error("HLM returned invalid batch record");
+    };
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        pending += decoder.decode(value, { stream: !done });
+        let newline: number;
+        while ((newline = pending.indexOf("\n")) >= 0) { consume(pending.slice(0, newline)); pending = pending.slice(newline + 1); }
+        if (done) break;
+      }
+      if (pending) consume(pending);
+    } catch (error) { await reader.cancel(); throw error; }
+    if (results.length !== paths.length) throw new Error("HLM returned incomplete batch records");
+    return results;
   }
   async health() { return this.request<{ status: string }>("/api/v1/status"); }
   async propose(body: { path: string; content: string; operation: "write" | "mkdir" }) {

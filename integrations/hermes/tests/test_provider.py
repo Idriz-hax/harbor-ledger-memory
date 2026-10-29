@@ -47,6 +47,7 @@ def test_provider_profile_lifecycle_and_tools(monkeypatch, tmp_path):
     assert names == {
         "hlm_query",
         "hlm_get_note",
+        "hlm_get_notes_batch",
         "hlm_propose_write",
         "hlm_propose_folder",
         "hlm_pending_proposals",
@@ -70,6 +71,28 @@ def test_provider_profile_lifecycle_and_tools(monkeypatch, tmp_path):
         == "Open HLM and select Approvals in the navigation."
     )
     assert all("approve" not in name and "reject" not in name for name in names)
+
+
+def test_batch_note_tool_passes_paths_and_returns_per_path_results():
+    from hlm import HLMProvider
+
+    paths = ["A.md", "missing.md"]
+    results = [
+        {"path": "A.md", "ok": True, "content": "full note", "revision": "r1"},
+        {"path": "missing.md", "ok": False, "error": "unavailable"},
+    ]
+
+    class Client:
+        def get_notes_batch(self, requested_paths):
+            assert requested_paths == paths
+            return results
+
+    provider = HLMProvider()
+    provider._client = Client()
+    result = json.loads(
+        provider.handle_tool_call("hlm_get_notes_batch", {"paths": paths})
+    )
+    assert result == results
 
 
 def test_availability_does_not_make_network_call(monkeypatch):

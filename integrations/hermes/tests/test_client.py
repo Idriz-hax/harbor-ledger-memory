@@ -290,3 +290,83 @@ def test_response_is_read_only_to_cap_plus_one(monkeypatch):
     _patch_open(monkeypatch, lambda *_args: Response())
     with pytest.raises(HLMError, match="response exceeds"):
         HLMClient("http://localhost", "t").query("q")
+
+
+def test_batch_ndjson_preserves_order_failures_and_large_content(monkeypatch):
+    content = "x" * (1024 * 1024 + 1)
+    lines = [
+        json.dumps({"path": "A.md", "ok": True, "content": content, "revision": "r"}),
+        json.dumps({"path": "missing.md", "ok": False, "error": "unavailable"}),
+    ]
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def __iter__(self):
+            for line in lines:
+                yield line.encode() + b"\n"
+
+        def read(self, size=-1):
+            pytest.fail("NDJSON response must be consumed incrementally")
+
+    requests = []
+    _patch_open(
+        monkeypatch,
+        lambda request, timeout: requests.append(request) or Response(),
+    )
+    result = HLMClient("http://localhost", "secret").get_notes_batch(
+        ["A.md", "missing.md"]
+    )
+    assert [item["path"] for item in result] == ["A.md", "missing.md"]
+    assert result[0]["content"] == content
+    assert result[1]["ok"] is False
+    assert requests[0].full_url == "http://localhost/api/v1/notes/content/batch"
+    assert requests[0].get_method() == "POST"
+    assert json.loads(requests[0].data) == {"paths": ["A.md", "missing.md"]}
+
+
+def test_batch_more_than_ten_rejected_before_request(monkeypatch):
+    _patch_open(monkeypatch, lambda *_args: pytest.fail("request must not be sent"))
+    with pytest.raises(HLMError):
+        HLMClient("http://localhost", "t").get_notes_batch(["x.md"] * 11)
+
+
+def test_batch_malformed_ndjson_raises_hlm_error(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def __iter__(self):
+            return iter([b"{invalid}\n"])
+
+    _patch_open(monkeypatch, lambda *_args: Response())
+    with pytest.raises(HLMError, match="invalid NDJSON"):
+        HLMClient("http://localhost", "t").get_notes_batch(["x.md"])
+
+
+def test_single_note_content_over_8mib_is_not_capped(monkeypatch):
+    content = "x" * (8 * 1024 * 1024 + 1)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def read(self, size=-1):
+            assert size == -1
+            return json.dumps(
+                {"path": "large.md", "content": content, "revision": "r"}
+            ).encode()
+
+    _patch_open(monkeypatch, lambda *_args: Response())
+    result = HLMClient("http://localhost", "t").get_note("large.md")
+    assert result["content"] == content

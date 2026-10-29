@@ -273,6 +273,10 @@ falls back to open mode.
 
 ### MCP clients
 
+MCP `read_note` and `read_notes` return full content without an application byte
+cap. `read_notes` takes explicit paths and returns independent per-path results;
+both tools enforce path policy and report denied or missing paths as errors.
+
 MCP is a streamable-HTTP endpoint at `/mcp`, bearer-only, and independent of
 the browser UI. Enable it with `hlm config set --mcp-enabled` (or
 `HLM_MCP__ENABLED=true`). For a least-privilege, read-only OpenCode token when
@@ -443,7 +447,13 @@ slow subscribers may miss events.
 
 `GET /api/v1/notes/content?path=...` is bearer-authenticated and path-policy
 checked; it returns `path`, `content`, and `revision`, sends `Cache-Control:
-no-store`, and caps note content at 1 MiB. Native agent providers use
+no-store`, and returns full content without an application byte cap or
+truncation. `hlm read PATH...` prints one JSON object per line (JSONL). The
+authenticated `POST /api/v1/notes/content/batch` accepts 1–10 explicit paths
+and streams NDJSON with one result per path, including safe per-path failures;
+the request body is limited to 256 KiB and each path to 4 KiB UTF-8. These are
+input limits only: responses and note contents have no byte cap or truncation.
+It is `no-store` and does not expand paths through search. Native agent providers use
 `POST /api/v1/agent/writes` (content up to 64 KiB UTF-8, path up to 4 KiB UTF-8,
 raw request up to 512 KiB) to create forced proposal-only writes, and
 `GET /api/v1/agent/writes/pending` for paginated summaries only. Bounded summary

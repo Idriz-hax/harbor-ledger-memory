@@ -405,6 +405,56 @@ def test_mcp_neighbours_rejects_out_of_scope_paths(tmp_path: Path) -> None:
         activity.close()
 
 
+def test_mcp_read_note_and_explicit_batch_returns_complete_ordered_results(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Public").mkdir()
+    large = "x" * (1024 * 1024 + 17)
+    (tmp_path / "Public" / "large.md").write_text(large, encoding="utf-8")
+    (tmp_path / "Public" / "small.md").write_text("# Small", encoding="utf-8")
+    settings = Settings(
+        HLM_VAULT_PATH=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'full-note.db'}",
+    )
+    activity = ActivityService(settings.database_url)
+    token_service = TokenService(settings.database_url)
+    caller, _ = token_service.create(
+        "notes",
+        rules=[
+            FolderRule(path=PurePosixPath("Public"), access=FolderAccess.READ),
+            FolderRule(path=PurePosixPath("Private"), access=FolderAccess.NONE),
+        ],
+    )
+    (tmp_path / "Private").mkdir()
+    (tmp_path / "Private" / "secret.md").write_text("secret", encoding="utf-8")
+    token = hlm_mcp_token.set(caller)
+    try:
+        transport, _ = build_mcp_server(
+            settings, activity, token_service, live_traversal=LiveTraversalPublisher()
+        )
+        server = transport.state.mcp_server
+        one = asyncio.run(server.call_tool("read_note", {"path": "Public/large.md"}))
+        assert json.loads(one.content[0].text)["content"] == large
+        batch = asyncio.run(server.call_tool("read_notes", {"paths": [
+            "Public/small.md", "missing.md", "Private/secret.md", "../escape.md",
+        ]}))
+        results = [json.loads(block.text) for block in batch.content]
+        assert [result["path"] for result in results] == [
+            "Public/small.md", "missing.md", "Private/secret.md", "../escape.md"
+        ]
+        assert results[0]["content"] == "# Small"
+        assert results[0]["revision"]
+        assert [result.get("error") for result in results[1:]] == [
+            "note unavailable", "note unavailable", "note unavailable"
+        ]
+        with pytest.raises(ToolError):
+            asyncio.run(server.call_tool("read_notes", {"paths": ["missing.md"] * 11}))
+    finally:
+        hlm_mcp_token.reset(token)
+        token_service.close()
+        activity.close()
+
+
 def test_mcp_feedback_applies_to_query_trace_and_rejects_invalid_paths(
     tmp_path: Path,
 ) -> None:

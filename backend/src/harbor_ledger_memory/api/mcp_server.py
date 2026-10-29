@@ -379,6 +379,51 @@ def build_mcp_server(
             session.close()
             engine.dispose()
 
+    def _read_note(path: str, policy: AccessPolicy) -> dict[str, object]:
+        boundary = VaultBoundary(settings)
+        try:
+            identity = boundary.validate_identity(PurePosixPath(path))
+            if identity.suffix.lower() != ".md":
+                raise VaultPathError("not a markdown note")
+            if not boundary.is_admitted(identity) or not policy.can_read(
+                identity.as_posix()
+            ):
+                raise VaultPathError("not readable")
+            snapshot = boundary.read_file(identity)
+            return {
+                "path": identity.as_posix(),
+                "content": snapshot.content.decode("utf-8"),
+                "revision": (
+                    snapshot.version.sha256 if snapshot.version else snapshot.sha256
+                ),
+            }
+        except (ValueError, OSError, UnicodeError):
+            return {"path": path, "error": "note unavailable"}
+
+    @mcp.tool()
+    def read_note(path: str) -> str:  # pyright: ignore[reportUnusedFunction]
+        """Read the complete content and revision of one readable Markdown note."""
+        result = _read_note(path, _policy())
+        if "error" in result:
+            raise ToolError("note unavailable")
+        return json.dumps(result, ensure_ascii=False)
+
+    @mcp.tool()
+    def read_notes(paths: list[str]):  # pyright: ignore[reportUnusedFunction]
+        """Read up to 10 explicitly named Markdown notes, in request order."""
+        from mcp.types import TextContent
+
+        if len(paths) > 10:
+            raise ToolError("at most 10 paths may be requested")
+        policy = _policy()
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(_read_note(path, policy), ensure_ascii=False),
+            )
+            for path in paths
+        ]
+
     @mcp.tool()
     def scan() -> str:  # pyright: ignore[reportUnusedFunction]
         """Rebuild the catalog with a full vault scan.

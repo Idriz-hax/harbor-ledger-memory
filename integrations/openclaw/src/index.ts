@@ -5,7 +5,6 @@ import type { MemoryPluginCapability } from "openclaw/plugin-sdk/memory-host-cor
 import { HlmClient, HlmHttpError } from "./client.js";
 
 const ID = "harbor-ledger-memory-openclaw";
-export const MAX_NOTE_BYTES = HlmClient.MAX_NOTE_BYTES;
 export const REVIEW_INSTRUCTIONS = "Open the HLM web UI and select Approvals in the navigation.";
 type Runtime = NonNullable<MemoryPluginCapability["providerRuntime"]>;
 export function createProviderRuntime(client: HlmClient): Runtime {
@@ -47,6 +46,7 @@ const plugin = definePluginEntry({
     api.registerMemoryCapability({ providerRuntime: createProviderRuntime(client) });
     const registerTool = <S extends TSchema>(name: string, parameters: S, execute: (args: Static<S>) => Promise<unknown>) => api.registerTool({ name, label: name, description: name, parameters, execute: async (_toolCallId: string, args: unknown) => { if (!Value.Check(parameters, args)) throw new Error(`Invalid arguments for ${name}`); const details = await execute(args as Static<S>); return { content: [{ type: "text", text: JSON.stringify(details) }], details }; } });
     registerTool("hlm_propose_write", schema, args => client.propose({ path: args.path, content: args.content, operation: "write" }));
+    registerTool("hlm_get_notes", Type.Object({ paths: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 10 }) }), args => client.notes(args.paths));
     registerTool("hlm_propose_folder", Type.Object({ path: Type.String({ minLength: 1 }) }), args => client.propose({ path: args.path, content: "", operation: "mkdir" }));
     registerTool("hlm_pending_proposals", Type.Object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })), before_id: Type.Optional(Type.Integer({ minimum: 1 })) }), async args => ({ ...(await client.pending(args)), reviewUrl: config.reviewUrl ?? config.baseUrl, reviewInstructions: REVIEW_INSTRUCTIONS }));
     api.on("before_tool_call", event => {

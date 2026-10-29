@@ -53,7 +53,13 @@ class HLMClient:
             return False
 
     def _request(
-        self, method: str, path: str, payload: dict[str, Any] | None = None
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        ndjson: bool = False,
+        uncapped: bool = False,
     ) -> Any:
         data = (
             json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -76,7 +82,15 @@ class HLMClient:
             with build_opener(_NoRedirect()).open(
                 request, timeout=self.timeout
             ) as response:
-                body = response.read(self.MAX_RESPONSE_BYTES + 1)
+                if ndjson:
+                    result = []
+                    for line in response:
+                        if line.strip():
+                            result.append(json.loads(line))
+                elif uncapped:
+                    body = response.read()
+                else:
+                    body = response.read(self.MAX_RESPONSE_BYTES + 1)
         except (HTTPError, URLError, TimeoutError, OSError) as exc:
             if isinstance(exc, HTTPError):
                 detail = f"HTTP {exc.code}"
@@ -85,7 +99,13 @@ class HLMClient:
             else:
                 detail = "request failed"
             raise HLMError(f"HLM {method} {path} failed: {detail}") from None
-        if len(body) > self.MAX_RESPONSE_BYTES:
+        except (ValueError, UnicodeDecodeError):
+            if ndjson:
+                raise HLMError(f"HLM {method} {path} returned invalid NDJSON") from None
+            raise
+        if ndjson:
+            return result
+        if not uncapped and len(body) > self.MAX_RESPONSE_BYTES:
             raise HLMError(f"HLM {method} {path} response exceeds 8MiB")
         try:
             return json.loads(body)
@@ -108,13 +128,41 @@ class HLMClient:
 
     def get_note(self, path: str) -> Any:
         result = self._request(
-            "GET", "/api/v1/notes/content?" + urlencode({"path": path})
+            "GET",
+            "/api/v1/notes/content?" + urlencode({"path": path}),
+            uncapped=True,
         )
         if not isinstance(result, dict) or any(
             not isinstance(result.get(key), str)
             for key in ("path", "content", "revision")
         ):
             raise HLMError("HLM note response has an invalid shape")
+        return result
+
+    def get_notes_batch(self, paths: list[str]) -> list[dict[str, Any]]:
+        if (
+            not isinstance(paths, list)
+            or len(paths) > 10
+            or any(not isinstance(path, str) for path in paths)
+        ):
+            raise HLMError("HLM batch paths must be a list of at most 10 strings")
+        route = "/api/v1/notes/content/batch"
+        result = self._request("POST", route, {"paths": paths}, ndjson=True)
+        if len(result) != len(paths) or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("path"), str)
+            or type(item.get("ok")) is not bool
+            or (
+                item["ok"]
+                and any(
+                    not isinstance(item.get(key), str)
+                    for key in ("content", "revision")
+                )
+            )
+            or (not item["ok"] and not isinstance(item.get("error"), str))
+            for item in result
+        ):
+            raise HLMError("HLM batch response has an invalid shape")
         return result
 
     def propose_write(self, path: str, content: str) -> Any:

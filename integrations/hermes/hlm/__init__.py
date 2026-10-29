@@ -82,6 +82,18 @@ class HLMProvider(MemoryProvider):
                 ["path"],
             ),
             tool(
+                "hlm_get_notes_batch",
+                "Read up to 10 full Markdown notes from HLM.",
+                {
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 10,
+                    }
+                },
+                ["paths"],
+            ),
+            tool(
                 "hlm_propose_write",
                 "Propose a Markdown note through HLM review.",
                 {"path": {"type": "string"}, "content": {"type": "string"}},
@@ -110,6 +122,9 @@ class HLMProvider(MemoryProvider):
         handlers = {
             "hlm_query": lambda: self._client.query(arguments["query"]),
             "hlm_get_note": lambda: self._client.get_note(arguments["path"]),
+            "hlm_get_notes_batch": lambda: self._client.get_notes_batch(
+                arguments["paths"]
+            ),
             "hlm_propose_write": lambda: self._client.propose_write(
                 arguments["path"], arguments["content"]
             ),

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
-from harbor_ledger_memory.api.app import MAX_NOTE_BYTES, create_app
+from harbor_ledger_memory.api.app import create_app
 from harbor_ledger_memory.catalog.database import CatalogSession, create_database
 from harbor_ledger_memory.catalog.models import Note
 from harbor_ledger_memory.config import (
@@ -20,13 +21,13 @@ from harbor_ledger_memory.config import (
 from harbor_ledger_memory.services.scan import ScanService
 
 
-def test_note_content_read_is_bounded_authenticated_and_canonical(
+def test_note_content_read_is_unbounded_authenticated_and_canonical(
     tmp_path: Path,
 ) -> None:
     vault = tmp_path / "vault"
     (vault / "AI").mkdir(parents=True)
-    content = "# Café\nwith spaces\n"
-    (vault / "AI" / "Café Notes.md").write_text(content, encoding="utf-8")
+    large_content = "x" * (1024 * 1024 + 1)
+    (vault / "AI" / "Café Notes.md").write_text(large_content, encoding="utf-8")
     settings = Settings(
         vault_path=vault,
         index_root=PurePosixPath("AI"),
@@ -47,8 +48,8 @@ def test_note_content_read_is_bounded_authenticated_and_canonical(
         assert response.status_code == 200
         assert response.json() == {
             "path": "AI/Café Notes.md",
-            "content": content,
-            "revision": hashlib.sha256(content.encode()).hexdigest(),
+            "content": large_content,
+            "revision": hashlib.sha256(large_content.encode()).hexdigest(),
         }
         assert response.headers["cache-control"] == "no-store"
         for layers in (2, 3, 4):
@@ -142,11 +143,10 @@ def test_denied_and_missing_notes_are_indistinguishable_and_not_cached(
         assert denied.headers["cache-control"] == "no-store"
 
 
-def test_invalid_utf8_and_oversized_notes_return_errors(tmp_path: Path) -> None:
+def test_invalid_utf8_notes_return_errors(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     (vault / "AI").mkdir(parents=True)
     (vault / "AI" / "invalid.md").write_bytes(b"\xff")
-    (vault / "AI" / "large.md").write_bytes(b"x" * (MAX_NOTE_BYTES + 1))
     settings = Settings(
         vault_path=vault,
         index_root=PurePosixPath("AI"),
@@ -164,13 +164,8 @@ def test_invalid_utf8_and_oversized_notes_return_errors(tmp_path: Path) -> None:
         invalid = client.get(
             "/api/v1/notes/content?path=AI%2Finvalid.md", headers=headers
         )
-        oversized = client.get(
-            "/api/v1/notes/content?path=AI%2Flarge.md", headers=headers
-        )
         assert invalid.status_code == 422
-        assert oversized.status_code == 413
         assert invalid.headers["cache-control"] == "no-store"
-        assert oversized.headers["cache-control"] == "no-store"
 
 
 def test_note_content_works_without_startup_scan(
@@ -242,3 +237,121 @@ def test_internal_io_error_is_not_reported_as_missing_note(
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 500
+
+
+def test_note_content_batch_streams_ordered_safe_records(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    (vault / "AI" / "Secret").mkdir(parents=True)
+    (vault / "AI" / "one.md").write_text("one" * 500_000, encoding="utf-8")
+    (vault / "AI" / "Secret" / "private.md").write_text("private")
+    settings = Settings(
+        vault_path=vault,
+        index_root=PurePosixPath("AI"),
+        database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+        api=ApiSettings(enabled=True),
+        mcp=McpSettings(enabled=True),
+    )
+    app = create_app(settings)
+    token = app.state.token_service.create(
+        "reader",
+        rules=(
+            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),
+            FolderRule(path=PurePosixPath("AI/Secret"), access=FolderAccess.NONE),
+        ),
+    ).plaintext
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/notes/content/batch",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "paths": [
+                    "AI/one.md",
+                    "AI/absent.md",
+                    "AI/Secret/private.md",
+                    "../bad.md",
+                ]
+            },
+        )
+        records = [json.loads(line) for line in response.text.splitlines()]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/x-ndjson")
+        assert response.headers["cache-control"] == "no-store"
+        assert [item["path"] for item in records] == [
+            "AI/one.md",
+            "AI/absent.md",
+            "AI/Secret/private.md",
+            "../bad.md",
+        ]
+        assert records[0] == {
+            "path": "AI/one.md",
+            "ok": True,
+            "content": "one" * 500_000,
+            "revision": hashlib.sha256(("one" * 500_000).encode()).hexdigest(),
+        }
+        assert {key: value for key, value in records[1].items() if key != "path"} == {
+            key: value for key, value in records[2].items() if key != "path"
+        }
+        assert records[1]["ok"] is False
+        assert records[3]["ok"] is False
+        for payload in (
+            {},
+            {"paths": []},
+            {"paths": [f"AI/{i}.md" for i in range(11)]},
+            {"paths": [1]},
+        ):
+            assert (
+                client.post(
+                    "/api/v1/notes/content/batch",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json=payload,
+                ).status_code
+                == 422
+            )
+
+
+def test_batch_bounds_inputs_and_escapes_surrogate_paths(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    (vault / "AI").mkdir(parents=True)
+    (vault / "AI" / "ok.md").write_text("ok", encoding="utf-8")
+    settings = Settings(
+        vault_path=vault,
+        index_root=PurePosixPath("AI"),
+        database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+        api=ApiSettings(enabled=True),
+        mcp=McpSettings(enabled=True),
+    )
+    app = create_app(settings)
+    token = app.state.token_service.create(
+        "reader",
+        rules=(FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),),
+    ).plaintext
+    headers = {"Authorization": f"Bearer {token}"}
+    with TestClient(app) as client:
+        oversized = client.post(
+            "/api/v1/notes/content/batch",
+            headers={**headers, "Content-Type": "application/json"},
+            content=b"{" + b" " * (256 * 1024) + b"}",
+        )
+        assert oversized.status_code == 413
+        assert oversized.headers["cache-control"] == "no-store"
+
+        response = client.post(
+            "/api/v1/notes/content/batch",
+            headers=headers,
+            content=b'{"paths": ["' + b"x" * 4097 + b'", "AI/ok.md"]}',
+        )
+        rows = [json.loads(line) for line in response.text.splitlines()]
+        assert response.status_code == 200
+        assert rows[0]["ok"] is False
+        assert rows[1]["ok"] is True
+
+        surrogate = client.post(
+            "/api/v1/notes/content/batch",
+            headers={**headers, "Content-Type": "application/json"},
+            content=b'{"paths": ["\\ud800", "AI/ok.md"]}',
+        )
+        rows = [json.loads(line) for line in surrogate.text.splitlines()]
+        assert surrogate.status_code == 200
+        assert rows[0]["path"] == "\ud800"
+        assert rows[0]["ok"] is False
+        assert rows[1]["ok"] is True
