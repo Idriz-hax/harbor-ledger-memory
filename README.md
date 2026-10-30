@@ -54,15 +54,19 @@ command -v git >/dev/null 2>&1 || { echo 'Error: install git before continuing.'
 The installer builds the web UI, installs the CLI in uv's isolated tool
 environment, and runs `hlm setup`.
 
-`hlm setup` guides initial host setup and offers OpenCode, OpenClaw, and Hermes.
-OpenCode's `opencode.json` is updated automatically when it is safe to do so;
-existing JSONC configs and configs that cannot be safely edited require a
-manual merge. OpenClaw's JSON5/config and its `HLM_TOKEN` host secret remain
-manual. Hermes provider files and the profile `base_url` are installed/configured
-by setup, but `HLM_TOKEN` must be added to Hermes' profile secret store. No
-plaintext token is written to host config. Manage or revoke tokens later with
-`hlm token` commands or the HLM UI. See the [OpenClaw](integrations/openclaw/README.md)
-and [Hermes](integrations/hermes/README.md) guides for standalone/manual steps.
+After enabling MCP, `hlm setup` prompts for a host: OpenCode, OpenClaw, Hermes,
+or skip. For a host integration, choose a token name and at least one
+vault-relative folder to grant read access; the token is scoped to those
+folders. OpenCode's `opencode.json` is updated automatically when safe;
+`opencode.jsonc` and configs that cannot be safely edited require a manual
+merge. If OpenCode auto-configuration fails, setup displays the token once for
+that manual merge, or revoke it with `hlm token revoke NAME`. OpenClaw's JSON5
+configuration and `HLM_TOKEN` secret remain manual. Hermes provider files and
+profile `base_url` are installed/configured, but `HLM_TOKEN` must be saved in
+Hermes' profile secret store. No plaintext token is written to host config.
+Manage or revoke access later with `hlm token` commands or the HLM UI. See the
+[OpenClaw](integrations/openclaw/README.md) and
+[Hermes](integrations/hermes/README.md) guides for standalone/manual steps.
 
 To configure an existing checkout manually, use:
 

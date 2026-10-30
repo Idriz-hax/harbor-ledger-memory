@@ -67,9 +67,15 @@ configured index root):
 hlm token create --name opencode-read --rule AI=none --rule AI/Knowledge=read
 ```
 
-`hlm setup` can configure OpenCode automatically when its config is safe to
-edit, and stores the token separately from host config. JSONC configs require a
-manual merge; use the official remote-server configuration in `opencode.json`:
+After MCP is enabled, `hlm setup` offers OpenCode, OpenClaw, Hermes, or skip.
+For a host integration, setup requires a token name and at least one
+vault-relative folder to scope the token. OpenCode config is automated when
+safe; JSONC or unsafe-to-edit configs need a manual merge. If OpenCode setup
+fails, setup displays the token once for manual merge, or revoke it with
+`hlm token revoke NAME`. OpenClaw config and its `HLM_TOKEN` secret stay manual;
+Hermes provider files/profile `base_url` are configured by setup, but
+`HLM_TOKEN` must be saved in Hermes' profile secret store. No plaintext token
+goes into host config. Use the official remote-server shape in `opencode.json`:
 
 ```json
 {
@@ -88,7 +94,7 @@ manual merge; use the official remote-server configuration in `opencode.json`:
 ```
 
 Replace the file path with the protected token file path reported by setup.
-Never put the plaintext token in host config. Manage or revoke it with
+Never put the plaintext token in host config. Manage or revoke access with
 `hlm token` or the HLM UI.
 
 After changing the token or server, run `opencode mcp list` and
