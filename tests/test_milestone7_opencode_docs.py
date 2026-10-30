@@ -9,9 +9,10 @@ def test_opencode_remote_mcp_instructions_are_exact_and_reconnect_safe() -> None
     assert '"type": "remote"' in readme
     assert '"url": "http://127.0.0.1:8765/mcp/"' in readme
     assert '"oauth": false' in readme
-    assert '"Authorization": "Bearer {env:HLM_MCP_TOKEN}"' in readme
+    assert '"servers"' in readme
+    assert '"Authorization": "Bearer {file:/path/to/opencode-token}"' in readme
     assert "opencode mcp list" in readme
     assert "opencode mcp debug" in readme
     assert "hlm token revoke" in readme
-    assert '"Authorization": "Bearer {env:HLM_MCP_TOKEN}"' in skill
+    assert '"Authorization": "Bearer {file:/path/to/opencode-token}"' in skill
     assert '"oauth": false' in skill
