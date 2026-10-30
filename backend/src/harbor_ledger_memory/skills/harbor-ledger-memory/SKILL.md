@@ -67,21 +67,29 @@ configured index root):
 hlm token create --name opencode-read --rule AI=none --rule AI/Knowledge=read
 ```
 
-Set the one-time token as `HLM_MCP_TOKEN` and use this exact official remote
-configuration in `opencode.json`:
+`hlm setup` can configure OpenCode automatically when its config is safe to
+edit, and stores the token separately from host config. JSONC configs require a
+manual merge; use the official remote-server configuration in `opencode.json`:
 
 ```json
 {
   "mcp": {
-    "memory": {
-      "type": "remote",
-      "url": "http://127.0.0.1:8765/mcp/",
-      "oauth": false,
-      "headers": { "Authorization": "Bearer {env:HLM_MCP_TOKEN}" }
+    "servers": {
+      "harbor-ledger-memory": {
+        "type": "remote",
+        "url": "http://127.0.0.1:8765/mcp/",
+        "oauth": false,
+        "enabled": true,
+        "headers": { "Authorization": "Bearer {file:/path/to/opencode-token}" }
+      }
     }
   }
 }
 ```
+
+Replace the file path with the protected token file path reported by setup.
+Never put the plaintext token in host config. Manage or revoke it with
+`hlm token` or the HLM UI.
 
 After changing the token or server, run `opencode mcp list` and
 `opencode mcp debug`, then reconnect. Revoke exposed or retired tokens with

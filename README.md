@@ -54,6 +54,16 @@ command -v git >/dev/null 2>&1 || { echo 'Error: install git before continuing.'
 The installer builds the web UI, installs the CLI in uv's isolated tool
 environment, and runs `hlm setup`.
 
+`hlm setup` guides initial host setup and offers OpenCode, OpenClaw, and Hermes.
+OpenCode's `opencode.json` is updated automatically when it is safe to do so;
+existing JSONC configs and configs that cannot be safely edited require a
+manual merge. OpenClaw's JSON5/config and its `HLM_TOKEN` host secret remain
+manual. Hermes provider files and the profile `base_url` are installed/configured
+by setup, but `HLM_TOKEN` must be added to Hermes' profile secret store. No
+plaintext token is written to host config. Manage or revoke tokens later with
+`hlm token` commands or the HLM UI. See the [OpenClaw](integrations/openclaw/README.md)
+and [Hermes](integrations/hermes/README.md) guides for standalone/manual steps.
+
 To configure an existing checkout manually, use:
 
 ```text
@@ -337,16 +347,25 @@ configuration exactly:
 ```json
 {
   "mcp": {
-    "memory": {
-      "type": "remote",
-      "url": "http://127.0.0.1:8765/mcp/",
-      "oauth": false,
-      "enabled": true,
-      "headers": { "Authorization": "Bearer {env:HLM_MCP_TOKEN}" }
+    "servers": {
+      "harbor-ledger-memory": {
+        "type": "remote",
+        "url": "http://127.0.0.1:8765/mcp/",
+        "oauth": false,
+        "enabled": true,
+        "headers": { "Authorization": "Bearer {file:/path/to/opencode-token}" }
+      }
     }
   }
 }
 ```
+
+OpenCode uses the official `mcp.servers` remote-server shape. The `{file:...}`
+reference points to a protected token file managed by `hlm setup`; do not put
+the token value in host configuration. Setup leaves JSONC files for a manual
+merge rather than rewriting comments or formatting. In that case, add the same
+entry to `mcp.servers` yourself, using the protected token file path reported
+by setup.
 
 After changing the token or server, reconnect and verify the integration:
 

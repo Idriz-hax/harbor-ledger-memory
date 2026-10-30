@@ -4,6 +4,12 @@ Supported Hermes release: **v0.18.1 (`v2026.7.7`)**. The host supports user-dire
 
 ## Install
 
+For guided setup, run `hlm setup` and choose Hermes. It installs the provider
+files and configures the profile's `base_url`; add `HLM_TOKEN` separately to
+Hermes' profile secret store. The token value is never written to host config.
+Manage or revoke it later with `hlm token` or the HLM UI. The manual steps below
+are for standalone installation.
+
 With Hermes installed and `HERMES_HOME` set to the intended profile directory:
 
 ```sh

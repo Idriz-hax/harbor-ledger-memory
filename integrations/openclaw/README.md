@@ -2,6 +2,12 @@
 
 Requires OpenClaw **2026.10.5**. From this directory, package and install:
 
+For guided host setup, run `hlm setup` and choose OpenClaw. It prints the
+configuration to merge and reminds you to store `HLM_TOKEN` in OpenClaw's secret
+store; neither the config nor setup writes a plaintext token. You can manage or
+revoke the token later with `hlm token` or the HLM UI. The manual steps below
+remain available for standalone installation.
+
 ```sh
 npm pack --pack-destination /tmp
 openclaw plugins install npm-pack:/tmp/harbor-ledger-memory-openclaw-2.0.0.tgz --force
