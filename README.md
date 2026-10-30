@@ -5,7 +5,7 @@ Harbor Ledger Memory is local neural memory for AI agents that works with an exi
 HLM 2.1.0 adds model-correct multilingual E5 embeddings while keeping semantic search optional; all non-E5 model inputs are unchanged. Search results can be followed by explicit full-note reads, singly or in batches. See [2.1.0 release notes](RELEASE_NOTES-2.1.0.md), the [Hermes provider guide](integrations/hermes/README.md), and [OpenClaw plugin guide](integrations/openclaw/README.md).
 
 <p align="center">
-  <img src="docs/assets/harbor-ledger-memory.png" alt="Harbor Ledger Memory map showing connected agent context routes across a local-first ledger." width="960" />
+  <img src="docs/harbor-ledger-memory.png" alt="Harbor Ledger Memory map showing connected agent context routes across a local-first ledger." width="960" />
 </p>
 
 ## Contents

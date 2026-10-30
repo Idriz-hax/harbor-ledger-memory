@@ -44,9 +44,6 @@ token-optimizer/
 # macOS metadata.
 .DS_Store
 
-docs/
-!docs/
 docs/*
-!docs/assets/
-docs/assets/*
-!docs/assets/harbor-ledger-memory.png
+!docs/embedding-benchmark.md
+!docs/harbor-ledger-memory.png

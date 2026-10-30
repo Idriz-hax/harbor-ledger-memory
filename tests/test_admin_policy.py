@@ -1,6 +1,6 @@
 """Admin flag contract: management-only, folder access comes from rules.
 
-Spec (docs/superpowers/specs/2026-08-31-per-token-folder-access-design.md):
+Design note:
 the ``admin`` flag means "may manage tokens and settings" ONLY. An admin
 token with no rules gets the default read access like any other token; it
 must not short-circuit the ``AccessPolicy`` path checks. REST and MCP

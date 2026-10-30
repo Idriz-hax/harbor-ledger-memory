@@ -39,6 +39,6 @@ examples or source control.
 
 ## Setup
 
-See the [upgrade guide](docs/upgrading-to-2.0.0.md),
+See the [README quickstart](README.md#quickstart),
 [Hermes provider guide](integrations/hermes/README.md), and
 [OpenClaw plugin guide](integrations/openclaw/README.md).
