@@ -35,7 +35,8 @@ Paste this instruction into your AI agent:
 
 > Install Harbor Ledger Memory from its GitHub repository using the Quickstart
 > instructions in the README. Guide me through the listed setup choices and ask
-> for the path to my Markdown notes; do not start the service unless I ask.
+> for the path to my Markdown notes. After setup succeeds, start the service with
+> `hlm serve` and tell me its local URL.
 
 Or run this from the directory where you want the checkout:
 
