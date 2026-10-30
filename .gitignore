@@ -46,4 +46,6 @@ token-optimizer/
 
 docs/*
 !docs/embedding-benchmark.md
-!docs/harbor-ledger-memory.png
+!docs/assets/
+docs/assets/*
+!docs/assets/harbor-ledger-memory.png
