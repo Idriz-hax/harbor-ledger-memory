@@ -2,7 +2,7 @@
 
 Harbor Ledger Memory is local neural memory for AI agents that works with an existing Markdown vault. Obsidian is a compatible vault application, not a product requirement. It builds a rebuildable index with lexical search, optional semantic search, knowledge-graph context, and Model Context Protocol (MCP) tools. Your Markdown files remain authoritative: the service never rewrites vault content outside its policy-controlled proposal and approval workflow.
 
-HLM 2.1.0 adds model-correct multilingual E5 embeddings while keeping semantic search optional; all non-E5 model inputs are unchanged. Search results can be followed by explicit full-note reads, singly or in batches. See [2.1.0 release notes](RELEASE_NOTES-2.1.0.md), the [Hermes provider guide](integrations/hermes/README.md), and [OpenClaw plugin guide](integrations/openclaw/README.md).
+HLM 2.1.1 adds policy-checked move and delete proposals, broader conflict-free auto-write updates, and a configurable OpenClaw response limit. It retains optional multilingual E5 embeddings and explicit full-note reads. See [2.1.1 release notes](RELEASE_NOTES-2.1.1.md), the [Hermes provider guide](integrations/hermes/README.md), and [OpenClaw plugin guide](integrations/openclaw/README.md).
 
 <p align="center">
   <img src="docs/assets/harbor-ledger-memory.png" alt="Harbor Ledger Memory map showing connected agent context routes across a local-first ledger." width="960" />
