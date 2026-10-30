@@ -168,6 +168,7 @@ def setup(
         )
     if host != "skip" and created is not None:
         from harbor_ledger_memory.host_setup import setup_host
+        from harbor_ledger_memory.hosts.opencode import OpenCodeSetupCancelled
 
         try:
             instructions = setup_host(
@@ -178,13 +179,24 @@ def setup(
                 ),
             )
         except Exception as exc:
+            if host == "opencode":
+                output(created.plaintext)
+                if isinstance(exc, OpenCodeSetupCancelled):
+                    raise SetupError(
+                        f"OpenCode setup cancelled. Token '{name}' was created; "
+                        f"revoke it with `hlm token revoke {name}`."
+                    ) from exc
+                raise SetupError(
+                    f"OpenCode setup failed. Save this one-time token and manually "
+                    f"merge it into OpenCode's MCP config, or revoke it with "
+                    f"`hlm token revoke {name}`."
+                ) from exc
             recovery = (
                 f"Host setup failed. Token '{name}' was created; save the one-time "
                 f"token shown above and configure {host} manually, or revoke it "
                 f"with `hlm token revoke {name}`."
                 if host != "opencode"
-                else f"OpenCode setup failed. Token '{name}' was created; revoke it "
-                f"with `hlm token revoke {name}` and rerun setup."
+                else "OpenCode setup failed."
             )
             raise SetupError(recovery) from exc
         if instructions:

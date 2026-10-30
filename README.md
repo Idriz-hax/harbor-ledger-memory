@@ -60,7 +60,10 @@ vault-relative folder to grant read access; the token is scoped to those
 folders. OpenCode's `opencode.json` is updated automatically when safe;
 `opencode.jsonc` and configs that cannot be safely edited require a manual
 merge. If OpenCode auto-configuration fails, setup displays the token once for
-that manual merge, or revoke it with `hlm token revoke NAME`. OpenClaw's JSON5
+that manual merge, or revoke it with `hlm token revoke NAME`. Declining
+replacement of an existing OpenCode MCP entry leaves that host config untouched;
+the newly created token is shown once and can be revoked with the same command.
+OpenClaw's JSON5
 configuration and `HLM_TOKEN` secret remain manual. Hermes provider files and
 profile `base_url` are installed/configured, but `HLM_TOKEN` must be saved in
 Hermes' profile secret store. No plaintext token is written to host config.

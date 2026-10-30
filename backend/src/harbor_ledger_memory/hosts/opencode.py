@@ -20,6 +20,10 @@ class OpenCodeSetupError(Exception):
     """Actionable error that leaves host configuration untouched."""
 
 
+class OpenCodeSetupCancelled(OpenCodeSetupError):
+    """User declined replacing an existing OpenCode MCP entry."""
+
+
 def _paths() -> tuple[Path, Path]:
     root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return root / "opencode", root / "harbor-ledger-memory"
@@ -78,7 +82,7 @@ def setup(
                 config_path.read_text(encoding="utf-8"), object_pairs_hook=_object
             )
         except (json.JSONDecodeError, ValueError) as exc:
-            raise OpenCodeSetupError(
+            raise OpenCodeSetupCancelled(
                 f"Cannot safely edit {config_path} (malformed JSON or duplicate keys); "
                 "manually merge mcp.servers."
             ) from exc

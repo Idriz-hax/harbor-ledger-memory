@@ -399,7 +399,7 @@ def test_selected_host_empty_folders_fails_before_config_write(
     assert not (tmp_path / "config.toml").exists()
 
 
-def test_host_adapter_error_is_actionable_and_opencode_token_revoke_is_noted(
+def test_opencode_adapter_error_outputs_one_time_token_and_manual_recovery(
     monkeypatch, tmp_path
 ):
     from types import SimpleNamespace
@@ -421,12 +421,56 @@ def test_host_adapter_error_is_actionable_and_opencode_token_revoke_is_noted(
     monkeypatch.setattr(setup_impl, "TokenService", Tokens)
     monkeypatch.setattr("harbor_ledger_memory.host_setup.setup_host",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("details")))
-    with pytest.raises(setup_impl.SetupError, match="revoke it"):
+    output = []
+    with pytest.raises(setup_impl.SetupError, match="manually merge") as error:
         setup_impl.setup(
             confirm=Answers([False, True, False, True, False], []).confirm,
             prompt=Answers([], [str(vault), "opencode", "name", "Folder"]).prompt,
-            output=lambda _: None,
+            output=output.append,
         )
+    assert output.count("once") == 1
+    assert "opencode-token" not in " ".join(output)
+    assert "hlm token revoke name" in str(error.value)
+
+
+def test_declined_opencode_replacement_is_cancellation_with_revoke_guidance(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from harbor_ledger_memory.hosts.opencode import OpenCodeSetupCancelled
+
+    vault = tmp_path / "v"
+    vault.mkdir()
+    monkeypatch.setattr(setup_impl, "config_path", lambda: tmp_path / "config.toml")
+    monkeypatch.setattr(setup_impl, "read_persistent_config", lambda: {})
+    monkeypatch.setattr(setup_impl, "update_persistent_config", lambda _: None)
+    monkeypatch.setattr(
+        setup_impl.Settings, "load_from",
+        classmethod(lambda cls, path: SimpleNamespace(database_url="unused")),
+    )
+
+    class Tokens:
+        def __init__(self, _url): pass
+        def create(self, *a, **k): return SimpleNamespace(plaintext="once")
+        def close(self): pass
+
+    monkeypatch.setattr(setup_impl, "TokenService", Tokens)
+
+    def decline(*args, **kwargs):
+        assert kwargs["confirm_replace"]() is False
+        raise OpenCodeSetupCancelled("declined")
+
+    monkeypatch.setattr("harbor_ledger_memory.host_setup.setup_host", decline)
+    output = []
+    with pytest.raises(setup_impl.SetupError, match="cancelled") as error:
+        setup_impl.setup(
+            confirm=Answers([False, True, False, True, False, False], []).confirm,
+            prompt=Answers([], [str(vault), "opencode", "name", "Folder"]).prompt,
+            output=output.append,
+        )
+    assert output.count("once") == 1
+    assert "hlm token revoke name" in str(error.value)
 
 
 def test_mcp_disabled_does_not_ask_for_host(monkeypatch, tmp_path):
