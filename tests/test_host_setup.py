@@ -109,4 +109,48 @@ def test_config_write_failure_removes_new_secret(tmp_path, monkeypatch):
 
 def test_dispatcher_rejects_unsupported_host():
     with pytest.raises(ValueError, match="Unsupported host"):
-        setup_host("openclaw")
+        setup_host("unknown")
+
+
+def test_hermes_profile_config_preserves_keys_and_never_writes_token(tmp_path):
+    from harbor_ledger_memory.hosts.hermes import setup as setup_hermes
+
+    plugin = tmp_path / "plugins" / "hlm"
+    plugin.mkdir(parents=True)
+    config = plugin / "config.json"
+    config.write_text('{"review_url":"https://review.example","other":true}')
+    result = setup_hermes(hermes_home=tmp_path)
+    saved = json.loads(config.read_text())
+    assert saved == {
+        "review_url": "https://review.example",
+        "other": True,
+        "base_url": "http://127.0.0.1:8765",
+    }
+    assert "token" not in config.read_text().lower()
+    root = (
+        __import__("pathlib").Path(__file__).parents[1]
+        / "integrations"
+        / "hermes"
+        / "hlm"
+    )
+    for name in ("__init__.py", "client.py"):
+        assert (plugin / name).read_bytes() == (root / name).read_bytes()
+    assert result == config
+
+
+def test_openclaw_returns_actionable_manual_instructions(tmp_path, monkeypatch):
+    from harbor_ledger_memory.hosts.openclaw import setup as setup_openclaw
+
+    path = tmp_path / ".openclaw" / "openclaw.json"
+    path.parent.mkdir()
+    path.write_text("{ plugins: { slots: { memory: 'memory-core' } } }")
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    instructions = setup_host("openclaw")
+    assert path.read_text().endswith("}")
+    assert "cd integrations/openclaw" in instructions
+    assert "npm pack" in instructions
+    assert "npm-pack:./harbor-ledger-memory-openclaw-2.0.0.tgz --force" in instructions
+    assert "memory-core" in instructions
+    assert 'id: "HLM_TOKEN"' in instructions
+    assert "HLM_TOKEN" in setup_openclaw()
+    assert "secret" not in path.read_text()
