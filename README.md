@@ -44,25 +44,27 @@ build — every `hlm` command still works, only the web UI is unavailable.
 This installs the `hlm` command globally for the current user. Everything stays
 under `~/.local`; nothing is installed system-wide.
 
+Run this POSIX shell command on macOS or Linux. It checks prerequisites before
+cloning and will not overwrite an existing `harbor-ledger-memory` directory:
+
+```sh
+command -v git >/dev/null 2>&1 || { echo 'Error: install git before continuing.' >&2; exit 1; }; command -v uv >/dev/null 2>&1 || { echo 'Error: install uv from https://docs.astral.sh/uv/getting-started/installation/.' >&2; exit 1; }; command -v node >/dev/null 2>&1 || { echo 'Error: install Node.js 18 or newer before continuing.' >&2; exit 1; }; command -v npm >/dev/null 2>&1 || { echo 'Error: install npm (normally included with Node.js).' >&2; exit 1; }; node -e 'if (+process.versions.node.split(".")[0] < 18) { console.error("Error: Node.js 18 or newer is required."); process.exit(1); }' || exit 1; [ ! -e "$PWD/harbor-ledger-memory" ] || { echo "Error: $PWD/harbor-ledger-memory already exists; move it or choose another directory." >&2; exit 1; }; git clone https://github.com/Idriz-hax/harbor-ledger-memory.git "$PWD/harbor-ledger-memory" && cd "$PWD/harbor-ledger-memory" && ./scripts/install.sh
+```
+
+The installer builds the web UI, installs the CLI in uv's isolated tool
+environment, and runs `hlm setup`.
+
+To configure an existing checkout manually, use:
+
 ```text
-# 1. Get the source
-git clone https://github.com/Idriz-hax/harbor-ledger-memory.git
-cd harbor-ledger-memory
-
-# 2. Build the web UI (the wheel packages this, so it is required)
-(cd web && npm ci && npm run build)
-
-# 3. Install the CLI globally (user-isolated, no sudo)
-uv tool install .
-
-# 4. Point it at an existing Obsidian vault directory
+# Point it at an existing Obsidian vault directory
 hlm config set --vault-path /path/to/your/obsidian/vault
 
-# 5. Enable the surfaces you want. The server is config-gated and refuses to
+# Enable the surfaces you want. The server is config-gated and refuses to
 #    start until the frontend is enabled. Localhost UI + MCP:
 hlm config set --frontend-enabled --frontend-mode loopback --mcp-enabled
 
-# 6. Verify the index builds, then start the service
+# Verify the index builds, then start the service
 hlm scan
 hlm serve  # open http://127.0.0.1:8765
 ```
@@ -72,7 +74,7 @@ private runtime under `~/.local/share/uv/tools`. If `hlm` is not found,
 open a new terminal or add `~/.local/bin` to your `PATH`. Remove it later with
 `uv tool uninstall hlm`.
 
-To update later, pull the changes and reinstall:
+To update a manual checkout later, pull the changes and reinstall:
 
 ```text
 git pull
