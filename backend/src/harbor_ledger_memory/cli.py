@@ -54,7 +54,8 @@ from harbor_ledger_memory.services.tokens import (
     TokenService,
 )
 from harbor_ledger_memory.services.validation import ValidationService
-from harbor_ledger_memory.setup import SetupError, setup as run_setup
+from harbor_ledger_memory.setup import SetupError
+from harbor_ledger_memory.setup import setup as run_setup
 from harbor_ledger_memory.vault.boundary import VaultBoundary, VaultPathError
 from harbor_ledger_memory.watcher import VaultWatchService
 
