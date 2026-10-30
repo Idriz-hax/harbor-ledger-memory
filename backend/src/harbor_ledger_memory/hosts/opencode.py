@@ -82,7 +82,7 @@ def setup(
                 config_path.read_text(encoding="utf-8"), object_pairs_hook=_object
             )
         except (json.JSONDecodeError, ValueError) as exc:
-            raise OpenCodeSetupCancelled(
+            raise OpenCodeSetupError(
                 f"Cannot safely edit {config_path} (malformed JSON or duplicate keys); "
                 "manually merge mcp.servers."
             ) from exc
@@ -107,7 +107,7 @@ def setup(
     current = servers.get("harbor-ledger-memory")
     if current is not None and current != entry:
         if confirm_replace is None or not confirm_replace():
-            raise OpenCodeSetupError(
+            raise OpenCodeSetupCancelled(
                 "Existing harbor-ledger-memory server differs; confirm replacement "
                 "or manually merge."
             )

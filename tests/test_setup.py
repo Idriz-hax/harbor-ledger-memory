@@ -433,6 +433,42 @@ def test_opencode_adapter_error_outputs_one_time_token_and_manual_recovery(
     assert "hlm token revoke name" in str(error.value)
 
 
+def test_malformed_opencode_json_outputs_one_time_token_and_manual_recovery(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    vault = tmp_path / "v"
+    vault.mkdir()
+    config_dir = tmp_path / "opencode"
+    config_dir.mkdir()
+    (config_dir / "opencode.json").write_text('{"mcp": {', encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(setup_impl, "config_path", lambda: tmp_path / "config.toml")
+    monkeypatch.setattr(setup_impl, "read_persistent_config", lambda: {})
+    monkeypatch.setattr(setup_impl, "update_persistent_config", lambda _: None)
+    monkeypatch.setattr(
+        setup_impl.Settings, "load_from",
+        classmethod(lambda cls, path: SimpleNamespace(database_url="unused")),
+    )
+
+    class Tokens:
+        def __init__(self, _url): pass
+        def create(self, *a, **k): return SimpleNamespace(plaintext="once")
+        def close(self): pass
+
+    monkeypatch.setattr(setup_impl, "TokenService", Tokens)
+    output = []
+    with pytest.raises(setup_impl.SetupError, match="manually merge") as error:
+        setup_impl.setup(
+            confirm=Answers([False, True, False, True, False], []).confirm,
+            prompt=Answers([], [str(vault), "opencode", "name", "Folder"]).prompt,
+            output=output.append,
+        )
+    assert output.count("once") == 1
+    assert "hlm token revoke name" in str(error.value)
+
+
 def test_declined_opencode_replacement_is_cancellation_with_revoke_guidance(
     monkeypatch, tmp_path
 ):
