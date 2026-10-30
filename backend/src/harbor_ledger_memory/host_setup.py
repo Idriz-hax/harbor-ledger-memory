@@ -1,6 +1,7 @@
 """Dispatch host-specific setup adapters."""
 
 from collections.abc import Callable
+from pathlib import Path
 
 from harbor_ledger_memory.hosts import hermes, openclaw, opencode
 
@@ -10,7 +11,7 @@ def setup_host(
     *,
     token: str | None = None,
     confirm_replace: Callable[[], bool] | None = None,
-    hermes_home=None,
+    hermes_home: Path | None = None,
 ) -> str | None:
     """Configure a supported host by its explicit name."""
     if name == "opencode":

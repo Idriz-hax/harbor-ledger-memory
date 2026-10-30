@@ -44,6 +44,12 @@ def setup(
 
     ui = confirm("Enable Web UI?", default=False)
     mcp = confirm("Enable MCP?", default=False)
+    host = "skip"
+    if mcp:
+        host = prompt("MCP host (opencode/openclaw/hermes/skip)", default="skip")
+        host = host.strip().lower()
+        if host not in {"opencode", "openclaw", "hermes", "skip"}:
+            raise SetupError("Choose opencode, openclaw, hermes, or skip.")
     api = confirm("Enable API?", default=False)
     if not confirm("Keep access localhost only?", default=True):
         raise SetupError(
@@ -61,7 +67,9 @@ def setup(
             )
         model = prompt("Embedding model", default="all-MiniLM-L6-v2")
 
-    create_token = confirm("Create an optional read-only token?", default=False)
+    create_token = host == "skip" and confirm(
+        "Create an optional read-only token?", default=False
+    )
     name = ""
     folders: list[FolderRule] = []
     index_root = PurePosixPath(str(existing.get("index_root", ".")))
@@ -85,6 +93,27 @@ def setup(
         if folders and not name:
             raise SetupError("Token name must not be empty.")
 
+    if host != "skip":
+        name = prompt("Host token name").strip()
+        folder_text = prompt("Vault-relative folders for host (comma-separated)")
+        folders = []
+        for item in (part.strip() for part in folder_text.split(",")):
+            if not item:
+                continue
+            try:
+                rule = FolderRule(path=item, access=FolderAccess.READ)
+                rule.path.relative_to(index_root)
+            except (ValidationError, ValueError) as exc:
+                raise SetupError(
+                    f"Invalid folder '{item}': must be a valid vault-relative "
+                    f"folder within index root '{index_root}'."
+                ) from exc
+            folders.append(rule)
+        if not name or not folders:
+            raise SetupError(
+                "Host token requires a name and at least one scoped folder."
+            )
+
     updates: dict[str, object] = {
         "vault_path": str(vault),
         "frontend": {"enabled": ui, "mode": "loopback"},
@@ -98,6 +127,7 @@ def setup(
         updates
     )  # all prompts/validation finish before the first write
 
+    created = None
     if folders:
         service = None
         cleanup_failed = False
@@ -120,12 +150,14 @@ def setup(
                     service.close()
                 except Exception:
                     cleanup_failed = True
-        output(created.plaintext)
-        output(
-            f"Save this token now; it is shown once. Update folder access with "
-            f"`hlm token update {name} --rule .=none --rule FOLDER=read`; revoke it "
-            f"with `hlm token revoke {name}`."
-        )
+        if host != "opencode":
+            output(created.plaintext)
+            output(
+                f"Save this token now; it is shown once. Update folder access with "
+                f"`hlm token update {name} --rule .=none --rule FOLDER=read`; "
+                "revoke it "
+                f"with `hlm token revoke {name}`."
+            )
         if cleanup_failed:
             output("Warning: token was created, but cleanup failed.")
     elif create_token:
@@ -134,6 +166,34 @@ def setup(
             "token later with `hlm token create --name NAME --rule .=none "
             "--rule FOLDER=read`."
         )
+    if host != "skip" and created is not None:
+        from harbor_ledger_memory.host_setup import setup_host
+
+        try:
+            instructions = setup_host(
+                host,
+                token=created.plaintext,
+                confirm_replace=lambda: confirm(
+                    "Replace existing OpenCode MCP config?", default=False
+                ),
+            )
+        except Exception as exc:
+            recovery = (
+                f"Host setup failed. Token '{name}' was created; save the one-time "
+                f"token shown above and configure {host} manually, or revoke it "
+                f"with `hlm token revoke {name}`."
+                if host != "opencode"
+                else f"OpenCode setup failed. Token '{name}' was created; revoke it "
+                f"with `hlm token revoke {name}` and rerun setup."
+            )
+            raise SetupError(recovery) from exc
+        if instructions:
+            output(instructions)
+        if host in {"openclaw", "hermes"}:
+            output(
+                f"Use the one-time token shown above as the {host} secret; "
+                "do not put it in config files."
+            )
     if ui:
         output(
             "Web UI enabled for localhost only. Start it with `hlm serve`. "

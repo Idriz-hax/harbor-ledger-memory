@@ -335,3 +335,103 @@ def test_close_failure_still_displays_created_token(monkeypatch, tmp_path):
 
     assert output[0] == "hlm_one_time_secret"
     assert any("cleanup failed" in line for line in output)
+
+
+@pytest.mark.parametrize("host", ["opencode", "openclaw", "hermes"])
+def test_selected_host_creates_scoped_token_without_optional_prompt(
+    monkeypatch, tmp_path, host
+):
+    from types import SimpleNamespace
+
+    vault = tmp_path / "v"
+    vault.mkdir()
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setattr(setup_impl, "config_path", lambda: cfg)
+    monkeypatch.setattr(setup_impl, "read_persistent_config", lambda: {})
+    monkeypatch.setattr(setup_impl, "update_persistent_config", lambda _: None)
+    monkeypatch.setattr(
+        setup_impl.Settings, "load_from",
+        classmethod(lambda cls, path: SimpleNamespace(database_url="unused")),
+    )
+    calls = []
+
+    class Tokens:
+        def __init__(self, _url): pass
+        def create(self, name, rules, admin):
+            calls.append((name, rules, admin))
+            return SimpleNamespace(plaintext="hlm_once")
+        def close(self): pass
+
+    monkeypatch.setattr(setup_impl, "TokenService", Tokens)
+    monkeypatch.setattr(
+        "harbor_ledger_memory.host_setup.setup_host",
+        lambda selected, **kwargs: calls.append((selected, kwargs))
+        or "Host instructions",
+    )
+    prompts = iter([str(vault), host, "host-token", "Notes"])
+    confirms = iter([False, True, False, True, False])
+    output = []
+    setup_impl.setup(confirm=lambda *a, **k: next(confirms),
+                     prompt=lambda *a, **k: next(prompts), output=output.append)
+    assert calls[0][0] == "host-token"
+    assert [rule.path.as_posix() for rule in calls[0][1]] == [".", "Notes"]
+    assert calls[1][0] == host and calls[1][1]["token"] == "hlm_once"
+    if host == "opencode":
+        assert "hlm_once" not in " ".join(output)
+    else:
+        assert "hlm_once" in output
+    if host != "opencode":
+        assert any("shown once" in line for line in output)
+        assert any("Host instructions" in line for line in output)
+
+
+@pytest.mark.parametrize("host", ["opencode", "openclaw", "hermes"])
+def test_selected_host_empty_folders_fails_before_config_write(
+    monkeypatch, tmp_path, host
+):
+    vault = tmp_path / "v"
+    vault.mkdir()
+    monkeypatch.setattr(setup_impl, "read_persistent_config", lambda: {})
+    with pytest.raises(setup_impl.SetupError, match="at least one scoped folder"):
+        setup_with(monkeypatch, tmp_path,
+                   Answers([False, True, False, True, False, False],
+                           [str(vault), host, "name", " "]))
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_host_adapter_error_is_actionable_and_opencode_token_revoke_is_noted(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    vault = tmp_path / "v"
+    vault.mkdir()
+    monkeypatch.setattr(setup_impl, "config_path", lambda: tmp_path / "config.toml")
+    monkeypatch.setattr(setup_impl, "read_persistent_config", lambda: {})
+    monkeypatch.setattr(setup_impl, "update_persistent_config", lambda _: None)
+    monkeypatch.setattr(
+        setup_impl.Settings,
+        "load_from",
+        classmethod(lambda cls, path: SimpleNamespace(database_url="unused")),
+    )
+    class Tokens:
+        def __init__(self, _url): pass
+        def create(self, *a, **k): return SimpleNamespace(plaintext="once")
+        def close(self): pass
+    monkeypatch.setattr(setup_impl, "TokenService", Tokens)
+    monkeypatch.setattr("harbor_ledger_memory.host_setup.setup_host",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("details")))
+    with pytest.raises(setup_impl.SetupError, match="revoke it"):
+        setup_impl.setup(
+            confirm=Answers([False, True, False, True, False], []).confirm,
+            prompt=Answers([], [str(vault), "opencode", "name", "Folder"]).prompt,
+            output=lambda _: None,
+        )
+
+
+def test_mcp_disabled_does_not_ask_for_host(monkeypatch, tmp_path):
+    vault = tmp_path / "v"
+    vault.mkdir()
+    setup_with(monkeypatch, tmp_path,
+               Answers([False, False, False, True, False, False], [str(vault)]))
+    assert (tmp_path / "config.toml").exists()
