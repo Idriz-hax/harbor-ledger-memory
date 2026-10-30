@@ -102,6 +102,42 @@ test("oversized streamed responses cancel instead of parsing or truncating", asy
   await assert.rejects(client.pending(),/8 MiB/);
   assert.equal(cancelled,true);
 });
+test("response limit is configurable and applies to notes and JSON", async () => {
+  const content = "x".repeat(8 * 1024 * 1024 + 1);
+  const client = new HlmClient("https://memory.example", "t", async input => new URL(String(input)).pathname.endsWith("/batch")
+    ? new Response(JSON.stringify({path:"a",ok:true,content})+"\n")
+    : Response.json({content}), 9 * 1024 * 1024);
+  assert.equal((await client.note("a")).content.length, content.length);
+  assert.equal((await client.notes(["a"]))[0].content?.length, content.length);
+});
+test("note JSON and batch NDJSON enforce configured body limit and cancel", async () => {
+  for (const batch of [false, true]) {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode(batch ? JSON.stringify({path:"a",ok:true,content:"x"})+"\n" : JSON.stringify({content:"x"}))); }, cancel() { cancelled = true; } });
+    const client = new HlmClient("https://memory.example", "t", async () => new Response(body), 1);
+    await assert.rejects(batch ? client.notes(["a"]) : client.note("a"), /exceeds 1 byte limit/);
+    assert.equal(cancelled, true);
+  }
+});
+test("response limit defaults to 8 MiB and rejects invalid values", () => {
+  const client = new HlmClient("https://memory.example", "t");
+  assert.equal((client as any).maxResponseBytes, 8 * 1024 * 1024);
+  for (const value of [0, -1, 1.5, NaN, Infinity, 256 * 1024 * 1024 + 1]) assert.throws(() => new HlmClient("https://memory.example", "t", fetch, value), /positive integer/);
+});
+test("non-2xx response bodies obey the configured limit and preserve status otherwise", async () => {
+  for (const batch of [false, true]) {
+    let cancelled = false;
+    const over = new Response("too large", {status: 413, headers: {"content-length": "9"}});
+    const client = new HlmClient("https://memory.example", "t", async () => over, 8);
+    await assert.rejects(batch ? client.notes(["a"]) : client.note("a"), /exceeds 8 byte limit/);
+    assert.equal(over.bodyUsed, true);
+
+    const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode("error body")); }, cancel() { cancelled = true; } });
+    const normal = new HlmClient("https://memory.example", "t", async () => new Response(body, {status: 403}), 100);
+    await assert.rejects(batch ? normal.notes(["a"]) : normal.note("a"), error => error instanceof Error && error.message === "HLM request failed (403)");
+    assert.equal(cancelled, true);
+  }
+});
 test("batch retrieval streams ordered NDJSON including complete large notes and unavailable paths", async () => {
   const large = "x".repeat(1_100_000);
   const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode(JSON.stringify({path:"a.md",ok:true,content:large})+"\n"+JSON.stringify({path:"missing.md",ok:false,error:"unavailable"})+"\n")); controller.close(); } });

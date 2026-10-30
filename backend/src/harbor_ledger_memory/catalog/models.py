@@ -40,6 +40,7 @@ class MemoryPathType(PosixPathType):
     """Vault-relative POSIX paths at the historical 1024-character width."""
 
     impl = String(1024)
+    cache_ok = True
 
 
 class Base(DeclarativeBase):
@@ -436,6 +437,22 @@ class MemoryWriteProposal(Base):
     created_paths_json: Mapped[str] = mapped_column(
         Text, nullable=False, default="[]", server_default="[]"
     )
+    proposal_data_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    @property
+    def proposal_data(self) -> dict[str, Any] | None:
+        if not self.proposal_data_json:
+            return None
+        value = json.loads(self.proposal_data_json)
+        return value if isinstance(value, dict) else None
+
+    @proposal_data.setter
+    def proposal_data(self, value: dict[str, Any] | None) -> None:
+        self.proposal_data_json = (
+            None
+            if value is None
+            else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        )
 
     @property
     def affected_paths(self) -> list[str]:

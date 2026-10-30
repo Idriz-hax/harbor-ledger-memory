@@ -15,7 +15,13 @@ from harbor_ledger_memory.catalog.database import (
     rebuild_catalog,
     search_fts,
 )
-from harbor_ledger_memory.catalog.models import Diagnostic, Link, Note, ScanRun
+from harbor_ledger_memory.catalog.models import (
+    Diagnostic,
+    Link,
+    MemoryPathType,
+    Note,
+    ScanRun,
+)
 from harbor_ledger_memory.domain.models import (
     Frontmatter,
     ParseDiagnostic,
@@ -28,6 +34,10 @@ def make_session(tmp_path: Path) -> tuple[Engine, Session]:
     database_path = tmp_path / "catalog.db"
     engine = create_database(f"sqlite:///{database_path}")
     return engine, CatalogSession(bind=engine)
+
+
+def test_memory_path_type_declares_cache_safety() -> None:
+    assert MemoryPathType.__dict__.get("cache_ok") is True
 
 
 def run_migration(tmp_path: Path, *, offline: bool = False) -> Config:

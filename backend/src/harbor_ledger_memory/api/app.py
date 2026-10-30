@@ -458,6 +458,17 @@ class WriteRequest(BaseModel):
     operation: Literal["write", "mkdir"] = "write"
 
 
+class MoveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: str
+    destination: str
+
+
+class DeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+
+
 class AgentWriteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -514,6 +525,9 @@ class WriteProposalResponse(BaseModel):
     creator_token_id: int | None
     base_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     diff: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    proposal_data: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class WritesListResponse(BaseModel):
@@ -1150,7 +1164,7 @@ def create_app(
         request: WriteRequest,
         auth: AuthContext = Depends(authenticated),
     ) -> WriteProposalResponse:
-        """Create a write proposal, or auto-apply an allowed managed update.
+        """Create a write proposal or auto-apply an allowed conflict-free write.
 
         The caller's per-token access policy decides deny/propose/auto —
         the global ``settings.folder_rules`` are a draft template for the
@@ -1175,6 +1189,51 @@ def create_app(
                 policy=auth.policy,
             )
             return _write_response(proposal)
+        except VaultWriteDenied as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        finally:
+            session.close()
+            engine.dispose()
+
+    @application.post("/api/v1/moves", response_model=WriteProposalResponse)
+    def create_move(
+        request: MoveRequest, auth: AuthContext = Depends(authenticated)
+    ) -> WriteProposalResponse:
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        try:
+            service = VaultMutationService.from_settings(
+                session,
+                settings,
+                activity_service=activity_service,
+                live_traversal=live_traversal,
+            )
+            proposal = service.request_move(
+                request.source, request.destination, policy=auth.policy
+            )
+            return _write_response(proposal)
+        except VaultWriteDenied as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        finally:
+            session.close()
+            engine.dispose()
+
+    @application.post("/api/v1/deletes", response_model=WriteProposalResponse)
+    def create_delete(
+        request: DeleteRequest, auth: AuthContext = Depends(authenticated)
+    ) -> WriteProposalResponse:
+        engine = create_database(settings.database_url)
+        session = CatalogSession(bind=engine)
+        try:
+            service = VaultMutationService.from_settings(
+                session,
+                settings,
+                activity_service=activity_service,
+                live_traversal=live_traversal,
+            )
+            return _write_response(
+                service.request_delete(request.path, policy=auth.policy)
+            )
         except VaultWriteDenied as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         finally:
@@ -1444,7 +1503,10 @@ def create_app(
                 proposals=[
                     _write_response(proposal)
                     for proposal in proposals
-                    if auth.policy.can_read(proposal.path)
+                    if all(
+                        auth.policy.can_read(path)
+                        for path in (proposal.path, *proposal.affected_paths)
+                    )
                 ]
             )
         finally:
@@ -2573,6 +2635,7 @@ def _write_response(proposal: MemoryWriteProposal) -> WriteProposalResponse:
         creator_token_id=proposal.creator_token_id,
         base_hash=proposal.expected_source_hash,
         diff=proposal.base_diff,
+        proposal_data=proposal.proposal_data,
     )
 
 

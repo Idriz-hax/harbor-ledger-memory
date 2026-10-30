@@ -21,8 +21,10 @@ function projectAgentWriteSummary(value: unknown): AgentWriteSummary {
 
 export class HlmClient {
   static readonly MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+  static readonly MAX_CONFIGURED_RESPONSE_BYTES = 256 * 1024 * 1024;
   private readonly baseUrl: URL;
-  constructor(baseUrl: string, private readonly token: string, private readonly fetcher: typeof fetch = fetch) {
+  constructor(baseUrl: string, private readonly token: string, private readonly fetcher: typeof fetch = fetch, private readonly maxResponseBytes = HlmClient.MAX_RESPONSE_BYTES) {
+    if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes > HlmClient.MAX_CONFIGURED_RESPONSE_BYTES) throw new Error("maxResponseBytes must be a positive integer no greater than 268435456");
     this.baseUrl = new URL(baseUrl);
     const host = this.baseUrl.hostname.toLowerCase().replace(/^\[|\]$/g, "");
     const loopback = host === "localhost" || host === "::1" || /^127(?:\.\d{1,3}){3}$/.test(host) && host.split(".").every(part => Number(part) <= 255);
@@ -30,13 +32,17 @@ export class HlmClient {
       throw new Error("HLM baseUrl must use HTTPS, or HTTP on explicit loopback, without userinfo, query, or fragment");
     }
   }
-  private async request<T>(path: string, init: RequestInit = {}, maxResponseBytes = HlmClient.MAX_RESPONSE_BYTES): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await this.fetcher(new URL(path, this.baseUrl), { ...init, redirect: "error", signal: AbortSignal.timeout(10_000), headers: { authorization: `Bearer ${this.token}`, ...(init.body ? { "content-type": "application/json" } : {}), ...init.headers } });
-    if (!response.ok) throw new HlmHttpError(response.status);
     const length = Number(response.headers.get("content-length"));
-    if (Number.isFinite(length) && length > maxResponseBytes) {
+    if (!response.ok) {
       await response.body?.cancel();
-      throw new Error(`HLM response exceeds ${maxResponseBytes === HlmClient.MAX_RESPONSE_BYTES ? "8 MiB" : `${maxResponseBytes} byte`} limit`);
+      if (Number.isFinite(length) && length > this.maxResponseBytes) throw this.responseLimitError();
+      throw new HlmHttpError(response.status);
+    }
+    if (Number.isFinite(length) && length > this.maxResponseBytes) {
+      await response.body?.cancel();
+      throw this.responseLimitError();
     }
     if (!response.body) throw new Error("HLM returned invalid JSON");
     const reader = response.body.getReader();
@@ -46,9 +52,9 @@ export class HlmClient {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > maxResponseBytes) {
+      if (size > this.maxResponseBytes) {
         await reader.cancel();
-        throw new Error(`HLM response exceeds ${maxResponseBytes === HlmClient.MAX_RESPONSE_BYTES ? "8 MiB" : `${maxResponseBytes} byte`} limit`);
+        throw this.responseLimitError();
       }
       chunks.push(value);
     }
@@ -60,25 +66,32 @@ export class HlmClient {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("HLM returned invalid payload");
     return value as T;
   }
+  private responseLimitError() { return new Error(`HLM response exceeds ${this.maxResponseBytes === HlmClient.MAX_RESPONSE_BYTES ? "8 MiB" : `${this.maxResponseBytes} byte`} limit`); }
   async query(query: string) {
     const data = await this.request<{ selected_memories: Array<{ path: string; title: string; excerpt: string }> }>("/api/v1/queries", { method: "POST", body: JSON.stringify({ query }) });
     if (!Array.isArray(data.selected_memories) || data.selected_memories.some(hit => typeof hit.path !== "string" || typeof hit.title !== "string" || typeof hit.excerpt !== "string")) throw new Error("HLM returned invalid query results");
     return data;
   }
   async note(path: string) {
-    const data = await this.request<{ content: string }>(`/api/v1/notes/content?path=${encodeURIComponent(path)}`, {}, Infinity);
+    const data = await this.request<{ content: string }>(`/api/v1/notes/content?path=${encodeURIComponent(path)}`);
     if (typeof data.content !== "string") throw new Error("HLM returned invalid note content");
     return data;
   }
   async notes(paths: string[]) {
     if (!Array.isArray(paths) || paths.length < 1 || paths.length > 10 || paths.some(path => typeof path !== "string" || !path.length)) throw new Error("Batch paths must contain between 1 and 10 non-empty paths");
     const response = await this.fetcher(new URL("/api/v1/notes/content/batch", this.baseUrl), { method: "POST", body: JSON.stringify({ paths }), redirect: "error", signal: AbortSignal.timeout(10_000), headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json" } });
-    if (!response.ok) throw new HlmHttpError(response.status);
+    const length = Number(response.headers.get("content-length"));
+    if (!response.ok) {
+      await response.body?.cancel();
+      if (Number.isFinite(length) && length > this.maxResponseBytes) throw this.responseLimitError();
+      throw new HlmHttpError(response.status);
+    }
     if (!response.body) throw new Error("HLM returned invalid NDJSON");
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const results: Array<{ path: string; content?: string; error?: string }> = [];
     let pending = "";
+    let size = 0;
     const consume = (line: string) => {
       if (!line.trim()) return;
       let record: unknown;
@@ -94,6 +107,10 @@ export class HlmClient {
     try {
       while (true) {
         const { done, value } = await reader.read();
+        if (value) {
+          size += value.byteLength;
+          if (size > this.maxResponseBytes) throw this.responseLimitError();
+        }
         pending += decoder.decode(value, { stream: !done });
         let newline: number;
         while ((newline = pending.indexOf("\n")) >= 0) { consume(pending.slice(0, newline)); pending = pending.slice(newline + 1); }

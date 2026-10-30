@@ -1,7 +1,8 @@
 # Customising Harbor Ledger Memory
 
-This document describes the v1.1.0 server-wide declarative theme settings and
-the stable Tide Atlas hooks exposed by the current client.
+This document describes the server-wide declarative theme settings and the
+Tide Atlas hooks exposed by the current client. Theme fields are validated and
+persisted by the server; the client currently uses only `theme.preset`.
 
 ## Theme configuration
 

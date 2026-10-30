@@ -254,7 +254,7 @@ def test_auto_write_requires_token_auto_access(tmp_path: Path) -> None:
         assert resp.status_code == 200
         assert resp.json()["status"] == "pending"
 
-        # auto-write token: a managed update applies immediately.
+        # auto-write token: an existing update applies immediately.
         resp = client.post(
             "/api/v1/writes",
             json={"path": "AI/managed.md", "content": original.replace("v1", "v2")},

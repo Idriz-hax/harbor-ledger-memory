@@ -108,6 +108,51 @@ def test_mcp_exposes_status_and_write_lifecycle_tools(tmp_path: Path) -> None:
         activity.close()
 
 
+def test_mcp_move_creation_denies_unreadable_affected_preview(tmp_path: Path) -> None:
+    (tmp_path / "AI").mkdir()
+    (tmp_path / "AI" / "source.md").write_text("# Source", encoding="utf-8")
+    (tmp_path / "AI" / "ref.md").write_text(
+        "SECRET REWRITE CONTENT [source](source.md)", encoding="utf-8"
+    )
+    settings = Settings(
+        vault_path=tmp_path,
+        index_root="AI",
+        folder_rules=(
+            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+        ),
+        database_url=f"sqlite:///{tmp_path / 'mcp-move-scope.db'}",
+    )
+    activity = ActivityService(settings.database_url)
+    token_service = TokenService(settings.database_url)
+    caller, _ = token_service.create(
+        "restricted-move",
+        rules=[
+            FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            FolderRule(path=PurePosixPath("AI/ref.md"), access=FolderAccess.NONE),
+        ],
+    )
+    token = hlm_mcp_token.set(caller)
+    try:
+        transport, _ = build_mcp_server(
+            settings,
+            activity,
+            token_service,
+            live_traversal=LiveTraversalPublisher(),
+        )
+        with pytest.raises(ToolError) as error:
+            asyncio.run(
+                transport.state.mcp_server.call_tool(
+                    "propose_move",
+                    {"source": "AI/source.md", "destination": "AI/new.md"},
+                )
+            )
+        assert "SECRET REWRITE CONTENT" not in str(error.value)
+    finally:
+        hlm_mcp_token.reset(token)
+        token_service.close()
+        activity.close()
+
+
 def test_mcp_status_policy_shape(tmp_path: Path) -> None:
     settings = Settings(
         HLM_VAULT_PATH=tmp_path,

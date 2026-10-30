@@ -25,7 +25,9 @@ HLM 2.1.0 adds model-correct multilingual E5 embeddings while keeping semantic s
 
 ## Quickstart
 
-This flow builds the UI, installs `hlm`, points it at a vault, builds the index, and starts the local service.
+This installs `hlm` and runs its first-time setup. It does not start the service;
+you start it after setup. You do not need Obsidian installed—only an existing
+directory of Markdown notes.
 
 Requirements:
 
@@ -33,43 +35,87 @@ Requirements:
 - [uv](https://docs.astral.sh/uv/) — an isolated Python toolchain; no `sudo`
   and no system-wide package changes
 - Node.js 18 or newer — required to build the bundled web UI
+- Git and npm — used to download the source and build the UI
 
-The global install packages the web UI, so the npm build step is required. If
-you'd rather run the CLI without the browser UI, use
-[Development from a checkout](#development-from-a-checkout) and skip the npm
-build — every `hlm` command still works, only the web UI is unavailable.
+The global install packages the web UI, so the npm build step is required. For
+CLI-only use without Node.js, see [Development from a checkout](#development-from-a-checkout).
 
 ### Install the CLI
 
-This installs the `hlm` command globally for the current user. Everything stays
-under `~/.local`; nothing is installed system-wide.
+This installs the `hlm` command for the current user. Its command and runtime stay
+under `~/.local`; the source checkout stays in the directory you choose.
 
-Run this POSIX shell command on macOS or Linux. It checks prerequisites before
-cloning and will not overwrite an existing `harbor-ledger-memory` directory:
+On macOS or Linux, run these commands from the directory where you want the
+checkout. They check prerequisites and will not overwrite an existing checkout:
 
 ```sh
-command -v git >/dev/null 2>&1 || { echo 'Error: install git before continuing.' >&2; exit 1; }; command -v uv >/dev/null 2>&1 || { echo 'Error: install uv from https://docs.astral.sh/uv/getting-started/installation/.' >&2; exit 1; }; command -v node >/dev/null 2>&1 || { echo 'Error: install Node.js 18 or newer before continuing.' >&2; exit 1; }; command -v npm >/dev/null 2>&1 || { echo 'Error: install npm (normally included with Node.js).' >&2; exit 1; }; node -e 'if (+process.versions.node.split(".")[0] < 18) { console.error("Error: Node.js 18 or newer is required."); process.exit(1); }' || exit 1; [ ! -e "$PWD/harbor-ledger-memory" ] || { echo "Error: $PWD/harbor-ledger-memory already exists; move it or choose another directory." >&2; exit 1; }; git clone https://github.com/Idriz-hax/harbor-ledger-memory.git "$PWD/harbor-ledger-memory" && cd "$PWD/harbor-ledger-memory" && ./scripts/install.sh
+command -v python3 >/dev/null || {
+  echo 'Install Python 3.12 or newer first.' >&2
+  exit 1
+}
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))' || {
+  echo 'Python 3.12 or newer is required.' >&2
+  exit 1
+}
+command -v git >/dev/null || { echo 'install git first.' >&2; exit 1; }
+command -v uv >/dev/null || {
+  echo 'install uv: https://docs.astral.sh/uv/getting-started/installation/' >&2
+  exit 1
+}
+command -v node >/dev/null || { echo 'Install Node.js 18 or newer first.' >&2; exit 1; }
+command -v npm >/dev/null || { echo 'install npm first.' >&2; exit 1; }
+node -e 'if (+process.versions.node.split(".")[0] < 18) process.exit(1)' || {
+  echo 'Node.js 18 or newer is required.' >&2
+  exit 1
+}
+[ ! -e "$PWD/harbor-ledger-memory" ] || {
+  echo 'harbor-ledger-memory already exists; choose another directory.' >&2
+  exit 1
+}
+git clone https://github.com/Idriz-hax/harbor-ledger-memory.git
+cd harbor-ledger-memory
+./scripts/install.sh
 ```
 
 The installer builds the web UI, installs the CLI in uv's isolated tool
-environment, and runs `hlm setup`.
+environment, and runs `hlm setup`. Enter the path to an existing directory of
+Markdown notes when asked for the vault. Have these choices ready:
 
-After enabling MCP, `hlm setup` prompts for a host: OpenCode, OpenClaw, Hermes,
-or skip. For a host integration, choose a token name and at least one
-vault-relative folder to grant read access; the token is scoped to those
-folders. OpenCode's `opencode.json` is updated automatically when safe;
-`opencode.jsonc` and configs that cannot be safely edited require a manual
-merge. If OpenCode auto-configuration fails, setup displays the token once for
-that manual merge, or revoke it with `hlm token revoke NAME`. Declining
-replacement of an existing OpenCode MCP entry leaves that host config untouched;
-the newly created token is shown once and can be revoked with the same command.
-OpenClaw's JSON5
-configuration and `HLM_TOKEN` secret remain manual. Hermes provider files and
-profile `base_url` are installed/configured, but `HLM_TOKEN` must be saved in
-Hermes' profile secret store. No plaintext token is written to host config.
-Manage or revoke access later with `hlm token` commands or the HLM UI. See the
-[OpenClaw](integrations/openclaw/README.md) and
-[Hermes](integrations/hermes/README.md) guides for standalone/manual steps.
+- Whether to enable the browser UI, MCP, or REST API. For a typical local setup,
+  enable the UI and only enable MCP if connecting an agent; leave the REST API
+  off unless you have a REST client. Keep localhost-only access.
+- If enabling MCP with a host, its name (`opencode`, `openclaw`, or `hermes`), a
+  descriptive token name (for example, `openclaw-read`) and one or more
+  vault-relative folders to grant read access to. Only those selected folders
+  are readable by that token.
+  If MCP is enabled, choose `skip` at the host prompt when you do not want a
+  host integration. Leave MCP disabled for a UI-only setup.
+- Embeddings are optional; choose no unless you specifically want semantic
+  search. They require a separate, large model download.
+
+Setup enables only the services you choose and saves the config under
+`~/.config/harbor-ledger-memory/`. It does not start the server. If you enabled
+the UI, start the service and open it locally:
+
+```sh
+hlm serve
+# Open http://127.0.0.1:8765
+```
+
+If setup stops on an error, fix the reported issue and rerun `hlm setup`.
+
+If you enable MCP, setup asks which host to connect, then creates a read-scoped
+token for the folders you choose. OpenCode's `opencode.json` is updated when it
+can be edited safely; JSONC or conflicting configurations need a manual merge.
+For OpenClaw, setup prints manual plugin/configuration steps. For Hermes, setup
+installs provider files and configures the profile URL. Both hosts require you
+to save the one-time token in their secret store; do not put it in host config.
+Have the selected host installed and configured first. HLM cannot create or
+populate a host secret for you; complete that step in the host's configured
+secret provider before connecting it.
+See the [OpenClaw](integrations/openclaw/README.md) and
+[Hermes](integrations/hermes/README.md) guides for their supported versions and
+manual steps. Revoke a token with `hlm token revoke NAME`.
 
 To configure an existing checkout manually, use:
 
@@ -169,7 +215,7 @@ measurements, and limitations.
 
 ## Use cases
 
-- **Search a local knowledge base**: retrieve notes from an Obsidian vault without uploading the vault to a hosted service
+- **Search a local knowledge base**: retrieve notes from an Obsidian vault without sending vault content to a hosted service
 - **Give an AI agent bounded context**: connect a local MCP client to retrieve and cite relevant Markdown notes
 - **Run an auditable memory service**: rebuild the catalog from Markdown, inspect its health, and control write access with folder rules
 
@@ -180,10 +226,10 @@ measurements, and limitations.
   `~/.config/harbor-ledger-memory/data/memory.db`, overridable with
   `DATABASE_URL`; relative SQLite URLs resolve from that stable application
   directory, while absolute URLs are unchanged). Vault writes are exposed
-  only through the API and MCP lifecycle tools: proposal/approval rules require approval, while
-  `auto-write` applies automatically only to eligible managed updates under the
-  configured folder rules; creates, unmanaged files, and conflicts remain
-  proposals for approval. MCP exposes `propose_write`, `approve_proposal`, and
+  only through the API and MCP lifecycle tools. `propose-write` requires
+  approval; `auto-write` applies conflict-free updates and creates immediately
+  within the configured folder rules. Version conflicts remain pending for
+  review. MCP exposes `propose_write`, `approve_proposal`, and
   `reject_proposal` with the same policy-controlled lifecycle.
 - **Operational telemetry is restricted.** Activity history and streams require
   authentication and are filtered to the caller's readable paths. Graph
@@ -194,6 +240,11 @@ measurements, and limitations.
   runtime; there is no `sudo`, no global Python packages, and no `npm install -g`.
 - **The scope is bounded.** By default the whole vault is indexed. Narrow it
   with `--index-root` and `--folder-rules` (below).
+- **Vault content stays local by default.** HLM does not send note contents to
+  an embedding provider or hosted HLM service. Optional embedding models are
+  downloaded from their model host on first use; connecting an agent to a remote
+  HLM server sends its queries and any explicitly read note content to that
+  server. Network access is otherwise limited to the connections you configure.
 
 ## Server configuration
 
@@ -405,21 +456,28 @@ until a token is recreated with `hlm token create`.
 
 ## Development from a checkout
 
-To edit the code or serve the UI straight from this checkout (no global
-install):
+To run the CLI from a checkout without installing a global command:
 
 ```text
-uv sync                          # Python + dev dependencies
-uv sync --extra embeddings       # optional: semantic search (large download)
-(cd web && npm ci && npm run build)
-cp .env.example .env             # set HLM_VAULT_PATH to an existing vault
-uv run --env-file .env hlm serve # opens an authenticated local Web UI session
+uv sync --no-dev                 # runtime dependencies only
+cp .env.example .env             # edit HLM_VAULT_PATH to an existing vault
+uv run --env-file .env hlm scan
+uv run --env-file .env hlm query "your search"
 ```
 
-The dev server behaves identically to the global CLI; it simply serves the web
-UI from this checkout's `web/dist`. The service runs an initial scan before
-serving, then watches admitted Markdown files under the index root and rescans
-after debounced changes. The watcher and scan services never write vault files.
+These CLI commands do not need Node.js or a web build. To serve the UI from the
+checkout, install development dependencies and build it:
+
+```text
+uv sync
+(cd web && npm ci && npm run build)
+HLM_FRONTEND__ENABLED=true HLM_FRONTEND__MODE=loopback \
+  uv run --env-file .env hlm serve # then open http://127.0.0.1:8765
+```
+
+The checkout serves the UI from `web/dist`. Loopback mode does not require a UI
+login. The service scans before serving, then watches admitted Markdown files
+and rescans after changes; scanning and watching do not write vault files.
 
 Queries are global by default: candidates are discovered across the whole
 admitted projection. `hlm query "..." --project PROJECT_PATH` and the API's

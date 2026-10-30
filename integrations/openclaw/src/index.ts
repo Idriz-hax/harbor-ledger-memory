@@ -42,7 +42,8 @@ const plugin = definePluginEntry({
   register(api: OpenClawPluginApi) {
     const config = api.pluginConfig as { baseUrl: string; token: string; reviewUrl?: string };
     if (!config?.baseUrl || !config.token) throw new Error("HLM baseUrl and token are required");
-    const client = new HlmClient(config.baseUrl, config.token);
+    const responseLimit = (api.pluginConfig as { maxResponseBytes?: number }).maxResponseBytes;
+    const client = new HlmClient(config.baseUrl, config.token, fetch, responseLimit ?? HlmClient.MAX_RESPONSE_BYTES);
     api.registerMemoryCapability({ providerRuntime: createProviderRuntime(client) });
     const registerTool = <S extends TSchema>(name: string, parameters: S, execute: (args: Static<S>) => Promise<unknown>, description = name) => api.registerTool({ name, label: name, description, parameters, execute: async (_toolCallId: string, args: unknown) => { if (!Value.Check(parameters, args)) throw new Error(`Invalid arguments for ${name}`); const details = await execute(args as Static<S>); return { content: [{ type: "text", text: JSON.stringify(details) }], details }; } });
     registerTool("hlm_propose_write", schema, args => client.propose({ path: args.path, content: args.content, operation: "write" }));

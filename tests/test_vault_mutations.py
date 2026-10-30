@@ -306,6 +306,164 @@ class TestTraversalRejection:
 
 
 class TestProposeWrite:
+    def test_move_is_a_pending_reviewable_proposal(self, tmp_path: Path) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            ),
+        )
+        service, vault, _ = _make_service(settings)
+        source = _write_note(vault, "AI", "old.md", "# Old")
+        proposal = service.request_move("AI/old.md", "AI/new.md")
+        assert proposal.status == "pending"
+        assert source.read_text(encoding="utf-8") == "# Old"
+
+    def test_delete_requires_explicit_approval(self, tmp_path: Path) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            ),
+        )
+        service, vault, _ = _make_service(settings)
+        source = _write_note(vault, "AI", "old.md", "# Old")
+        proposal = service.request_delete("AI/old.md")
+        assert proposal.status == "pending"
+        assert source.exists()
+
+    def test_move_preview_rewrites_links_and_approval_applies(
+        self, tmp_path: Path
+    ) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            ),
+        )
+        service, vault, _ = _make_service(settings)
+        _write_note(vault, "AI", "old.md", "# Old")
+        index = _write_note(vault, "AI", "INDEX.md", "See [[old]].")
+        proposal = service.request_move("AI/old.md", "AI/new.md")
+        assert "new" in str(proposal.proposal_data)
+        assert index.read_text(encoding="utf-8") == "See [[old]]."
+        service.approve(proposal.id)
+        assert proposal.status == "applied"
+        assert not (vault / "AI/old.md").exists()
+        assert (vault / "AI/new.md").read_text(encoding="utf-8") == "# Old"
+        assert index.read_text(encoding="utf-8") == "See [[new]]."
+
+    def test_move_rewrites_extensionless_and_relative_markdown_links(
+        self, tmp_path: Path
+    ) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            ),
+        )
+        service, vault, _ = _make_service(settings)
+        _write_note(vault, "AI", "old.md", "# Old")
+        linked_note = _write_note(
+            vault,
+            "AI",
+            "sub/ref.md",
+            "[[AI/old]] [relative](../old.md#heading) [[../old]] "
+            "[query](../old.md?view=1#section)",
+        )
+
+        proposal = service.request_move("AI/old.md", "AI/new.md")
+        rewrite = proposal.proposal_data["files"]["AI/sub/ref.md"]["content"]
+        assert rewrite == (
+            "[[AI/new]] [relative](../new.md#heading) [[../new]] "
+            "[query](../new.md?view=1#section)"
+        )
+        service.approve(proposal.id)
+        assert linked_note.read_text(encoding="utf-8") == rewrite
+
+    def test_move_denies_any_affected_read_only_path(self, tmp_path: Path) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+                FolderRule(path=PurePosixPath("AI/INDEX.md"), access=FolderAccess.READ),
+            ),
+        )
+        service, vault, _ = _make_service(settings)
+        _write_note(vault, "AI", "old.md", "# Old")
+        _write_note(vault, "AI", "INDEX.md", "[[old]]")
+        with pytest.raises(VaultWriteDenied):
+            service.request_move("AI/old.md", "AI/new.md")
+
+    def test_move_rejects_destination_conflict(self, tmp_path: Path) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            ),
+        )
+        service, vault, _ = _make_service(settings)
+        _write_note(vault, "AI", "old.md", "# Old")
+        destination = _write_note(vault, "AI", "new.md", "# Keep")
+        with pytest.raises(VaultWriteDenied, match="destination"):
+            service.request_move("AI/old.md", "AI/new.md")
+        assert destination.read_text(encoding="utf-8") == "# Keep"
+
+    def test_stale_move_snapshot_fails_without_mutation(self, tmp_path: Path) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            ),
+        )
+        service, vault, _ = _make_service(settings)
+        source = _write_note(vault, "AI", "old.md", "# Old")
+        proposal = service.request_move("AI/old.md", "AI/new.md")
+        source.write_text("# Concurrent", encoding="utf-8")
+        with pytest.raises(VaultWriteDenied, match="version conflict"):
+            service.approve(proposal.id)
+        assert source.read_text(encoding="utf-8") == "# Concurrent"
+        assert not (vault / "AI/new.md").exists()
+
+    def test_partial_move_is_marked_reconciliation_required(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            ),
+        )
+        service, vault, _ = _make_service(settings)
+        _write_note(vault, "AI", "old.md", "# Old")
+        _write_note(vault, "AI", "INDEX.md", "[[old]]")
+        proposal = service.request_move("AI/old.md", "AI/new.md")
+        monkeypatch.setattr(
+            service.boundary,
+            "atomic_replace",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("injected")),
+        )
+        result = service.approve(proposal.id)
+        assert result.status == "reconciliation_required"
+        assert "completed paths" in (result.failure_reason or "")
+        assert (vault / "AI/new.md").exists()
+
+    def test_delete_requires_approval_and_checks_version(self, tmp_path: Path) -> None:
+        settings = _build_settings(
+            tmp_path,
+            folder_rules=(
+                FolderRule(path=PurePosixPath("AI"), access=FolderAccess.PROPOSE_WRITE),
+            ),
+        )
+        service, vault, _ = _make_service(settings)
+        source = _write_note(vault, "AI", "delete.md", "# Original")
+        proposal = service.request_delete("AI/delete.md")
+        assert proposal.status == "pending" and source.exists()
+        source.write_text("# Changed", encoding="utf-8")
+        with pytest.raises(VaultWriteDenied, match="version conflict"):
+            service.approve(proposal.id)
+        assert source.exists()
+
     def test_propose_write_queues_create_as_pending(self, tmp_path: Path) -> None:
         settings = _build_settings(
             tmp_path,
@@ -348,7 +506,7 @@ class TestProposeWrite:
 
 
 # ---------------------------------------------------------------------------
-# Auto-write: managed update vs unmanaged
+# Auto-write: existing-file updates
 # ---------------------------------------------------------------------------
 
 
@@ -409,8 +567,9 @@ class TestAutoWriteManaged:
 
 
 class TestAutoWriteUnmanaged:
-    def test_legacy_managed_by_value_is_unmanaged(self, tmp_path: Path) -> None:
-        """The former plugin identity must not authorize auto-write."""
+    def test_legacy_managed_by_value_does_not_block_auto_write(
+        self, tmp_path: Path
+    ) -> None:
         settings = _build_settings(
             tmp_path,
             folder_rules=(
@@ -426,11 +585,11 @@ class TestAutoWriteUnmanaged:
 
         proposal = service.request("AI/managed/legacy.md", "# AI change")
 
-        assert proposal.status == "pending"
+        assert proposal.status == "applied"
         assert proposal.operation == "update"
-        assert existing.read_text(encoding="utf-8") == original
+        assert existing.read_text(encoding="utf-8") == "# AI change"
 
-    def test_unmanaged_update_queued(self, tmp_path: Path) -> None:
+    def test_unmanaged_update_auto_applied(self, tmp_path: Path) -> None:
         settings = _build_settings(
             tmp_path,
             folder_rules=(
@@ -443,9 +602,9 @@ class TestAutoWriteUnmanaged:
         service, vault, _ = _make_service(settings)
         existing = _write_note(vault, "AI", "managed/unmanaged.md", "# Human note")
         proposal = service.request("AI/managed/unmanaged.md", "# AI change")
-        assert proposal.status == "pending"
+        assert proposal.status == "applied"
         assert proposal.operation == "update"
-        assert existing.read_text(encoding="utf-8") == "# Human note"
+        assert existing.read_text(encoding="utf-8") == "# AI change"
 
     def test_unmanaged_create_auto_applied(self, tmp_path: Path) -> None:
         settings = _build_settings(
@@ -463,8 +622,10 @@ class TestAutoWriteUnmanaged:
         assert (vault / "AI/managed/brand_new.md").read_text(encoding="utf-8") == "# New"
         assert proposal.operation == "create"
 
-    def test_auto_write_race_file_changed(self, tmp_path: Path) -> None:
-        """Auto-write must not overwrite a file that changed since the request."""
+    def test_auto_write_uses_content_present_when_requested(
+        self, tmp_path: Path
+    ) -> None:
+        """Auto-write pins the file contents present when the request starts."""
         settings = _build_settings(
             tmp_path,
             folder_rules=(
@@ -481,18 +642,11 @@ class TestAutoWriteUnmanaged:
             "managed/race.md",
             "---\nmanaged_by: harbor-ledger-memory\n---\n# Original",
         )
-        # Mutate the file on disk after the proposal reads it
-        # (simulates external modification between read and write)
-        import time
-
-        time.sleep(0.01)
+        # This edit precedes the request; it becomes the request's source version.
         existing.write_text("# Changed externally\n", encoding="utf-8")
         proposal = service.request("AI/managed/race.md", "# AI update")
-        # Should still be pending (version conflict) or failed
-        assert proposal.status in ("pending", "failed")
-        # Original content preserved (not overwritten by AI)
-        content = existing.read_text(encoding="utf-8")
-        assert content != "# AI update"
+        assert proposal.status == "applied"
+        assert existing.read_text(encoding="utf-8") == "# AI update"
 
     def test_auto_write_race_file_deleted(self, tmp_path: Path) -> None:
         """Auto-write must not create a file when the target was deleted."""
@@ -512,7 +666,7 @@ class TestAutoWriteUnmanaged:
             "managed/deleted.md",
             "---\nmanaged_by: harbor-ledger-memory\n---\n# Original",
         )
-        # Index the note so the service knows it was a managed file
+        # Index the note so a missing file is classified as an update, not create.
         from harbor_ledger_memory.services.scan import ScanService
 
         ScanService(service.boundary, session, embedding_model=None).full_scan()
@@ -1495,10 +1649,10 @@ class TestDurableApplying:
 
 
 class TestAutoWriteValidator:
-    def test_unmanaged_file_rejected_at_validator(
+    def test_unmanaged_file_allowed_at_validator(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Auto-write of an unmanaged file is rejected by validate_current."""
+        """Auto-write still passes coherent-snapshot validation for unmanaged files."""
         settings = _build_settings(
             tmp_path,
             folder_rules=(
@@ -1532,21 +1686,13 @@ class TestAutoWriteValidator:
         monkeypatch.setattr(VaultBoundary, "atomic_replace", recording_replace)
 
         proposal = service.request("AI/managed/unmanaged-validator.md", "# AI change")
-        # Semantic rejection: back to pending, nothing written.
-        assert proposal.status == "pending"
-        assert existing.read_text(encoding="utf-8") == "# Human note"
+        assert proposal.status == "applied"
+        assert existing.read_text(encoding="utf-8") == "# AI change"
         # The apply path pinned the applying state before the write attempt.
         assert proposal.applying_at is not None
         # A semantic validator was handed to the boundary ...
         assert captured.get("validate_current") is not None
-        # ... and it rejects the coherent snapshot of the current on-disk
-        # file (unmanaged frontmatter) -- the boundary invokes the
-        # callback with the snapshot, not a bare FileVersion.
-        current = service.boundary.read_file(
-            PurePosixPath("AI/managed/unmanaged-validator.md")
-        )
-        assert current.version is not None
-        assert captured["validate_current"](current) is False
+        # ... and the boundary invoked it successfully against the pinned snapshot.
 
     def test_rule_change_rejected_at_validator(self, tmp_path: Path) -> None:
         """A rule flip to DENY after the applying commit aborts the auto-write."""
@@ -1763,7 +1909,7 @@ class TestTerminalStateAuditAtomicity:
 
 
 # ---------------------------------------------------------------------------
-# Coherent boundary snapshot for auto-write ownership/policy
+# Coherent boundary snapshot for auto-write version/policy validation
 # ---------------------------------------------------------------------------
 
 
@@ -1771,7 +1917,7 @@ class TestCoherentValidatorSnapshot:
     def test_validator_uses_coherent_snapshot_without_reread(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ownership/policy must derive from the boundary's coherent snapshot.
+        """Version validation must use the boundary's coherent snapshot.
 
         The validator is invoked with the coherent AdmittedFileSnapshot
         the boundary verified against the pinned snapshot; it must not
@@ -1846,8 +1992,8 @@ class TestCoherentValidatorSnapshot:
                 version=version,
             )
 
-        # The coherent snapshot is accepted even though the on-disk bytes
-        # have since been replaced by the applied write itself.
+        # The pinned coherent snapshot is accepted even though the on-disk
+        # bytes have since been replaced by the applied write itself.
         assert validator(make_snapshot(expected)) is True
         # A coherent snapshot whose version content hash does not match
         # the pinned snapshot is rejected without any re-read.

@@ -1315,6 +1315,61 @@ def test_write_request_validation_errors_return_422(tmp_path: Path) -> None:
     assert extra_field.status_code == 422
 
 
+def test_write_listing_hides_full_preview_when_affected_note_is_unreadable(
+    tmp_path: Path,
+) -> None:
+    settings = _write_settings(tmp_path)
+    proposed_dir = settings.vault_path / "AI" / "proposed"
+    proposed_dir.mkdir()
+    (proposed_dir / "source.md").write_text("# Source", encoding="utf-8")
+    (proposed_dir / "ref.md").write_text("[source](source.md)", encoding="utf-8")
+    writer = _client_with_rules(
+        settings,
+        [
+            FolderRule(
+                path=PurePosixPath("AI/proposed"), access=FolderAccess.PROPOSE_WRITE
+            )
+        ],
+    )
+
+    created = writer.post(
+        "/api/v1/moves",
+        json={"source": "AI/proposed/source.md", "destination": "AI/proposed/new.md"},
+    )
+    assert created.status_code == 200
+    proposal_id = created.json()["id"]
+    assert "AI/proposed/ref.md" in created.json()["affected_paths"]
+    assert created.json()["proposal_data"]
+
+    reader = _client_with_rules(
+        settings,
+        [
+            FolderRule(path=PurePosixPath("AI/proposed"), access=FolderAccess.READ),
+            FolderRule(
+                path=PurePosixPath("AI/proposed/ref.md"), access=FolderAccess.NONE
+            ),
+        ],
+    )
+    listing = reader.get("/api/v1/writes")
+    assert listing.status_code == 200
+    assert all(item["id"] != proposal_id for item in listing.json()["proposals"])
+
+    restricted = _client_with_rules(
+        settings,
+        [
+            FolderRule(path=PurePosixPath("AI/proposed"), access=FolderAccess.PROPOSE_WRITE),
+            FolderRule(path=PurePosixPath("AI/proposed/ref.md"), access=FolderAccess.NONE),
+        ],
+    )
+    denied = restricted.post(
+        "/api/v1/moves",
+        json={"source": "AI/proposed/source.md", "destination": "AI/proposed/newer.md"},
+    )
+    assert denied.status_code == 403
+    assert "source" not in denied.text
+    assert "ref.md" not in denied.text
+
+
 def _auto_write_settings(tmp_path: Path) -> Settings:
     """Settings with an auto-write rule for the auto-write API tests."""
     vault = tmp_path / "vault"
@@ -1476,8 +1531,8 @@ def test_write_events_reach_preconnected_sse_and_rest_history(tmp_path: Path) ->
                 pass
 
 
-def test_auto_write_applies_managed_update_immediately(tmp_path: Path) -> None:
-    """An auto-write rule applies a managed update without any approval."""
+def test_auto_write_applies_existing_update_immediately(tmp_path: Path) -> None:
+    """An auto-write rule applies an existing update without any approval."""
     settings = _auto_write_settings(tmp_path)
     target = settings.vault_path / "AI" / "auto" / "managed.md"
     original = "---\nmanaged_by: harbor-ledger-memory\n---\n# Managed\nv1\n"
@@ -1513,8 +1568,8 @@ def test_auto_write_applies_create_immediately(tmp_path: Path) -> None:
     assert (settings.vault_path / "AI" / "auto" / "new.md").read_text(encoding="utf-8") == "# New\n"
 
 
-def test_auto_write_keeps_unmanaged_update_proposals_pending(tmp_path: Path) -> None:
-    """Auto-writes only apply to plugin-managed notes; others stay pending."""
+def test_auto_write_applies_unmanaged_update_immediately(tmp_path: Path) -> None:
+    """An unmanaged existing note updates immediately under auto-write."""
     settings = _auto_write_settings(tmp_path)
     target = settings.vault_path / "AI" / "auto" / "unmanaged.md"
     original = "# Unmanaged\nno managed_by frontmatter\n"
@@ -1527,11 +1582,11 @@ def test_auto_write_keeps_unmanaged_update_proposals_pending(tmp_path: Path) -> 
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "pending"
+    assert data["status"] == "applied"
     assert data["operation"] == "update"
     assert data["rule_access"] == "auto-write"
-    assert data["resolved_at"] is None
-    assert target.read_text(encoding="utf-8") == original
+    assert data["resolved_at"] is not None
+    assert target.read_text(encoding="utf-8") == original + "edited\n"
 
 
 def _managed_vault(tmp_path: Path) -> tuple[Path, Settings, str]:
@@ -1594,7 +1649,7 @@ def test_approval_revalidates_access_rules_after_changes(tmp_path: Path) -> None
     )
     client = TestClient(application)
 
-    # A managed update under propose-write stays pending for approval.
+    # An update under propose-write stays pending for approval.
     created = client.post(
         "/api/v1/writes",
         json={"path": "AI/managed/note.md", "content": original.replace("v1", "v2")},

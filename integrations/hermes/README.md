@@ -6,16 +6,20 @@ Supported Hermes release: **v0.18.1 (`v2026.7.7`)**. The host supports user-dire
 
 For guided setup, enable MCP in `hlm setup`, choose Hermes, then provide a token
 name and at least one folder to scope its read access. Setup installs the
-provider files and configures the profile's `base_url`; add `HLM_TOKEN`
-separately to Hermes' profile secret store. The token value is never written to
-host config. Manage or revoke it later with `hlm token` or the HLM UI. The
-manual steps below are for standalone installation.
+provider files and configures the profile's `base_url`; you must add `HLM_TOKEN`
+separately to that profile's Hermes secret store. HLM cannot create that host
+secret, and the token value is never written to host config. Manage or revoke it
+later with `hlm token` or the HLM UI. The manual steps below are for standalone
+installation.
 
-With Hermes installed and `HERMES_HOME` set to the intended profile directory:
+From the HLM repository root, with Hermes installed and `HERMES_HOME` set to the
+intended profile directory (defaults to `~/.hermes`):
 
 ```sh
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 mkdir -p "$HERMES_HOME/plugins/hlm"
-cp integrations/hermes/hlm/__init__.py integrations/hermes/hlm/client.py "$HERMES_HOME/plugins/hlm/"
+cp integrations/hermes/hlm/__init__.py integrations/hermes/hlm/client.py \
+  "$HERMES_HOME/plugins/hlm/"
 ```
 
 Configure the profile's Hermes secret `HLM_TOKEN` (never put the value in config or logs). Create `$HERMES_HOME/plugins/hlm/config.json`:

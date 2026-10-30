@@ -7,5 +7,5 @@ if [ ! -f pyproject.toml ] || [ ! -d web ]; then
 fi
 
 (cd web && npm ci && npm run build)
-uv tool install .
+uv tool install --upgrade .
 hlm setup

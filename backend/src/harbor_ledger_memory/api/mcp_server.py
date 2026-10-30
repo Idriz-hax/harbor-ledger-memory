@@ -564,6 +564,55 @@ def build_mcp_server(
         return _mutation_call("request", path=path, content="", write_operation="mkdir")
 
     @mcp.tool()
+    def propose_move(source: str, destination: str) -> str:  # pyright: ignore[reportUnusedFunction]
+        """Propose a policy-checked move and review its link/index rewrites."""
+        policy = _policy()
+        caller = _token_record()
+        engine, session = _open_session()
+        try:
+            service = VaultMutationService.from_settings(
+                session,
+                settings,
+                activity_service=activity_service,
+                live_traversal=live_traversal,
+            )
+            proposal = service.request_move(
+                source,
+                destination,
+                policy=policy,
+                creator_token_id=caller.id if caller else None,
+            )
+            return json.dumps(_write_payload(proposal), indent=2)
+        except VaultWriteDenied as exc:
+            raise ToolError(str(exc)) from exc
+        finally:
+            session.close()
+            engine.dispose()
+
+    @mcp.tool()
+    def propose_delete(path: str) -> str:  # pyright: ignore[reportUnusedFunction]
+        """Create an explicit version-checked delete proposal; never auto-applies."""
+        policy = _policy()
+        caller = _token_record()
+        engine, session = _open_session()
+        try:
+            service = VaultMutationService.from_settings(
+                session,
+                settings,
+                activity_service=activity_service,
+                live_traversal=live_traversal,
+            )
+            proposal = service.request_delete(
+                path, policy=policy, creator_token_id=caller.id if caller else None
+            )
+            return json.dumps(_write_payload(proposal), indent=2)
+        except VaultWriteDenied as exc:
+            raise ToolError(str(exc)) from exc
+        finally:
+            session.close()
+            engine.dispose()
+
+    @mcp.tool()
     def approve_proposal(proposal_id: int) -> str:  # pyright: ignore[reportUnusedFunction]
         """Approve and apply a pending policy-checked write proposal."""
         return _mutation_call("approve", proposal_id=proposal_id)
@@ -597,6 +646,7 @@ def _write_payload(proposal: MemoryWriteProposal) -> dict[str, object]:
         "creator_token_id": proposal.creator_token_id,
         "base_hash": proposal.expected_source_hash,
         "diff": proposal.base_diff,
+        "proposal_data": proposal.proposal_data,
     }
 
 

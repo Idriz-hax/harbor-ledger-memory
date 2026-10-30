@@ -37,23 +37,25 @@ admitted paths only:
 ```
 
 Feedback adjusts retrieval behavior and does not write vault files. Vault
-updates remain subject to the write lifecycle below; eligible managed updates
-under `auto-write` can apply immediately.
+updates remain subject to the write policy below.
 
 ## Write lifecycle
 
-Writes are policy-controlled and proposal-based:
+Writes are policy-controlled. Call `propose_write` with a vault-relative path
+and content; inspect the returned status before taking another action:
 
-1. Call `propose_write` with a vault-relative path and content.
-2. Call `approve_proposal` with the returned proposal ID to apply it, or
-   `reject_proposal` to decline it.
+- Under `auto-write`, conflict-free updates and creates apply immediately.
+- Under `propose-write`, the write remains pending approval.
+- A version conflict may leave an `auto-write` request pending for review.
+
+Only call `approve_proposal` or `reject_proposal` when the returned status is
+`pending` and the caller is authorized to resolve it. Do not attempt approval
+for a write that already applied.
 
 The default access is `read`: default, `read`, and `deny` paths cannot be
-written. A `propose-write` folder rule creates a pending approval, which must
-then be resolved with `approve_proposal` or `reject_proposal`. Eligible managed
-updates under `auto-write` can apply immediately. Folder rules apply to
-matching paths; the most specific matching rule determines access, while paths
-without a matching rule retain the read-only default.
+written. Folder rules apply to matching paths; the most specific matching rule
+determines access, while paths without a matching rule retain the read-only
+default.
 
 After upgrading the server, clients must disconnect and reconnect before using
 the MCP tools so the new tool and transport definitions are loaded.

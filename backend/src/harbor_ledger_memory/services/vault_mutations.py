@@ -5,10 +5,14 @@ from __future__ import annotations
 import difflib
 import hashlib
 import inspect
+import json
+import posixpath
+import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -30,7 +34,6 @@ from harbor_ledger_memory.vault.boundary import (
     VaultPathError,
     WriteResult,
 )
-from harbor_ledger_memory.vault.parser import parse_note_bytes
 
 
 def proposal_diff(path: str, base: str, proposed: str) -> str:
@@ -44,15 +47,83 @@ def proposal_diff(path: str, base: str, proposed: str) -> str:
         )
     )
 
+
+def _rewrite_move_links(
+    content: str,
+    note_path: PurePosixPath,
+    source: PurePosixPath,
+    destination: PurePosixPath,
+) -> str:
+    """Rewrite absolute, relative, and same-folder extensionless note links."""
+
+    def rewrite(target: str) -> str:
+        raw = target.strip()
+        if not raw or raw.startswith(("http:", "https:", "mailto:")):
+            return target
+        parts = urlsplit(raw)
+        link_path = parts.path
+        relative = link_path.startswith(("./", "../"))
+        if link_path.startswith("/") or link_path in {
+            source.as_posix(),
+            source.with_suffix("").as_posix(),
+        }:
+            candidate = link_path.lstrip("/")
+        elif relative or "/" in link_path:
+            candidate = posixpath.normpath(
+                posixpath.join(note_path.parent.as_posix(), link_path)
+            )
+        else:
+            candidate = (note_path.parent / link_path).as_posix()
+        candidates = {candidate}
+        if not PurePosixPath(candidate).suffix:
+            candidates.add(candidate + ".md")
+        if candidates.isdisjoint(
+            {source.as_posix(), source.with_suffix("").as_posix()}
+        ):
+            return target
+        if relative:
+            replacement = posixpath.relpath(
+                destination.as_posix(), note_path.parent.as_posix()
+            )
+        elif link_path.startswith("/") or link_path in {
+            source.as_posix(),
+            source.with_suffix("").as_posix(),
+        }:
+            replacement = destination.as_posix()
+        elif "/" not in link_path and note_path.parent == source.parent:
+            replacement = (
+                destination.stem
+                if not PurePosixPath(link_path).suffix
+                else destination.name
+            )
+        else:
+            replacement = destination.as_posix()
+        if PurePosixPath(link_path).suffix == ".md" and not PurePosixPath(replacement).suffix:
+            replacement += ".md"
+        elif (
+            not PurePosixPath(link_path).suffix
+            and PurePosixPath(replacement).suffix == ".md"
+        ):
+            replacement = replacement[:-3]
+        return urlunsplit(
+            (parts.scheme, parts.netloc, replacement, parts.query, parts.fragment)
+        )
+
+    def wiki(match: re.Match[str]) -> str:
+        return f"[[{rewrite(match.group(1))}{match.group(2) or ''}]]"
+
+    def markdown(match: re.Match[str]) -> str:
+        return f"]({rewrite(match.group(1))}{match.group(2) or ''})"
+
+    content = re.sub(r"\[\[([^\]|#]+)([#|][^\]]*)?\]\]", wiki, content)
+    return re.sub(r"\]\(([^)#]+)(#[^)]*)?\)", markdown, content)
+
 STATUS_PENDING = "pending"
 STATUS_APPLYING = "applying"
 STATUS_APPLIED = "applied"
 STATUS_REJECTED = "rejected"
 STATUS_FAILED = "failed"
 STATUS_RECONCILIATION_REQUIRED = "reconciliation_required"
-
-MANAGED_BY_FIELD = "managed_by"
-MANAGED_BY_VALUE = "harbor-ledger-memory"
 
 
 class VaultWriteDenied(Exception):
@@ -151,9 +222,9 @@ class VaultMutationService:
         the boundary's folder rules.
 
         Raises :class:`VaultWriteDenied` when the path is denied or
-        read-only. For ``auto-write`` access, creates and directories are
-        applied immediately; updates are applied only when managed and
-        conflict-free. Other updates remain pending.
+        read-only. For ``auto-write`` access, creates, directories, and
+        conflict-free updates are applied immediately. Version conflicts remain
+        pending for review.
         """
         identity = self.validate_path(path)
         self._start_traversal()
@@ -198,8 +269,212 @@ class VaultMutationService:
         self._start_traversal()
         self._check_pending(proposal)
         self.validate_path(proposal.path)
+        if proposal.operation in {"move", "delete"}:
+            self._apply_relocation(proposal, policy)
+            return proposal
         self._apply(proposal, origin="approve", policy=policy)
         return proposal
+
+    def request_move(
+        self,
+        source: str,
+        destination: str,
+        policy: AccessPolicy | None = None,
+        creator_token_id: int | None = None,
+    ) -> MemoryWriteProposal:
+        """Create a human-reviewed move with a complete rewrite preview."""
+        src, dst = self.validate_path(source), self.validate_path(destination)
+        if src == dst or src.suffix.lower() != ".md" or dst.suffix.lower() != ".md":
+            raise VaultWriteDenied("move requires distinct markdown note paths")
+        try:
+            source_snapshot = self.boundary.read_file(src)
+        except VaultPathError as exc:
+            raise VaultWriteDenied("move source unavailable") from exc
+        try:
+            self.boundary.read_file(dst)
+        except VaultPathError:
+            pass
+        else:
+            raise VaultWriteDenied("move destination already exists")
+        snapshots: dict[str, dict[str, str | None]] = {
+            src.as_posix(): {
+                "hash": hashlib.sha256(source_snapshot.content).hexdigest(),
+                "content": source_snapshot.content.decode("utf-8"),
+            },
+            dst.as_posix(): {"hash": None, "content": None},
+        }
+        for snap in self.boundary.iter_admitted_snapshots():
+            path = snap.path.as_posix()
+            if path == src.as_posix() or path == dst.as_posix():
+                continue
+            try:
+                text = snap.content.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            changed = _rewrite_move_links(text, snap.path, src, dst)
+            if changed != text:
+                snapshots[path] = {
+                    "hash": hashlib.sha256(snap.content).hexdigest(),
+                    "content": changed,
+                }
+        paths = tuple(PurePosixPath(p) for p in snapshots)
+        if policy is not None and any(not policy.can_read(path) for path in paths):
+            raise VaultWriteDenied("move preview unavailable: affected paths are unreadable")
+        self._require_writable_paths(policy, paths)
+        manifest = json.dumps(
+            {"destination": dst.as_posix(), "files": snapshots}, ensure_ascii=False
+        )
+        proposal = MemoryWriteProposal(
+            path=src.as_posix(),
+            content="",
+            operation="move",
+            status=STATUS_PENDING,
+            rule_access=self._access_for(policy, src).value,
+            requested_at=_now(),
+        )
+        proposal.proposal_data = json.loads(manifest)
+        proposal.creator_token_id = creator_token_id
+        proposal.affected_paths = [p.as_posix() for p in paths]
+        self._session.add(proposal)
+        self._session.commit()
+        self.activity_service.record(
+            "vault.mutation.requested",
+            {
+                "proposal_id": proposal.id,
+                "path": src.as_posix(),
+                "operation": "move",
+                "status": "pending",
+                "affected_paths": proposal.affected_paths,
+            },
+        )
+        return proposal
+
+    def request_delete(
+        self,
+        path: str,
+        policy: AccessPolicy | None = None,
+        creator_token_id: int | None = None,
+    ) -> MemoryWriteProposal:
+        """Create an explicit human-reviewed, version-pinned delete proposal."""
+        identity = self.validate_path(path)
+        try:
+            snap = self.boundary.read_file(identity)
+        except VaultPathError as exc:
+            raise VaultWriteDenied("delete source unavailable") from exc
+        affected = (*self.affected_paths(identity), identity)
+        self._require_writable_paths(policy, affected)
+        proposal = MemoryWriteProposal(
+            path=identity.as_posix(),
+            content="",
+            operation="delete",
+            status=STATUS_PENDING,
+            rule_access=self._access_for(policy, identity).value,
+            requested_at=_now(),
+        )
+        proposal.proposal_data = {"hash": hashlib.sha256(snap.content).hexdigest()}
+        proposal.creator_token_id = creator_token_id
+        proposal.affected_paths = [p.as_posix() for p in affected]
+        self._session.add(proposal)
+        self._session.commit()
+        self.activity_service.record(
+            "vault.mutation.requested",
+            {
+                "proposal_id": proposal.id,
+                "path": identity.as_posix(),
+                "operation": "delete",
+                "status": "pending",
+                "affected_paths": proposal.affected_paths,
+            },
+        )
+        return proposal
+
+    def _apply_relocation(
+        self, proposal: MemoryWriteProposal, policy: AccessPolicy | None
+    ) -> None:
+        """Apply version-checked file steps; report partial progress honestly."""
+        manifest = proposal.proposal_data or json.loads(proposal.content)
+        src = PurePosixPath(proposal.path)
+        files = (
+            manifest["files"]
+            if proposal.operation == "move"
+            else {proposal.path: {"hash": manifest["hash"], "content": None}}
+        )
+        destination = (
+            PurePosixPath(manifest["destination"])
+            if proposal.operation == "move"
+            else None
+        )
+        identities = tuple(
+            PurePosixPath(p) for p, item in files.items() if item["hash"] is not None
+        )
+        all_affected = identities + ((destination,) if destination is not None else ())
+        try:
+            self._require_writable_paths(policy, all_affected)
+            current = {p.as_posix(): self.boundary.read_file(p) for p in identities}
+            for path, snap in current.items():
+                expected = files[path]["hash"]
+                if (
+                    expected is None
+                    or hashlib.sha256(snap.content).hexdigest() != expected
+                ):
+                    raise VaultPathError(f"version conflict: {path}")
+            if destination is not None:
+                try:
+                    self.boundary.read_file(destination)
+                except VaultPathError:
+                    pass
+                else:
+                    raise VaultPathError("move destination already exists")
+        except (VaultPathError, VaultWriteDenied) as exc:
+            self._fail_proposal(proposal, str(exc), identities)
+            raise VaultWriteDenied(str(exc)) from exc
+        proposal.status = STATUS_APPLYING
+        proposal.applying_at = _now()
+        self._session.commit()
+        done = []
+        try:
+            if destination is not None:
+                result = self.boundary.atomic_create(
+                    destination, current[src.as_posix()].content
+                )
+                if not result.durable:
+                    raise RuntimeError("destination creation durability uncertain")
+                done.append(destination.as_posix())
+            for path, planned in files.items():
+                identity = PurePosixPath(path)
+                if identity == src and destination is not None:
+                    continue
+                if planned["content"] is not None:
+                    result = self.boundary.atomic_replace(
+                        identity,
+                        planned["content"].encode(),
+                        expected=current[path].version,
+                    )
+                    if not result.durable:
+                        raise RuntimeError(f"rewrite durability uncertain: {path}")
+                    done.append(path)
+            source_version = current[src.as_posix()].version
+            result = self.boundary.remove_if_version(src, expected=source_version)
+            if not result.durable:
+                raise RuntimeError("source removal durability uncertain")
+            done.append(src.as_posix())
+            self._session.expire_all()
+            ScanService(
+                self.boundary,
+                self._session,
+                embedding_model=None,
+                activity_service=self.activity_service,
+                live_traversal=self._live_traversal,
+            ).full_scan()
+            self._mark_applied(proposal, None, all_affected)
+        except Exception as exc:
+            proposal.created_paths = done
+            self._persist_reconciliation(
+                proposal,
+                "partial apply; completed paths="
+                f"{done!r}; reconcile vault manually: {exc}",
+                all_affected,
+            )
 
     def recover_interrupted_applies(self) -> int:
         """Resolve durable ``applying`` proposals left by a crashed process.
@@ -649,29 +924,20 @@ class VaultMutationService:
         file matches the pinned :class:`FileVersion` (whose sha256 was
         computed from *snapshot*) before invoking this callback, so a
         matching content hash proves the coherent bytes equal
-        ``snapshot.content`` and the managed-ownership verdict reuses
-        the frontmatter parsed from that same snapshot -- no second
-        read, no TOCTOU window.
+        ``snapshot.content``. No second read is needed, avoiding a TOCTOU
+        window.
 
         ``policy`` is the caller's per-token access policy for the
         auto-write check (direct callers without one fall back to the
         boundary's folder rules).
 
         Rejects (returns ``False``) when the access no longer allows
-        auto-writes, the coherent snapshot's version no longer matches
-        the pinned snapshot, or the file is not managed by this plugin.
+        auto-writes or the coherent snapshot's version no longer matches
+        the pinned snapshot.
         """
         expected_hash: str | None = None
-        managed = False
         if snapshot is not None:
             expected_hash = hashlib.sha256(snapshot.content).hexdigest()
-            try:
-                parsed = parse_note_bytes(snapshot.content, identity)
-                managed = (
-                    parsed.frontmatter.extra.get(MANAGED_BY_FIELD) == MANAGED_BY_VALUE
-                )
-            except (ValueError, OSError):
-                managed = False
 
         def validate_current(snapshot: AdmittedFileSnapshot) -> bool:
             try:
@@ -683,7 +949,7 @@ class VaultMutationService:
                     or snapshot.version.sha256 != expected_hash
                 ):
                     return False
-                return managed
+                return True
             except (VaultPathError, ValueError, OSError):
                 return False
 

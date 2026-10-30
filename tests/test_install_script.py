@@ -39,7 +39,7 @@ def test_install_runs_expected_commands(tmp_path):
     assert log.read_text().splitlines() == [
         "npm ci",
         "npm run build",
-        "uv tool install .",
+        "uv tool install --upgrade .",
         "hlm setup",
     ]
 
@@ -55,8 +55,9 @@ def run_readme_installer(cwd, bindir, extra_env=None):
     )
 
 
-def test_readme_installer_preflights_missing_commands_and_node_version(tmp_path):
+def test_readme_installer_preflights_missing_commands_and_versions(tmp_path):
     for missing, message in (
+        ("python3", "Python 3.12 or newer"),
         ("git", "install git"),
         ("uv", "install uv"),
         ("node", "Node.js 18 or newer"),
@@ -64,11 +65,15 @@ def test_readme_installer_preflights_missing_commands_and_node_version(tmp_path)
     ):
         bindir = tmp_path / missing
         bindir.mkdir()
-        for name in ("git", "uv", "node", "npm"):
+        for name in ("python3", "git", "uv", "node", "npm"):
             if name != missing:
                 command = bindir / name
                 body = (
-                    'printf "git %s\\n" "$*" >> "$GIT_LOG"; exit 0'
+                    'if [ "$1" = "-c" ] && '
+                    '[ "${SIM_PYTHON_VERSION:-3.12}" != "3.12" ]; '
+                    'then exit 1; fi; exit 0'
+                    if name == "python3"
+                    else 'printf "git %s\\n" "$*" >> "$GIT_LOG"; exit 0'
                     if name == "git"
                     else (
                         'if [ "$1" = "-e" ]; then '
@@ -91,6 +96,12 @@ def test_readme_installer_preflights_missing_commands_and_node_version(tmp_path)
     bindir.mkdir()
     git_log = tmp_path / "old-node-git-log"
     for name, body in (
+        (
+            "python3",
+            'if [ "$1" = "-c" ] && '
+            '[ "${SIM_PYTHON_VERSION:-3.12}" != "3.12" ]; '
+            'then echo "Python 3.12 or newer is required." >&2; exit 1; fi; exit 0',
+        ),
         ("git", 'printf "%s\\n" "$*" >> "$GIT_LOG"; exit 0'),
         ("uv", "exit 0"),
         ("npm", "exit 0"),
@@ -112,6 +123,19 @@ def test_readme_installer_preflights_missing_commands_and_node_version(tmp_path)
     assert "Node.js 18 or newer is required" in result.stderr
     assert not git_log.exists()
 
+    result = run_readme_installer(
+        tmp_path,
+        bindir,
+        {
+            "GIT_LOG": str(git_log),
+            "SIM_NODE_VERSION": "20.0.0",
+            "SIM_PYTHON_VERSION": "3.11",
+        },
+    )
+    assert result.returncode != 0
+    assert "Python 3.12 or newer is required" in result.stderr
+    assert not git_log.exists()
+
 
 def test_readme_installer_refuses_existing_checkout(tmp_path):
     (tmp_path / "harbor-ledger-memory").mkdir()
@@ -122,6 +146,7 @@ def test_readme_installer_refuses_existing_checkout(tmp_path):
         ("uv", "exit 0"),
         ("npm", "exit 0"),
         ("node", "exit 0"),
+        ("python3", "exit 0"),
     ):
         command = bindir / name
         command.write_text(f"#!/bin/sh\n{body}\n")
