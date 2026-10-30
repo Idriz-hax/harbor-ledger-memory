@@ -53,6 +53,8 @@ include = ["backend/src/harbor_ledger_memory/static/**"]
 "backend/migrations" = "harbor_ledger_memory/migrations"
 "web/dist" = "harbor_ledger_memory/web_dist"
 "backend/src/harbor_ledger_memory/skills/harbor-ledger-memory/SKILL.md" = "harbor_ledger_memory/skills/harbor-ledger-memory/SKILL.md"
+"integrations/hermes/hlm/__init__.py" = "harbor_ledger_memory/hermes/hlm/__init__.py"
+"integrations/hermes/hlm/client.py" = "harbor_ledger_memory/hermes/hlm/client.py"
 
 [tool.hatch.build.targets.sdist.force-include]
 "web/dist" = "web/dist"

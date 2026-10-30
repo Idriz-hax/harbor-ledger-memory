@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from importlib.resources import files
 from pathlib import Path
 
 
@@ -13,7 +14,9 @@ def setup(*, hermes_home: Path | None = None) -> Path:
     if not plugin.is_relative_to(home):
         raise ValueError("Hermes plugin path escapes selected profile")
     plugin.mkdir(mode=0o700, parents=True, exist_ok=True)
-    source = Path(__file__).resolve().parents[4] / "integrations" / "hermes" / "hlm"
+    source = files("harbor_ledger_memory").joinpath("hermes", "hlm")
+    if not (source / "__init__.py").is_file():
+        source = Path(__file__).resolve().parents[4] / "integrations" / "hermes" / "hlm"
     for name in ("__init__.py", "client.py"):
         src = source / name
         if not src.is_file():
