@@ -54,6 +54,7 @@ from harbor_ledger_memory.services.tokens import (
     TokenService,
 )
 from harbor_ledger_memory.services.validation import ValidationService
+from harbor_ledger_memory.setup import setup as run_setup
 from harbor_ledger_memory.vault.boundary import VaultBoundary, VaultPathError
 from harbor_ledger_memory.watcher import VaultWatchService
 
@@ -73,6 +74,12 @@ token_app = typer.Typer(
 app.add_typer(token_app, name="token")
 marks_app = typer.Typer(name="marks", help="Manage scoped explicit memory marks.")
 app.add_typer(marks_app, name="marks")
+
+
+@app.command("setup")
+def setup_command() -> None:
+    """Interactively configure local HLM features."""
+    run_setup()
 
 
 def sync_opencode_skill() -> None:
