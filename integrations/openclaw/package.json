@@ -9,7 +9,7 @@
   "dependencies": { "@sinclair/typebox": "^0.34.0" },
   "devDependencies": { "openclaw": "2026.10.5", "tsx": "^4.20.0", "typescript": "^5.9.0" },
   "overrides": {
-    "openclaw": { "npm": "file:vendor/npm-12.2.1-undici-6.29.1-ip-address-10.7.5.tgz", "undici": "8.12.2", "zod": "4.6.6" }
+    "openclaw": { "npm": "12.2.1", "undici": "8.12.2", "zod": "4.6.6" }
   },
   "peerDependencies": { "openclaw": "2026.10.5" }
 }
