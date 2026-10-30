@@ -42,6 +42,7 @@ def test_bad_shapes_fail_without_config_change(tmp_path, monkeypatch, contents):
     with pytest.raises(OpenCodeSetupError):
         setup(token="secret")
     assert path.read_text() == contents
+    assert not (tmp_path / "cfg" / "harbor-ledger-memory" / "opencode-token").exists()
 
 
 def test_jsonc_conflict_and_confirmation(tmp_path, monkeypatch):
@@ -53,12 +54,57 @@ def test_jsonc_conflict_and_confirmation(tmp_path, monkeypatch):
     with pytest.raises(OpenCodeSetupError, match="JSONC"):
         setup(token="secret")
     assert jsonc.read_text() == "// untouched"
+    assert not (tmp_path / "cfg" / "harbor-ledger-memory" / "opencode-token").exists()
     jsonc.unlink()
     config = root / "opencode.json"
     config.write_text('{"mcp":{"servers":{"harbor-ledger-memory":{"type":"local"}}}}')
     with pytest.raises(OpenCodeSetupError, match="differs"):
         setup(token="secret")
+    assert not (tmp_path / "cfg" / "harbor-ledger-memory" / "opencode-token").exists()
     setup(token="secret", confirm_replace=lambda: True)
+
+
+def test_config_write_failure_rolls_secret_back(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    from harbor_ledger_memory.hosts import opencode
+
+    config = tmp_path / "cfg" / "opencode" / "opencode.json"
+    config.parent.mkdir(parents=True)
+    config.write_text("{}")
+    secret = tmp_path / "cfg" / "harbor-ledger-memory" / "opencode-token"
+    secret.parent.mkdir()
+    secret.write_bytes(b"old\xff")
+    secret.chmod(0o640)
+    original_write = opencode._atomic_write
+
+    def fail_config(path, content, mode):
+        if path == config:
+            raise OSError("simulated config failure")
+        original_write(path, content, mode)
+
+    monkeypatch.setattr(opencode, "_atomic_write", fail_config)
+    with pytest.raises(OSError, match="simulated"):
+        setup(token="new")
+    assert secret.read_bytes() == b"old\xff"
+    assert stat.S_IMODE(secret.stat().st_mode) == 0o640
+
+
+def test_config_write_failure_removes_new_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    from harbor_ledger_memory.hosts import opencode
+
+    original_write = opencode._atomic_write
+    config = tmp_path / "cfg" / "opencode" / "opencode.json"
+
+    def fail_config(path, content, mode):
+        if path == config:
+            raise OSError("simulated config failure")
+        original_write(path, content, mode)
+
+    monkeypatch.setattr(opencode, "_atomic_write", fail_config)
+    with pytest.raises(OSError, match="simulated"):
+        setup(token="new")
+    assert not (tmp_path / "cfg" / "harbor-ledger-memory" / "opencode-token").exists()
 
 
 def test_dispatcher_rejects_unsupported_host():

@@ -25,7 +25,7 @@ def _paths() -> tuple[Path, Path]:
     return root / "opencode", root / "harbor-ledger-memory"
 
 
-def _atomic_write(path: Path, content: str, mode: int) -> None:
+def _atomic_write(path: Path, content: str | bytes, mode: int) -> None:
     path.parent.mkdir(
         mode=0o700 if path.parent.name == "harbor-ledger-memory" else 0o755,
         parents=True,
@@ -34,7 +34,11 @@ def _atomic_write(path: Path, content: str, mode: int) -> None:
     fd, temporary = tempfile.mkstemp(dir=path.parent)
     try:
         os.fchmod(fd, mode)
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        if isinstance(content, bytes):
+            stream = os.fdopen(fd, "wb")
+        else:
+            stream = os.fdopen(fd, "w", encoding="utf-8")
+        with stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
@@ -62,18 +66,12 @@ def setup(
     config_path = json_path
     if jsonc_path.exists():
         raise OpenCodeSetupError(
-            "OpenCode JSONC or dual config detected; manually merge the remote MCP "
-            f"server into {json_path} using mcp.servers."
+            f"OpenCode JSONC config detected at {jsonc_path}; manually merge the "
+            "remote MCP server into mcp.servers."
         )
     if not token or "\n" in token:
         raise OpenCodeSetupError("Token must be non-empty and contain no newline.")
     secret_path = secret_dir / "opencode-token"
-    secret_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(secret_path.parent, 0o700)
-    if secret_path.exists():
-        os.chmod(secret_path, 0o600)
-    _atomic_write(secret_path, token, 0o600)
-
     if config_path.exists():
         try:
             config = json.loads(
@@ -110,5 +108,21 @@ def setup(
                 "or manually merge."
             )
     servers["harbor-ledger-memory"] = entry
-    _atomic_write(config_path, json.dumps(config, indent=2) + "\n", 0o600)
+    updated_config = json.dumps(config, indent=2) + "\n"
+
+    prior_secret = secret_path.read_bytes() if secret_path.exists() else None
+    prior_mode = (
+        secret_path.stat().st_mode & 0o777 if secret_path.exists() else None
+    )
+    secret_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(secret_path.parent, 0o700)
+    try:
+        _atomic_write(secret_path, token, 0o600)
+        _atomic_write(config_path, updated_config, 0o600)
+    except Exception:
+        if prior_secret is None:
+            secret_path.unlink(missing_ok=True)
+        else:
+            _atomic_write(secret_path, prior_secret, prior_mode or 0o600)
+        raise
     return config_path
