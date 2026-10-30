@@ -2,7 +2,7 @@
 
 Harbor Ledger Memory is local neural memory for AI agents that works with an existing Markdown vault. Obsidian is a compatible vault application, not a product requirement. It builds a rebuildable index with lexical search, optional semantic search, knowledge-graph context, and Model Context Protocol (MCP) tools. Your Markdown files remain authoritative: the service never rewrites vault content outside its policy-controlled proposal and approval workflow.
 
-HLM 2.1.1 adds policy-checked move and delete proposals, broader conflict-free auto-write updates, and a configurable OpenClaw response limit. It retains optional multilingual E5 embeddings and explicit full-note reads. See [GitHub Releases](https://github.com/Idriz-hax/harbor-ledger-memory/releases), the [Hermes provider guide](integrations/hermes/README.md), and [OpenClaw plugin guide](integrations/openclaw/README.md).
+See [GitHub Releases](https://github.com/Idriz-hax/harbor-ledger-memory/releases) for installable packages and release history, plus the [Hermes provider guide](integrations/hermes/README.md) and [OpenClaw plugin guide](integrations/openclaw/README.md) for host integrations.
 
 <p align="center">
   <img src="docs/assets/harbor-ledger-memory.png" alt="Harbor Ledger Memory map showing connected agent context routes across a local-first ledger." width="960" />
@@ -28,6 +28,20 @@ HLM 2.1.1 adds policy-checked move and delete proposals, broader conflict-free a
 This installs `hlm` and runs its first-time setup. It does not start the service;
 you start it after setup. You do not need Obsidian installed—only an existing
 directory of Markdown notes.
+
+### Install with an AI agent
+
+Paste this instruction into your AI agent:
+
+> Install Harbor Ledger Memory from its GitHub repository using the Quickstart
+> instructions in the README. Guide me through the listed setup choices and ask
+> for the path to my Markdown notes; do not start the service unless I ask.
+
+Or run this from the directory where you want the checkout:
+
+```sh
+git clone https://github.com/Idriz-hax/harbor-ledger-memory.git && cd harbor-ledger-memory && ./scripts/install.sh
+```
 
 Requirements:
 

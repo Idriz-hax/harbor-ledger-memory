@@ -46,7 +46,9 @@ def test_install_runs_expected_commands(tmp_path):
 
 def run_readme_installer(cwd, bindir, extra_env=None):
     readme = (ROOT / "README.md").read_text()
-    command = re.search(r"```sh\n(.*?)\n```", readme, re.S).group(1)
+    command = re.search(
+        r"### Install the CLI.*?```sh\n(.*?)\n```", readme, re.S
+    ).group(1)
     env = os.environ.copy()
     env["PATH"] = str(bindir)
     env.update(extra_env or {})
