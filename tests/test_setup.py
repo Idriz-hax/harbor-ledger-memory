@@ -1,4 +1,5 @@
 import tomllib
+
 import pytest
 from typer.testing import CliRunner
 
@@ -52,7 +53,10 @@ def test_valid_setup_preserves_existing_config(monkeypatch, tmp_path):
     vault.mkdir()
     cfg = tmp_path / "config.toml"
     cfg.write_text(
-        f'vault_path = "{vault}"\nindex_root = "AI"\ndatabase_url = "sqlite:///{tmp_path}/db.sqlite"\nserver_port = 9001\n'
+        f'vault_path = "{vault}"\n'
+        f'index_root = "AI"\n'
+        f'database_url = "sqlite:///{tmp_path}/db.sqlite"\n'
+        "server_port = 9001\n"
     )
     output = []
     monkeypatch.setattr(setup_impl, "config_path", lambda: cfg)
@@ -120,6 +124,7 @@ def test_empty_folder_skips_token_and_outputs_ui_guidance(monkeypatch, tmp_path)
     assert "api_tokens" not in cfg.read_text()
     assert any("token creation skipped" in line for line in out)
     assert any("hlm serve" in line for line in out)
+    assert any("Settings > Tokens" in line for line in out)
 
 
 def test_embedding_missing_aborts_before_write(monkeypatch, tmp_path):
@@ -190,6 +195,7 @@ def test_default_root_token_and_plaintext_only_output(monkeypatch, tmp_path):
 
 
 def test_token_rules_scoped_to_loaded_index_root(monkeypatch, tmp_path):
+    from harbor_ledger_memory.services.access import AccessPolicy
     from harbor_ledger_memory.services.tokens import TokenService
 
     vault = tmp_path / "v"
@@ -220,6 +226,10 @@ def test_token_rules_scoped_to_loaded_index_root(monkeypatch, tmp_path):
             (".", "none"),
             ("AI/Notes", "read"),
         ]
+        policy = AccessPolicy(record.rules, admin=record.admin)
+        assert policy.can_read("AI/Notes/page.md")
+        assert not policy.can_read("AI/Other/page.md")
+        assert not policy.can_read("Outside/page.md")
     finally:
         service.close()
 

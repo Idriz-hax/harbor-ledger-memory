@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import Callable
 
 import typer
 from pydantic import ValidationError
@@ -47,7 +47,8 @@ def setup(
     api = confirm("Enable API?", default=False)
     if not confirm("Keep access localhost only?", default=True):
         raise SetupError(
-            "Setup stopped without changes. Configure nonlocal access manually with `hlm config set` (network, CIDRs, TLS, and frontend authentication)."
+            "Setup stopped without changes. Configure nonlocal access manually "
+            "with `hlm config set` (network, CIDRs, TLS, and frontend authentication)."
         )
 
     embeddings = confirm("Enable optional embeddings?", default=False)
@@ -55,7 +56,8 @@ def setup(
     if embeddings:
         if importlib.util.find_spec("sentence_transformers") is None:
             raise SetupError(
-                "sentence_transformers is not installed. Install the embeddings extra and rerun `hlm setup`."
+                "sentence_transformers is not installed. Install the embeddings "
+                "extra and rerun `hlm setup`."
             )
         model = prompt("Embedding model", default="all-MiniLM-L6-v2")
 
@@ -63,7 +65,6 @@ def setup(
     name = ""
     folders: list[FolderRule] = []
     index_root = PurePosixPath(str(existing.get("index_root", ".")))
-    database_url = str(existing.get("database_url", "sqlite:///data/memory.db"))
     if create_token:
         name = prompt("Token name").strip()
         folder_text = prompt(
@@ -77,7 +78,8 @@ def setup(
                 rule.path.relative_to(index_root)
             except (ValidationError, ValueError) as exc:
                 raise SetupError(
-                    f"Invalid folder '{item}': must be a valid vault-relative folder within index root '{index_root}'."
+                    f"Invalid folder '{item}': must be a valid vault-relative "
+                    f"folder within index root '{index_root}'."
                 ) from exc
             folders.append(rule)
         if folders and not name:
@@ -109,7 +111,8 @@ def setup(
             )
         except Exception as exc:
             raise SetupError(
-                "Configuration saved, but token creation failed. Rerun `hlm setup` to create the token."
+                "Configuration saved, but token creation failed. Rerun "
+                "`hlm setup` to create the token."
             ) from exc
         finally:
             if service is not None:
@@ -119,16 +122,21 @@ def setup(
                     cleanup_failed = True
         output(created.plaintext)
         output(
-            f"Save this token now; it is shown once. Update it with `hlm token update {name} --rule .=none --rule FOLDER=read`; revoke it with `hlm token revoke {name}`."
+            f"Save this token now; it is shown once. Update folder access with "
+            f"`hlm token update {name} --rule .=none --rule FOLDER=read`; revoke it "
+            f"with `hlm token revoke {name}`."
         )
         if cleanup_failed:
             output("Warning: token was created, but cleanup failed.")
     elif create_token:
         output(
-            "No folders selected; token creation skipped. Set access later with `hlm token create --name NAME --rule .=none --rule FOLDER=read`."
+            "No folders selected; token creation skipped. Create a folder-scoped "
+            "token later with `hlm token create --name NAME --rule .=none "
+            "--rule FOLDER=read`."
         )
     if ui:
         output(
-            "Web UI enabled for localhost only. Start it with `hlm serve`; adjust UI access with `hlm config set --frontend-enabled/--frontend-disabled`."
+            "Web UI enabled for localhost only. Start it with `hlm serve`. "
+            "Manage token folder permissions in Settings > Tokens."
         )
     output(f"Setup saved {config_path()}")
