@@ -1,6 +1,7 @@
 # Agent-private memory CLI demo design
 
-**Status:** Proposed for review  
+**Status:** Proposed for review
+
 **Date:** 2026-11-09
 
 ## Goal
