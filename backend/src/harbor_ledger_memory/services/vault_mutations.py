@@ -286,6 +286,10 @@ class VaultMutationService:
         src, dst = self.validate_path(source), self.validate_path(destination)
         if src == dst or src.suffix.lower() != ".md" or dst.suffix.lower() != ".md":
             raise VaultWriteDenied("move requires distinct markdown note paths")
+        # Relocations span a generated rewrite manifest; ordinary folder rules
+        # are not a safe boundary for private-to-shared publication.
+        if any(self._is_agent_private(path) for path in (src, dst)):
+            raise VaultWriteDenied("AgentPrivate relocations are unavailable")
         try:
             source_snapshot = self.boundary.read_file(src)
         except VaultPathError as exc:
@@ -357,6 +361,8 @@ class VaultMutationService:
     ) -> MemoryWriteProposal:
         """Create an explicit human-reviewed, version-pinned delete proposal."""
         identity = self.validate_path(path)
+        if self._is_agent_private(identity):
+            raise VaultWriteDenied("AgentPrivate relocations are unavailable")
         try:
             snap = self.boundary.read_file(identity)
         except VaultPathError as exc:
@@ -404,6 +410,14 @@ class VaultMutationService:
             if proposal.operation == "move"
             else None
         )
+        manifest_paths = tuple(PurePosixPath(path) for path in files)
+        protected_paths = manifest_paths + (
+            (destination,) if destination is not None else ()
+        )
+        if any(self._is_agent_private(path) for path in (src, *protected_paths)):
+            reason = "AgentPrivate relocations are unavailable"
+            self._fail_proposal(proposal, reason, protected_paths)
+            raise VaultWriteDenied(reason)
         identities = tuple(
             PurePosixPath(p) for p, item in files.items() if item["hash"] is not None
         )
@@ -978,6 +992,12 @@ class VaultMutationService:
         except VaultPathError as exc:
             raise VaultWriteDenied(str(exc)) from exc
         return identity
+
+    def _is_agent_private(self, path: PurePosixPath) -> bool:
+        root = (*self.boundary.index_relative.parts, "AgentPrivate")
+        return len(path.parts) >= len(root) and tuple(
+            part.casefold() for part in path.parts[: len(root)]
+        ) == tuple(part.casefold() for part in root)
 
     def affected_paths(self, identity: PurePosixPath) -> tuple[PurePosixPath, ...]:
         return (*self.boundary.missing_parent_paths(identity), identity)

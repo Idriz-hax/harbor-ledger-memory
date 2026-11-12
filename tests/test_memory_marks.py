@@ -11,6 +11,7 @@ from harbor_ledger_memory.services.memory_marks import (
     MemoryMarkScope,
     MemoryMarkService,
     TraceScopeError,
+    token_scope,
 )
 
 
@@ -34,6 +35,13 @@ def _seed(session: CatalogSession, trace_scope: MemoryMarkScope) -> str:
     session.add(trace)
     session.commit()
     return trace.trace_uuid
+
+
+def test_agent_scope_stays_bound_to_principal_across_token_reassignment():
+    alpha = token_scope(1, agent_principal="alpha")
+    assert alpha == token_scope(2, agent_principal="alpha")
+    assert alpha != token_scope(1, agent_principal="beta")
+    assert token_scope(1) == MemoryMarkScope("token", "1")
 
 
 def test_marks_are_scope_isolated_and_owner_checked(tmp_path):

@@ -432,6 +432,7 @@ class TokenCreateBody(BaseModel):
     rules: tuple[FolderRule, ...] = Field(default_factory=tuple)
     admin: bool = False
     approve_own_proposals: bool = False
+    agent_principal: str | None = None
 
 
 class TokenUpdateBody(BaseModel):
@@ -446,6 +447,7 @@ class TokenUpdateBody(BaseModel):
     rules: tuple[FolderRule, ...] | None = None
     admin: bool | None = None
     approve_own_proposals: bool | None = None
+    agent_principal: str | None = None
 
 
 class WriteRequest(BaseModel):
@@ -727,6 +729,8 @@ def create_app(
     application.state.activity_service = activity_service
     application.state.live_traversal = live_traversal
     application.state.token_service = token_service
+    application.state.agent_private_enabled = settings.agent_private_enabled
+    application.state.agent_private_root = settings.index_root / "AgentPrivate"
     application.state.ui_session_service = ui_session_service
     application.state.ui_origin = ui_origin or _loopback_origin(
         settings.server_host, settings.server_port
@@ -996,7 +1000,9 @@ def create_app(
         session = CatalogSession(bind=engine)
         try:
             catalog_status = CatalogStatusService(
-                session, path_filter=boundary.is_admitted
+                session,
+                path_filter=lambda path: boundary.is_admitted(path)
+                and auth.policy.can_read(path),
             ).read()
         finally:
             session.close()
@@ -1208,6 +1214,12 @@ def create_app(
                 activity_service=activity_service,
                 live_traversal=live_traversal,
             )
+            _require_mutation_paths_writable(
+                auth,
+                _mutation_affected_paths(
+                    service, request.source
+                ) + (service.validate_path(request.destination),),
+            )
             proposal = service.request_move(
                 request.source, request.destination, policy=auth.policy
             )
@@ -1230,6 +1242,9 @@ def create_app(
                 settings,
                 activity_service=activity_service,
                 live_traversal=live_traversal,
+            )
+            _require_mutation_paths_writable(
+                auth, _mutation_affected_paths(service, request.path)
             )
             return _write_response(
                 service.request_delete(request.path, policy=auth.policy)
@@ -1319,6 +1334,9 @@ def create_app(
                     for r in auth.policy.rules
                 ),
                 auth.policy.admin,
+                agent_principal=auth.policy.agent_principal,
+                agent_private_enabled=auth.policy.agent_private_enabled,
+                agent_private_root=auth.policy.agent_private_root,
             )
             _require_mutation_paths_writable(
                 AuthContext(auth.record, policy, auth.ui_session), paths
@@ -1620,6 +1638,7 @@ def create_app(
                 body.rules,
                 admin=body.admin,
                 approve_own_proposals=body.approve_own_proposals,
+                agent_principal=body.agent_principal,
                 activity=activity_service,
             )
         except (DuplicateTokenNameError, InvalidTokenRequestError) as exc:
@@ -1631,6 +1650,7 @@ def create_app(
             "rules": [rule.model_dump(mode="json") for rule in created.rules],
             "admin": created.admin,
             "approve_own_proposals": created.approve_own_proposals,
+            "agent_principal": created.agent_principal,
             "created_at": created.record.created_at.isoformat(),
         }
 
@@ -1649,6 +1669,8 @@ def create_app(
                 rules=body.rules,
                 admin=body.admin,
                 approve_own_proposals=body.approve_own_proposals,
+                agent_principal=body.agent_principal,
+                set_agent_principal="agent_principal" in body.model_fields_set,
                 activity=activity_service,
             )
         except InvalidTokenRequestError as exc:
@@ -1662,6 +1684,7 @@ def create_app(
             "rules": [rule.model_dump(mode="json") for rule in record.rules],
             "admin": record.admin,
             "approve_own_proposals": record.approve_own_proposals,
+            "agent_principal": record.agent_principal,
             "created_at": record.created_at.isoformat(),
         }
 
@@ -1835,9 +1858,7 @@ def create_app(
                 activity_service=activity_service,
                 live_traversal=live_traversal,
             )
-            scope = token_scope(
-                auth.record.id if auth.record else None, auth.ui_session
-            )
+            scope = _auth_scope(auth)
             result = service.query(
                 request.model_copy(
                     update={"scope_kind": scope.scope_kind, "scope_id": scope.scope_id}
@@ -1874,7 +1895,7 @@ def create_app(
         swept out.
         """
         swept_events: list[ActivityEventResponse] = []
-        scope = token_scope(auth.record.id if auth.record else None, auth.ui_session)
+        scope = _auth_scope(auth)
         for event in activity_service.history(limit=limit, after_id=after_id):
             if not _activity_scope_visible(
                 scope.scope_kind, scope.scope_id, event.event_type, event.payload
@@ -1900,9 +1921,7 @@ def create_app(
         """
 
         async def swept_stream() -> AsyncGenerator[str, None]:
-            scope = token_scope(
-                auth.record.id if auth.record else None, auth.ui_session
-            )
+            scope = _auth_scope(auth)
             async for frame in activity_service.stream(after_id=after_id):
                 if auth.ui_session and not ui_session_service.is_valid(auth.ui_session):
                     return
@@ -1952,9 +1971,7 @@ def create_app(
                 raise HTTPException(
                     status_code=404, detail=f"Trace {trace_id} not found"
                 )
-            scope = token_scope(
-                auth.record.id if auth.record else None, auth.ui_session
-            )
+            scope = _auth_scope(auth)
             if trace.scope_kind != scope.scope_kind or trace.scope_id != scope.scope_id:
                 raise HTTPException(
                     status_code=404, detail=f"Trace {trace_id} not found"
@@ -2005,9 +2022,7 @@ def create_app(
         session = CatalogSession(bind=engine)
         try:
             boundary = VaultBoundary(settings)
-            scope = token_scope(
-                auth.record.id if auth.record else None, auth.ui_session
-            )
+            scope = _auth_scope(auth)
             marks = MemoryMarkService(session)
             try:
                 if not request.relevant_paths and not request.irrelevant_paths:
@@ -2051,9 +2066,7 @@ def create_app(
         engine = create_database(settings.database_url)
         session = CatalogSession(bind=engine)
         try:
-            scope = token_scope(
-                auth.record.id if auth.record else None, auth.ui_session
-            )
+            scope = _auth_scope(auth)
             boundary = VaultBoundary(settings)
             marks = MemoryMarkService(session).list_marks(
                 scope,
@@ -2083,9 +2096,7 @@ def create_app(
         engine = create_database(settings.database_url)
         session = CatalogSession(bind=engine)
         try:
-            scope = token_scope(
-                auth.record.id if auth.record else None, auth.ui_session
-            )
+            scope = _auth_scope(auth)
             boundary = VaultBoundary(settings)
             expires = (
                 datetime.fromisoformat(request.expires_at)
@@ -2114,9 +2125,7 @@ def create_app(
         engine = create_database(settings.database_url)
         session = CatalogSession(bind=engine)
         try:
-            scope = token_scope(
-                auth.record.id if auth.record else None, auth.ui_session
-            )
+            scope = _auth_scope(auth)
             boundary = VaultBoundary(settings)
             count = MemoryMarkService(session).reset(
                 scope,
@@ -2320,7 +2329,12 @@ def create_app(
                 raise TokenAuthError(
                     401, {"detail": "authentication required", "token_required": True}
                 )
-            policy = AccessPolicy(record.rules, record.admin)
+            policy = AccessPolicy(
+                record.rules, record.admin,
+                agent_principal=record.agent_principal,
+                agent_private_enabled=settings.agent_private_enabled,
+                agent_private_root=settings.index_root / "AgentPrivate",
+            )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=application), base_url="http://test"
         ) as client:
@@ -2636,6 +2650,14 @@ def _write_response(proposal: MemoryWriteProposal) -> WriteProposalResponse:
         base_hash=proposal.expected_source_hash,
         diff=proposal.base_diff,
         proposal_data=proposal.proposal_data,
+    )
+
+
+def _auth_scope(auth: AuthContext):
+    return token_scope(
+        auth.record.id if auth.record else None,
+        auth.ui_session,
+        agent_principal=auth.record.agent_principal if auth.record else None,
     )
 
 

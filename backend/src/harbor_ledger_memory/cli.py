@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager, redirect_stderr
 from importlib.resources import files
@@ -75,6 +76,105 @@ token_app = typer.Typer(
 app.add_typer(token_app, name="token")
 marks_app = typer.Typer(name="marks", help="Manage scoped explicit memory marks.")
 app.add_typer(marks_app, name="marks")
+demo_app = typer.Typer(name="demo", help="Run isolated feature demonstrations.")
+app.add_typer(demo_app, name="demo")
+
+
+@demo_app.command("agent-private")
+def demo_agent_private() -> None:
+    """Demonstrate shared and principal-private note access in an isolated fixture."""
+    from fastapi.testclient import TestClient
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hlm-agent-private-demo-") as root:
+            base = Path(root)
+            vault = base / "vault"
+            vault.mkdir()
+            (vault / "shared.md").write_text("shared demo note", encoding="utf-8")
+            for principal in ("agent-a", "agent-b"):
+                private = vault / "AgentPrivate" / principal
+                private.mkdir(parents=True)
+                (private / "note.md").write_text(
+                    f"private note for {principal}", encoding="utf-8"
+                )
+            settings = Settings(
+                vault_path=vault,
+                index_root=".",
+                database_url=f"sqlite:///{base / 'demo.db'}",
+                api={"enabled": True},
+                agent_private_enabled=True,
+            )
+            tokens = TokenService(settings.database_url)
+            try:
+                token_a = tokens.create(
+                    "demo-agent-a", [], agent_principal="agent-a"
+                ).plaintext
+                token_b = tokens.create(
+                    "demo-agent-b", [], agent_principal="agent-b"
+                ).plaintext
+            finally:
+                tokens.close()
+
+            def request(application: Any, token: str, path: str) -> int:
+                with TestClient(application) as client:
+                    return client.get(
+                        "/api/v1/notes/content",
+                        params={"path": path},
+                        headers={"Authorization": f"Bearer {token}"},
+                    ).status_code
+
+            enabled = create_app(settings)
+            checks = [
+                ("agent-a reads shared", request(enabled, token_a, "shared.md"), 200),
+                ("agent-b reads shared", request(enabled, token_b, "shared.md"), 200),
+                (
+                    "agent-a reads own note",
+                    request(enabled, token_a, "AgentPrivate/agent-a/note.md"),
+                    200,
+                ),
+                (
+                    "agent-a cannot read agent-b note",
+                    request(enabled, token_a, "AgentPrivate/agent-b/note.md"),
+                    404,
+                ),
+                (
+                    "agent-b reads own note",
+                    request(enabled, token_b, "AgentPrivate/agent-b/note.md"),
+                    200,
+                ),
+                (
+                    "agent-b cannot read agent-a note",
+                    request(enabled, token_b, "AgentPrivate/agent-a/note.md"),
+                    404,
+                ),
+            ]
+            disabled_settings = settings.model_copy(
+                update={"agent_private_enabled": False}
+            )
+            disabled = create_app(disabled_settings)
+            checks.extend(
+                [
+                    (
+                        "disabled feature blocks agent-a private note",
+                        request(disabled, token_a, "AgentPrivate/agent-a/note.md"),
+                        404,
+                    ),
+                    (
+                        "disabled feature blocks agent-b private note",
+                        request(disabled, token_b, "AgentPrivate/agent-b/note.md"),
+                        404,
+                    ),
+                ]
+            )
+            for label, actual, expected in checks:
+                if actual != expected:
+                    raise RuntimeError(
+                        f"{label}: expected HTTP {expected}, got {actual}"
+                    )
+                typer.echo(f"PASS {label}")
+    except Exception as exc:
+        typer.echo(f"Agent-private demo failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command("setup")
@@ -435,6 +535,9 @@ def token_create(
     admin: bool = typer.Option(
         False, "--admin", help="Allow managing tokens and settings."
     ),
+    agent_principal: str | None = typer.Option(
+        None, "--agent-principal", help="Bind token to a stable agent principal ID."
+    ),
     rule: list[str] = typer.Option(
         [],
         "--rule",
@@ -450,7 +553,7 @@ def token_create(
     rules = [_parse_rule(raw) for raw in rule]
     service = _token_service(settings)
     try:
-        created = service.create(name, rules, admin)
+        created = service.create(name, rules, admin, agent_principal=agent_principal)
     finally:
         service.close()
     admin_note = " [admin]" if created.admin else ""
@@ -464,6 +567,9 @@ def token_create(
 @token_app.command("update")
 def token_update(
     name: str = typer.Argument(..., help="Name of the active token to update."),
+    agent_principal: str | None = typer.Option(
+        None, "--agent-principal", help="Set stable agent principal ID."
+    ),
     admin: bool | None = typer.Option(
         None,
         "--admin/--no-admin",
@@ -503,6 +609,8 @@ def token_update(
             rules=[] if clear_rules else parsed or None,
             admin=admin,
             approve_own_proposals=approve_own_proposals,
+            agent_principal=agent_principal,
+            set_agent_principal=agent_principal is not None,
         )
     except InvalidTokenRequestError as exc:
         typer.echo(f"Error: {exc}", err=True)

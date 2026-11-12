@@ -377,6 +377,41 @@ revoking and creating a new token.
 approve proposals it created itself; without it, own-proposal approval is
 rejected even when the token can otherwise write to the path.
 
+### Optional agent-private memory
+
+Run `hlm demo agent-private` for an isolated walkthrough of shared reads,
+principal ownership, and disabled-feature behavior. It creates and removes a
+temporary vault and database, uses FastAPI's in-process client, and does not
+read configured vault/database settings or make network requests.
+
+Agent-private scopes are disabled by default. Existing installations need no
+new setup: leave `HLM_AGENT_PRIVATE_ENABLED` unset (or `false`) to keep normal
+shared-memory behavior. The reserved `AgentPrivate/` subtree is not exposed
+through HLM while disabled; existing Markdown files are never moved or rewritten.
+
+To opt in, set `HLM_AGENT_PRIVATE_ENABLED=true` and bind each agent's token to a
+stable, lowercase principal ID:
+
+```text
+hlm token create -n hermes-agent-a --agent-principal agent-a --rule AI=read
+```
+
+The principal is assigned by an administrator through token management; it is
+not accepted from query, read, or write requests. Once assigned, it is
+immutable for that token; revoke it and create a new token to change identity.
+With the feature enabled, a
+bound token can access shared notes plus its own private subtree under the
+configured index root (`<index-root>/AgentPrivate/<principal>/`), subject to
+its ordinary folder rules. Unbound tokens remain shared-only. Broad folder
+grants and the token `--admin` flag do not override private ownership. Use a
+separate principal-bound token per agent/profile when isolation is wanted.
+
+Disabling the feature blocks HLM access to the reserved subtree rather than
+making its contents shared; re-enable it with the same principal bindings to
+resume access. The vault and database remain inspectable by their local
+administrator, so this is agent-level authorization, not encryption from the
+machine owner. The reserved folder name must not be used for unrelated notes.
+
 It prints the plaintext `hlm_…` token **once** (only its SHA-256 hash is
 stored). Send it as `Authorization: Bearer hlm_…` on external REST/MCP calls;
 the authenticated local Web UI can also create and revoke these tokens.

@@ -401,6 +401,7 @@ def test_token_lifecycle_over_rest(tmp_path: Path) -> None:
                 {"path": "AI", "access": "propose-write"},
             ],
             "admin": False,
+            "agent_principal": "agent:builder",
         }
         resp = client.post("/api/v1/tokens", json=body, headers=headers)
         assert resp.status_code == 201
@@ -408,6 +409,7 @@ def test_token_lifecycle_over_rest(tmp_path: Path) -> None:
         assert created["token"].startswith("hlm_")
         assert created["name"] == "opencode"
         assert created["admin"] is False
+        assert created["agent_principal"] == "agent:builder"
         assert created["rules"] == [{"path": "AI", "access": "propose-write"}]
         assert "created_at" in created
         # GET /tokens is a bare active list with no plaintext/hash leakage.
@@ -464,6 +466,7 @@ def test_token_update_over_rest(tmp_path: Path) -> None:
                 "rules": [{"path": "AI", "access": "propose-write"}],
                 "admin": True,
                 "approve_own_proposals": True,
+                "agent_principal": "agent:worker",
             },
             headers=headers,
         )
@@ -473,6 +476,7 @@ def test_token_update_over_rest(tmp_path: Path) -> None:
         assert data["rules"] == [{"path": "AI", "access": "propose-write"}]
         assert data["admin"] is True
         assert data["approve_own_proposals"] is True
+        assert data["agent_principal"] == "agent:worker"
         assert "token" not in data and "token_hash" not in data
         # The secret is unchanged: the old plaintext still authenticates.
         assert client.get("/api/v1/status", headers=_headers(target)).status_code == 200
@@ -484,6 +488,7 @@ def test_token_update_over_rest(tmp_path: Path) -> None:
         data = resp.json()
         assert data["admin"] is False
         assert data["approve_own_proposals"] is True
+        assert data["agent_principal"] == "agent:worker"
         assert data["rules"] == [{"path": "AI", "access": "propose-write"}]
         # Empty body -> 400 (service-level: nothing to update).
         assert (
@@ -527,7 +532,9 @@ def test_token_update_requires_admin(tmp_path: Path) -> None:
         )
         headers = _headers(writer)
         resp = client.patch(
-            "/api/v1/tokens/writer", json={"admin": True}, headers=headers
+            "/api/v1/tokens/writer",
+            json={"admin": True, "agent_principal": "agent:owner"},
+            headers=headers,
         )
         assert resp.status_code == 403
         assert resp.json() == {"detail": "token missing admin access"}

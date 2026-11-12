@@ -263,6 +263,9 @@ class Settings(BaseSettings):
     api: ApiSettings = Field(default_factory=ApiSettings)
     mcp: McpSettings = Field(default_factory=McpSettings)
     network: NetworkSettings = Field(default_factory=NetworkSettings)
+    agent_private_enabled: bool = Field(
+        default=False, validation_alias="HLM_AGENT_PRIVATE_ENABLED"
+    )
 
     @field_validator("index_root", mode="before")
     @classmethod

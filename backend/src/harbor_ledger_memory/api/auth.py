@@ -198,6 +198,8 @@ async def authenticated(request: Request, response: Response) -> AuthContext:
             AccessPolicy(
                 rules=(FolderRule(path=PurePosixPath("."), access=FolderAccess.READ),),
                 admin=False,
+                agent_private_enabled=request.app.state.agent_private_enabled,
+                agent_private_root=request.app.state.agent_private_root,
             ),
         )
     service: TokenService = request.app.state.token_service
@@ -218,7 +220,12 @@ async def authenticated(request: Request, response: Response) -> AuthContext:
         ):
             return AuthContext(
                 None,
-                UiSessionService.policy(),
+                AccessPolicy(
+                    UiSessionService.policy().rules,
+                    admin=UiSessionService.policy().admin,
+                    agent_private_enabled=request.app.state.agent_private_enabled,
+                    agent_private_root=request.app.state.agent_private_root,
+                ),
                 _recover_passwordless_session(request, response),
             )
         if bearer is None and _cookie_session(request):
@@ -228,11 +235,20 @@ async def authenticated(request: Request, response: Response) -> AuthContext:
                 raise _unauthenticated()
             return AuthContext(
                 None,
-                UiSessionService.policy(),
+                AccessPolicy(
+                    UiSessionService.policy().rules,
+                    admin=UiSessionService.policy().admin,
+                    agent_private_enabled=request.app.state.agent_private_enabled,
+                    agent_private_root=request.app.state.agent_private_root,
+                ),
                 request.cookies.get(UI_SESSION_COOKIE),
             )
         raise _unauthenticated()
-    return AuthContext(record, AccessPolicy(record.rules, record.admin))
+    return AuthContext(record, AccessPolicy(
+        record.rules, record.admin, agent_principal=record.agent_principal,
+        agent_private_enabled=request.app.state.agent_private_enabled,
+        agent_private_root=request.app.state.agent_private_root,
+    ))
 
 
 def require_admin(auth: AuthContext = Depends(authenticated)) -> AuthContext:

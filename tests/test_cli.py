@@ -58,6 +58,34 @@ def test_root_help_describes_vault_scope_and_local_management() -> None:
     assert "local application settings" in result.output.lower()
 
 
+def test_agent_private_demo_runs_without_using_configured_paths(monkeypatch, tmp_path):
+    monkeypatch.setenv("HLM_VAULT_PATH", str(tmp_path / "not-a-vault"))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'live.db'}")
+    result = CliRunner().invoke(app, ["demo", "agent-private"])
+    assert result.exit_code == 0, result.output
+    assert "PASS agent-b reads own note" in result.stdout
+    assert "PASS agent-b cannot read agent-a note" in result.stdout
+    assert not (tmp_path / "live.db").exists()
+
+
+def test_agent_private_demo_reports_failure_and_cleans_up(monkeypatch, tmp_path):
+    roots = []
+    original = cli.create_app
+
+    def broken(settings, **kwargs):
+        roots.append(settings.vault_path)
+        application = original(settings, **kwargs)
+        if len(roots) == 1:
+            application.state.agent_private_enabled = False
+        return application
+
+    monkeypatch.setattr(cli, "create_app", broken)
+    result = CliRunner().invoke(app, ["demo", "agent-private"])
+    assert result.exit_code != 0
+    assert "failed" in result.output.lower()
+    assert roots and all(not path.exists() for path in roots)
+
+
 def test_cli_commands_use_the_read_only_service_boundary(
     tmp_path: Path, monkeypatch
 ) -> None:

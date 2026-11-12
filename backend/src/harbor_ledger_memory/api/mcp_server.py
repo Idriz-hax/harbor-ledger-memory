@@ -89,7 +89,11 @@ def build_mcp_server(
         record = hlm_mcp_token.get()
         if record is None:
             raise ToolError("authentication required: provide a valid API token")
-        return AccessPolicy(record.rules, record.admin)
+        return AccessPolicy(
+            record.rules, record.admin, agent_principal=record.agent_principal,
+            agent_private_enabled=settings.agent_private_enabled,
+            agent_private_root=settings.index_root / "AgentPrivate",
+        )
 
     def _token_record():
         """Return the authenticated MCP token, when one is present."""
@@ -97,6 +101,13 @@ def build_mcp_server(
         if record is None and not hlm_internal_request.get():
             raise ToolError("authentication required: provide a valid API token")
         return record
+
+    def _scope():
+        caller = _token_record()
+        return token_scope(
+            caller.id if caller else None,
+            agent_principal=caller.agent_principal if caller else None,
+        )
 
     mcp = MCPServer(
         "harbor-ledger-memory",
@@ -137,8 +148,7 @@ def build_mcp_server(
             paths this token can read.
         """
         policy = _policy()
-        caller = _token_record()
-        scope = token_scope(caller.id if caller else None)
+        scope = _scope()
         boundary = VaultBoundary(settings)
 
         def readable_admitted(path: str) -> bool:
@@ -188,8 +198,7 @@ def build_mcp_server(
         engine, session = _open_session()
         try:
             boundary = VaultBoundary(settings)
-            caller = _token_record()
-            scope = token_scope(caller.id if caller else None)
+            scope = _scope()
             marks = MemoryMarkService(session)
             try:
                 if not relevant_paths and not irrelevant_paths:
@@ -232,8 +241,7 @@ def build_mcp_server(
     @mcp.tool()
     def marks_list() -> str:
         """List explicit marks owned by the authenticated token scope."""
-        caller = _token_record()
-        scope = token_scope(caller.id if caller else None)
+        scope = _scope()
         policy = _policy()
         boundary = VaultBoundary(settings)
         engine, session = _open_session()
@@ -259,8 +267,7 @@ def build_mcp_server(
         policy = _policy()
         if not policy.has_any_write():
             raise ToolError("token has no write access")
-        caller = _token_record()
-        scope = token_scope(caller.id if caller else None)
+        scope = _scope()
         boundary = VaultBoundary(settings)
         engine, session = _open_session()
         try:
@@ -285,8 +292,7 @@ def build_mcp_server(
         policy = _policy()
         if not policy.has_any_write():
             raise ToolError("token has no write access")
-        caller = _token_record()
-        scope = token_scope(caller.id if caller else None)
+        scope = _scope()
         boundary = VaultBoundary(settings)
         engine, session = _open_session()
         try:
@@ -314,7 +320,9 @@ def build_mcp_server(
         engine, session = _open_session()
         try:
             catalog = CatalogStatusService(
-                session, path_filter=VaultBoundary(settings).is_admitted
+                session,
+                path_filter=lambda path: VaultBoundary(settings).is_admitted(path)
+                and policy.can_read(path),
             ).read()
             return json.dumps(
                 token_status_payload(policy, settings, catalog),

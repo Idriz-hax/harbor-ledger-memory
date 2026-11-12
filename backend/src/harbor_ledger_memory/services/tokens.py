@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import threading
 from collections.abc import Sequence
@@ -25,6 +26,16 @@ from harbor_ledger_memory.config import FolderAccess, FolderRule
 
 TOKEN_PREFIX = "hlm_"
 LAST_USED_THROTTLE_SECONDS = 60.0
+_AGENT_PRINCIPAL_RE = re.compile(r"[a-z0-9][a-z0-9._:-]{0,127}\Z")
+
+
+def _validate_agent_principal(value: str | None) -> str | None:
+    if value is not None and not _AGENT_PRINCIPAL_RE.fullmatch(value):
+        raise InvalidTokenRequestError(
+            "agent_principal must be 1-128 lowercase ASCII letters, digits, "
+            "'.', '_', ':', or '-'."
+        )
+    return value
 
 
 class DuplicateTokenNameError(Exception):
@@ -57,6 +68,7 @@ class TokenRecord:
     id: int = 0
     last_used_at: str | None = None
     revoked_at: str | None = None
+    agent_principal: str | None = None
 
     @property
     def active(self) -> bool:
@@ -71,6 +83,7 @@ class TokenRecord:
             "created_at": self.created_at.isoformat(),
             "last_used_at": self.last_used_at,
             "revoked_at": self.revoked_at,
+            "agent_principal": self.agent_principal,
         }
 
 
@@ -88,6 +101,7 @@ class CreatedToken(tuple[TokenRecord, str]):
     _rules: tuple[FolderRule, ...]
     _admin: bool
     _approve_own_proposals: bool
+    _agent_principal: str | None
 
     def __new__(
         cls,
@@ -97,12 +111,14 @@ class CreatedToken(tuple[TokenRecord, str]):
         rules: tuple[FolderRule, ...],
         admin: bool,
         approve_own_proposals: bool,
+        agent_principal: str | None,
     ) -> CreatedToken:
         instance = super().__new__(cls, (record, plaintext))
         instance._name = name
         instance._rules = rules
         instance._admin = admin
         instance._approve_own_proposals = approve_own_proposals
+        instance._agent_principal = agent_principal
         return instance
 
     def __init__(
@@ -113,11 +129,13 @@ class CreatedToken(tuple[TokenRecord, str]):
         rules: tuple[FolderRule, ...],
         admin: bool,
         approve_own_proposals: bool,
+        agent_principal: str | None,
     ) -> None:
         self._name = name
         self._rules = rules
         self._admin = admin
         self._approve_own_proposals = approve_own_proposals
+        self._agent_principal = agent_principal
 
     @property
     def record(self) -> TokenRecord:
@@ -142,6 +160,10 @@ class CreatedToken(tuple[TokenRecord, str]):
     @property
     def approve_own_proposals(self) -> bool:
         return self._approve_own_proposals
+
+    @property
+    def agent_principal(self) -> str | None:
+        return self._agent_principal
 
 
 def _scopes_from_json(value: str | None) -> tuple[str, ...]:
@@ -183,6 +205,7 @@ def _record_from_row(row: ApiToken) -> TokenRecord:
         id=row.id,
         last_used_at=row.last_used_at,
         revoked_at=row.revoked_at,
+        agent_principal=row.agent_principal,
     )
 
 
@@ -251,6 +274,7 @@ class TokenService:
         rules: Sequence[FolderRule] | None = None,
         admin: bool = False,
         approve_own_proposals: bool = False,
+        agent_principal: str | None = None,
         *,
         activity: Any = None,
     ) -> CreatedToken:
@@ -259,6 +283,7 @@ class TokenService:
         if not name:
             raise InvalidTokenRequestError("token name must not be empty")
         parsed_rules = _parse_create_rules(rules)
+        agent_principal = _validate_agent_principal(agent_principal)
         scopes_json = "[]"
         rules_json = _rules_to_json(parsed_rules)
         with self._lock:
@@ -279,6 +304,7 @@ class TokenService:
                 rules=rules_json,
                 admin=admin,
                 approve_own_proposals=approve_own_proposals,
+                agent_principal=agent_principal,
                 created_at=_timestamp(),
             )
             self._session.add(row)
@@ -301,6 +327,7 @@ class TokenService:
             rules=parsed_rules,
             admin=admin,
             approve_own_proposals=approve_own_proposals,
+            agent_principal=agent_principal,
         )
 
     def update(
@@ -310,6 +337,8 @@ class TokenService:
         rules: Sequence[FolderRule] | None = None,
         admin: bool | None = None,
         approve_own_proposals: bool | None = None,
+        agent_principal: str | None = None,
+        set_agent_principal: bool = False,
         activity: Any = None,
     ) -> TokenRecord | None:
         """Update an active token's permission metadata in place.
@@ -319,13 +348,20 @@ class TokenService:
         token has the name (unknown or revoked). The token hash is never
         touched, so the existing plaintext stays valid.
         """
-        if rules is None and admin is None and approve_own_proposals is None:
+        if (
+            rules is None
+            and admin is None
+            and approve_own_proposals is None
+            and not set_agent_principal
+        ):
             raise InvalidTokenRequestError(
                 "nothing to update: provide rules, admin, "
                 "or approve_own_proposals"
             )
         if rules is not None:
             rules = _parse_create_rules(rules)
+        if set_agent_principal:
+            agent_principal = _validate_agent_principal(agent_principal)
         with self._lock:
             row = self._session.scalar(
                 select(ApiToken).where(
@@ -334,12 +370,23 @@ class TokenService:
             )
             if row is None:
                 return None
+            if (
+                set_agent_principal
+                and row.agent_principal is not None
+                and row.agent_principal != agent_principal
+            ):
+                raise InvalidTokenRequestError(
+                    "agent principal is immutable once assigned; revoke and "
+                    "create a new token"
+                )
             if rules is not None:
                 row.rules = _rules_to_json(rules)
             if admin is not None:
                 row.admin = admin
             if approve_own_proposals is not None:
                 row.approve_own_proposals = approve_own_proposals
+            if set_agent_principal:
+                row.agent_principal = agent_principal
             self._session.commit()
             record = _record_from_row(row)
         if activity is not None:
