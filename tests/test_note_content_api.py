@@ -143,6 +143,82 @@ def test_denied_and_missing_notes_are_indistinguishable_and_not_cached(
         assert denied.headers["cache-control"] == "no-store"
 
 
+def test_agent_token_reads_shared_and_only_its_private_notes(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    (vault / "AI").mkdir(parents=True)
+    (vault / "AI" / "AgentPrivate" / "alpha").mkdir(parents=True)
+    (vault / "AI" / "AgentPrivate" / "beta").mkdir(parents=True)
+    (vault / "AI" / "shared.md").write_text("shared", encoding="utf-8")
+    (vault / "AI" / "AgentPrivate" / "alpha" / "secret.md").write_text(
+        "alpha secret", encoding="utf-8"
+    )
+    (vault / "AI" / "AgentPrivate" / "beta" / "secret.md").write_text(
+        "beta secret", encoding="utf-8"
+    )
+    settings = Settings(
+        vault_path=vault,
+        index_root=PurePosixPath("AI"),
+        database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+        agent_private_enabled=True,
+        api=ApiSettings(enabled=True),
+    )
+    app = create_app(settings)
+    rules = (FolderRule(path=PurePosixPath("."), access=FolderAccess.READ),)
+    alpha = app.state.token_service.create(
+        "alpha", rules, agent_principal="alpha"
+    ).plaintext
+    beta = app.state.token_service.create(
+        "beta", rules, agent_principal="beta"
+    ).plaintext
+    unbound = app.state.token_service.create("unbound", rules).plaintext
+
+    with TestClient(app) as client:
+        for token in (alpha, beta, unbound):
+            shared = client.get(
+                "/api/v1/notes/content?path=AI%2Fshared.md",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert (shared.status_code, shared.json()["content"]) == (200, "shared")
+        own = client.get(
+            "/api/v1/notes/content?path=AI%2FAgentPrivate%2Falpha%2Fsecret.md",
+            headers={"Authorization": f"Bearer {alpha}"},
+        )
+        assert (own.status_code, own.json()["content"]) == (200, "alpha secret")
+        for token in (beta, unbound):
+            denied = client.get(
+                "/api/v1/notes/content?path=AI%2FAgentPrivate%2Falpha%2Fsecret.md",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert denied.status_code == 404
+            assert "alpha secret" not in denied.text
+
+
+def test_disabled_agent_private_scope_does_not_publish_reserved_notes(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "AI").mkdir()
+    (tmp_path / "AgentPrivate" / "alpha").mkdir(parents=True)
+    secret_path = tmp_path / "AgentPrivate" / "alpha" / "secret.md"
+    secret_path.write_text("still private", encoding="utf-8")
+    settings = Settings(
+        vault_path=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+        api=ApiSettings(enabled=True),
+    )
+    app = create_app(settings)
+    token = app.state.token_service.create(
+        "broad", (FolderRule(path=PurePosixPath("."), access=FolderAccess.READ),)
+    ).plaintext
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/notes/content?path=AgentPrivate%2Falpha%2Fsecret.md",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 404
+    assert "still private" not in response.text
+    assert secret_path.read_text(encoding="utf-8") == "still private"
+
+
 def test_invalid_utf8_notes_return_errors(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     (vault / "AI").mkdir(parents=True)

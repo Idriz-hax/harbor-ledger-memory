@@ -32,6 +32,16 @@ Configure the profile's Hermes secret `HLM_TOKEN` (never put the value in config
 
 Each profile reads its own config and Hermes secret scope. If `review_url` is omitted, pending proposal results link to that profile's configured `base_url` and include the instruction: “Open HLM and select Approvals in the navigation.” The default service URL is `http://127.0.0.1:8765`.
 
+Agent-private memory is an optional HLM server feature and is off by default.
+When enabled with `HLM_AGENT_PRIVATE_ENABLED=true`, bind this profile's HLM
+token to a stable principal using `hlm token create` or `hlm token update` and
+`--agent-principal <lowercase-id>`. Use distinct principal-bound tokens for
+profiles that must not read one another's private notes; shared notes remain
+available to each token subject to its folder rules. The provider does not send
+an agent ID in requests—the verified HLM token determines the principal. See
+the HLM README's “Optional agent-private memory” section for the reserved path
+and disable/re-enable behavior.
+
 Use a locally running HLM service for local setups. Plain HTTP is accepted only for `localhost` and IP loopback addresses; remote HLM must use HTTPS. Base URLs containing user information, query strings, or fragments are rejected. The provider refuses HTTP redirects so an Authorization header cannot be forwarded to another host. For remote HLM, set `base_url` to its HTTPS URL and use the same profile-scoped token. That token grants only the read/proposal permissions assigned by HLM; provider writes are proposals, never direct vault mutation. Network/auth/API failures are surfaced as tool failures; the provider does not substitute Hermes' other long-term memory.
 
 ## Review and optional chat approval

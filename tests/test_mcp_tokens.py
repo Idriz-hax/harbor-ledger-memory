@@ -203,6 +203,50 @@ def _neighbours(server: Any, path: str) -> list[dict[str, Any]]:
     return json.loads(_call(server, "neighbours", {"path": path}).content[0].text)
 
 
+def test_mcp_private_reads_use_authenticated_token_principal(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    settings.agent_private_enabled = True
+    (tmp_path / "AgentPrivate" / "alpha").mkdir(parents=True)
+    (tmp_path / "AgentPrivate" / "alpha" / "secret.md").write_text(
+        "alpha private", encoding="utf-8"
+    )
+    activity = ActivityService(settings.database_url)
+    service = TokenService(settings.database_url)
+    rules = (FolderRule(path=PurePosixPath("."), access=FolderAccess.READ),)
+    alpha, _ = service.create("alpha", rules, agent_principal="alpha")
+    beta, _ = service.create("beta", rules, agent_principal="beta")
+    try:
+        transport, _ = build_mcp_server(
+            settings, activity, service, live_traversal=LiveTraversalPublisher()
+        )
+        server = transport.state.mcp_server
+        token = hlm_mcp_token.set(alpha)
+        try:
+            result = json.loads(
+                _call(
+                    server,
+                    "read_note",
+                    {"path": "AgentPrivate/alpha/secret.md"},
+                ).content[0].text
+            )
+            assert result["content"] == "alpha private"
+        finally:
+            hlm_mcp_token.reset(token)
+        token = hlm_mcp_token.set(beta)
+        try:
+            with pytest.raises(ToolError, match="note unavailable"):
+                _call(
+                    server,
+                    "read_note",
+                    {"path": "AgentPrivate/alpha/secret.md"},
+                )
+        finally:
+            hlm_mcp_token.reset(token)
+    finally:
+        activity.close()
+        service.close()
+
+
 def test_mcp_propose_write_path_check(tmp_path: Path) -> None:
     """propose_write checks the token's own rules for the target path."""
     settings = _settings(

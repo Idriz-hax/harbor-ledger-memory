@@ -39,8 +39,15 @@ class MemoryMarkScope:
             raise ValueError("memory mark scope must not contain secret material")
 
 
-def token_scope(token_id: int | None, ui_session: str | None = None) -> MemoryMarkScope:
+def token_scope(
+    token_id: int | None,
+    ui_session: str | None = None,
+    *,
+    agent_principal: str | None = None,
+) -> MemoryMarkScope:
     """Derive a stable non-secret scope identifier for an authenticated caller."""
+    if agent_principal:
+        return MemoryMarkScope("agent", sha256(agent_principal.encode()).hexdigest())
     if token_id is not None:
         return MemoryMarkScope("token", str(token_id))
     if ui_session:

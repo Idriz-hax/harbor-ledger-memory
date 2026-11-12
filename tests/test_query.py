@@ -2,7 +2,7 @@
 
 import json
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from queue import Empty
 
 from sqlalchemy import String, Text, select
@@ -17,7 +17,7 @@ from harbor_ledger_memory.catalog.models import (
     ShortTermEntry,
     ShortTermEvent,
 )
-from harbor_ledger_memory.config import MemorySettings
+from harbor_ledger_memory.config import FolderAccess, FolderRule, MemorySettings
 from harbor_ledger_memory.domain.retrieval import (
     ContextMemory,
     QueryRequest,
@@ -25,6 +25,7 @@ from harbor_ledger_memory.domain.retrieval import (
     QuerySettings,
     SeedCandidate,
 )
+from harbor_ledger_memory.services.access import AccessPolicy
 from harbor_ledger_memory.services.context import ContextBuilder
 from harbor_ledger_memory.services.live_traversal import (
     LiveTraversalPublisher,
@@ -293,6 +294,52 @@ class TestQueryServiceWithNotes:
                 assert mem.path
                 assert isinstance(mem.excerpt, str)
                 assert mem.estimated_tokens >= 0
+        finally:
+            session.close()
+            engine.dispose()
+
+    def test_query_filters_other_agent_private_notes_before_results(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = _seed_catalog(tmp_path)
+        engine = create_database(f"sqlite:///{db_path}")
+        session = CatalogSession(bind=engine)
+        try:
+            session.add(
+                Note(
+                    path="AI/AgentPrivate/alpha/memory-systems.md",
+                    title="Memory Systems",
+                    content="Human memory systems include private agent data.",
+                    summary="Overview of memory systems",
+                    frontmatter_json="{}",
+                    content_hash="private-alpha",
+                )
+            )
+            session.commit()
+            rules = (FolderRule(path=PurePosixPath("."), access=FolderAccess.READ),)
+            for principal, expected_private in (("alpha", True), ("beta", False)):
+                policy = AccessPolicy(
+                    rules,
+                    agent_principal=principal,
+                    agent_private_enabled=True,
+                    agent_private_root="AI/AgentPrivate",
+                )
+                result = QueryService(
+                    session,
+                    path_filter=policy.can_read,
+                    retrieval_settings=QuerySettings(
+                        max_seed_nodes=10,
+                        max_activation_nodes=50,
+                        max_hops=3,
+                        decay=0.65,
+                        minimum_activation=0.05,
+                        context_token_budget=12_000,
+                    ),
+                ).query(QueryRequest(query="memory systems"))
+                selected = {memory.path for memory in result.selected_memories}
+                assert (
+                    "AI/AgentPrivate/alpha/memory-systems.md" in selected
+                ) is expected_private
         finally:
             session.close()
             engine.dispose()

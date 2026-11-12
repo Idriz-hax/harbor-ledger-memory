@@ -498,6 +498,7 @@ class ApiToken(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(80), nullable=False)
+    agent_principal: Mapped[str | None] = mapped_column(String(128), nullable=True)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     scopes: Mapped[str] = mapped_column(Text, nullable=False)  # JSON array of scopes
     rules: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array

@@ -122,6 +122,53 @@ def test_feedback_api_binds_json_body_and_returns_adjustments(tmp_path: Path) ->
     }
 
 
+def test_trace_replay_isolated_across_token_principal_reassignment(
+    tmp_path: Path,
+) -> None:
+    settings = _seed_catalog_for_query(tmp_path)
+    settings.agent_private_enabled = True
+    settings.api = ApiSettings(enabled=True)
+    app = create_app(settings)
+    token = app.state.token_service.create(
+        "agent",
+        (FolderRule(path=PurePosixPath("."), access=FolderAccess.READ),),
+        admin=True,
+    ).plaintext
+    headers = {"Authorization": f"Bearer {token}"}
+    with TestClient(app) as client:
+        unbound = client.post(
+            "/api/v1/queries", json={"query": "unbound private prompt"}, headers=headers
+        ).json()["trace_id"]
+        assert client.patch(
+            "/api/v1/tokens/agent",
+            json={"agent_principal": "alpha"},
+            headers=headers,
+        ).status_code == 200
+        assert (
+            client.get(f"/api/v1/traces/{unbound}", headers=headers).status_code == 404
+        )
+
+        alpha_trace = client.post(
+            "/api/v1/queries", json={"query": "alpha private prompt"}, headers=headers
+        ).json()["trace_id"]
+        assert client.get(
+            f"/api/v1/traces/{alpha_trace}", headers=headers
+        ).json()["query"] == "alpha private prompt"
+        assert client.patch(
+            "/api/v1/tokens/agent",
+            json={"agent_principal": "beta"},
+            headers=headers,
+        ).status_code == 400
+        assert client.patch(
+            "/api/v1/tokens/agent",
+            json={"agent_principal": None},
+            headers=headers,
+        ).status_code == 400
+        assert client.get(
+            f"/api/v1/traces/{alpha_trace}", headers=headers
+        ).json()["query"] == "alpha private prompt"
+
+
 def test_feedback_api_rejects_invalid_feedback_with_400(tmp_path: Path) -> None:
     settings = _seed_catalog_for_query(tmp_path)
     client = authed_client(settings)

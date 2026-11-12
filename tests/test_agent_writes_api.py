@@ -147,6 +147,51 @@ def test_pending_pages_filter_in_sql_and_preserve_cursor(tmp_path: Path) -> None
         assert client.get("/api/v1/agent/writes/pending?before_id=0").status_code == 422
 
 
+def test_private_proposal_is_visible_and_resolvable_only_by_owner(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "AI").mkdir()
+    (tmp_path / "AgentPrivate" / "alpha").mkdir(parents=True)
+    settings = Settings(
+        vault_path=tmp_path,
+        api=ApiSettings(enabled=True),
+        agent_private_enabled=True,
+        database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+    )
+    app = create_app(settings)
+    rules = (FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE),)
+    alpha = app.state.token_service.create(
+        "alpha", rules, agent_principal="alpha", approve_own_proposals=True
+    ).plaintext
+    beta = app.state.token_service.create(
+        "beta", rules, agent_principal="beta", approve_own_proposals=True
+    ).plaintext
+    with TestClient(app, headers={"Authorization": f"Bearer {alpha}"}) as owner:
+        created = owner.post(
+            "/api/v1/agent/writes",
+            json={
+                "path": "AgentPrivate/alpha/secret.md",
+                "content": "alpha-only proposal body",
+                "operation": "write",
+            },
+        )
+        assert created.status_code == 200
+        proposal_id = created.json()["id"]
+        assert "content" not in created.json()
+    with TestClient(app, headers={"Authorization": f"Bearer {beta}"}) as other:
+        assert other.get("/api/v1/agent/writes/pending").json()["proposals"] == []
+        unavailable = other.post(f"/api/v1/agent/writes/{proposal_id}/approve")
+        assert unavailable.status_code == 404
+        assert "alpha-only proposal body" not in unavailable.text
+    with TestClient(app, headers={"Authorization": f"Bearer {alpha}"}) as owner:
+        applied = owner.post(f"/api/v1/agent/writes/{proposal_id}/approve")
+        assert applied.status_code == 200
+        assert applied.json()["status"] == "applied"
+    assert (
+        settings.vault_path / "AgentPrivate/alpha/secret.md"
+    ).read_text(encoding="utf-8") == "alpha-only proposal body"
+
+
 def test_only_creator_with_approval_flag_can_resolve(tmp_path: Path) -> None:
     app, _, creator, _ = setup(tmp_path)
     other = app.state.token_service.create(

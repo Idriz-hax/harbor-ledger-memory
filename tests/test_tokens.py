@@ -67,6 +67,8 @@ def test_create_returns_record_and_printable_token(tmp_path: Path) -> None:
         assert "scopes" not in payload
         assert "token_hash" not in payload
         assert "token" not in payload
+        assert record.agent_principal is None
+        assert payload["agent_principal"] is None
     finally:
         service.close()
 
@@ -82,6 +84,35 @@ def test_create_without_rules_is_read_only(tmp_path: Path) -> None:
         payload = record.as_dict()
         assert payload["rules"] == []
         assert payload["admin"] is False
+    finally:
+        service.close()
+
+
+def test_agent_principal_round_trips_and_cannot_be_reassigned(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    try:
+        created = service.create("agent", agent_principal="agent:writer")
+        assert created.agent_principal == "agent:writer"
+        assert created.record.agent_principal == "agent:writer"
+        assert created.record.as_dict()["agent_principal"] == "agent:writer"
+        assert service.verify(created.plaintext).agent_principal == "agent:writer"
+        with pytest.raises(InvalidTokenRequestError, match="immutable"):
+            service.update("agent", agent_principal=None, set_agent_principal=True)
+        with pytest.raises(InvalidTokenRequestError, match="immutable"):
+            service.update(
+                "agent", agent_principal="agent:other", set_agent_principal=True
+            )
+        assert service.verify(created.plaintext).agent_principal == "agent:writer"
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("principal", ["", " ", "a" * 129, "bad id", "Agent"])
+def test_create_rejects_invalid_agent_principal(tmp_path: Path, principal: str) -> None:
+    service = _service(tmp_path)
+    try:
+        with pytest.raises(InvalidTokenRequestError):
+            service.create("agent", agent_principal=principal)
     finally:
         service.close()
 

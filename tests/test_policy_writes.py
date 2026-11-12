@@ -9,6 +9,7 @@ only act as a legacy fallback when no policy is supplied).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -21,6 +22,7 @@ from harbor_ledger_memory.api.app import create_app
 from harbor_ledger_memory.api.auth import hlm_mcp_token
 from harbor_ledger_memory.api.mcp_server import build_mcp_server
 from harbor_ledger_memory.catalog.database import CatalogSession, create_database
+from harbor_ledger_memory.catalog.models import MemoryWriteProposal
 from harbor_ledger_memory.config import (
     ApiSettings,
     FolderAccess,
@@ -204,6 +206,85 @@ def test_auto_write_create_stays_pending_when_missing_parent_is_propose_only(
 
         assert proposal.status == "pending"
         assert not (tmp_path / "AI" / "new" / "deep.md").exists()
+    engine.dispose()
+
+
+def test_private_move_is_refused_even_without_policy_or_path_case_match(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    (tmp_path / "AgentPrivate").mkdir()
+    (tmp_path / "AgentPrivate" / "owner").mkdir()
+    (tmp_path / "AgentPrivate" / "owner" / "secret.md").write_text(
+        _MANAGED, encoding="utf-8"
+    )
+    engine = create_database(settings.database_url)
+    with CatalogSession(bind=engine) as session:
+        service = VaultMutationService.from_settings(session, settings)
+        with pytest.raises(VaultWriteDenied, match="AgentPrivate relocations"):
+            service.request_move("agentprivate/owner/secret.md", "AI/shared.md")
+    engine.dispose()
+
+
+def test_private_move_is_refused_under_custom_index_root(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    settings.index_root = PurePosixPath("AI")
+    (tmp_path / "AI" / "AgentPrivate" / "owner").mkdir(parents=True)
+    (tmp_path / "AI" / "AgentPrivate" / "owner" / "secret.md").write_text(
+        _MANAGED, encoding="utf-8"
+    )
+    engine = create_database(settings.database_url)
+    with CatalogSession(bind=engine) as session:
+        service = VaultMutationService.from_settings(session, settings)
+        with pytest.raises(VaultWriteDenied, match="AgentPrivate relocations"):
+            service.request_move(
+                "AI/AgentPrivate/owner/secret.md", "AI/shared.md"
+            )
+    engine.dispose()
+
+
+@pytest.mark.parametrize("operation", ["move", "delete"])
+def test_legacy_private_relocation_proposal_cannot_be_applied(
+    tmp_path: Path, operation: str
+) -> None:
+    settings = _settings(
+        tmp_path,
+        draft=(FolderRule(path=PurePosixPath("."), access=FolderAccess.AUTO_WRITE),),
+    )
+    private = "AgentPrivate/owner/secret.md"
+    source = tmp_path / private
+    source.parent.mkdir(parents=True)
+    source.write_text(_MANAGED, encoding="utf-8")
+    digest = hashlib.sha256(_MANAGED.encode()).hexdigest()
+    proposal = MemoryWriteProposal(
+        path=private,
+        content="",
+        operation=operation,
+        status="pending",
+        rule_access="auto-write",
+        requested_at="2026-01-01T00:00:00+00:00",
+    )
+    if operation == "move":
+        destination = "AI/shared.md"
+        proposal.proposal_data = {
+            "destination": destination,
+            "files": {private: {"hash": digest, "content": _MANAGED}},
+        }
+        proposal.affected_paths = [private, destination]
+    else:
+        proposal.proposal_data = {"hash": digest}
+        proposal.affected_paths = [private]
+
+    engine = create_database(settings.database_url)
+    with CatalogSession(bind=engine) as session:
+        session.add(proposal)
+        session.commit()
+        proposal_id = proposal.id
+        service = VaultMutationService.from_settings(session, settings)
+        with pytest.raises(VaultWriteDenied, match="AgentPrivate relocations"):
+            service.approve(proposal_id)
+    assert source.read_text(encoding="utf-8") == _MANAGED
+    assert not (tmp_path / "AI/shared.md").exists()
     engine.dispose()
 
 
