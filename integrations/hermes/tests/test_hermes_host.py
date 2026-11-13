@@ -63,5 +63,67 @@ def test_real_memory_manager_loads_and_runs_hlm_provider(monkeypatch, tmp_path):
     manager.shutdown_all()
 
 
+@pytest.mark.skipif(
+    not HAS_HERMES,
+    reason="requires Hermes v0.18.1 host API",
+)
+def test_real_manager_treats_provider_lifecycle_errors_as_nonfatal(
+    monkeypatch, tmp_path
+):
+    memory_manager_module = importlib.import_module("agent.memory_manager")
+    loader = importlib.import_module("plugins.memory")
+    home = tmp_path / "hermes-profile"
+    plugin_dir = home / "plugins" / "hlm"
+    plugin_dir.mkdir(parents=True)
+    source = Path(__file__).parents[1] / "hlm"
+    (plugin_dir / "__init__.py").symlink_to(source / "__init__.py")
+    (plugin_dir / "client.py").symlink_to(source / "client.py")
+    monkeypatch.setattr(loader, "_get_user_plugins_dir", lambda: home / "plugins")
+    provider = loader.load_memory_provider("hlm")
+    module = provider_module(provider)
+    monkeypatch.setattr(module, "build_profile_secret_scope", lambda _path: {})
+    manager = memory_manager_module.MemoryManager()
+    manager.add_provider(provider)
+    manager.initialize_all("host-session", hermes_home=str(home))
+    # Initialization failed for lack of a token; host prefetch must also absorb
+    # provider errors and omit unavailable context.
+    assert manager.prefetch_all("query", session_id="host-session") == ""
+    manager.shutdown_all()
+
+
+@pytest.mark.skipif(
+    not HAS_HERMES,
+    reason="requires Hermes v0.18.1 host API",
+)
+def test_real_manager_omits_context_when_prefetch_fails(monkeypatch, tmp_path):
+    memory_manager_module = importlib.import_module("agent.memory_manager")
+    loader = importlib.import_module("plugins.memory")
+    home = tmp_path / "hermes-profile"
+    plugin_dir = home / "plugins" / "hlm"
+    plugin_dir.mkdir(parents=True)
+    source = Path(__file__).parents[1] / "hlm"
+    (plugin_dir / "__init__.py").symlink_to(source / "__init__.py")
+    (plugin_dir / "client.py").symlink_to(source / "client.py")
+    monkeypatch.setattr(loader, "_get_user_plugins_dir", lambda: home / "plugins")
+    provider = loader.load_memory_provider("hlm")
+    module = provider_module(provider)
+    monkeypatch.setattr(
+        module,
+        "build_profile_secret_scope",
+        lambda _path: {"HLM_TOKEN": "host-token"},
+    )
+
+    class FailedClient:
+        def query(self, _query):
+            raise RuntimeError("offline")
+
+    monkeypatch.setattr(module, "HLMClient", lambda *_args: FailedClient())
+    manager = memory_manager_module.MemoryManager()
+    manager.add_provider(provider)
+    manager.initialize_all("host-session", hermes_home=str(home))
+    assert manager.prefetch_all("query", session_id="host-session") == ""
+    manager.shutdown_all()
+
+
 def provider_module(provider):
     return importlib.import_module(provider.__class__.__module__)

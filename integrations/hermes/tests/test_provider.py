@@ -194,6 +194,22 @@ def test_prefetch_empty_selection_is_empty_but_failures_raise():
         provider.prefetch("none")
 
 
+def test_prefetch_forwards_query_without_adding_profile_or_session_context():
+    from hlm import HLMProvider
+
+    provider = HLMProvider()
+    queries = []
+
+    class Client:
+        def query(self, query):
+            queries.append(query)
+            return {"selected_memories": []}
+
+    provider._client = Client()
+    assert provider.prefetch("  exact query / no inferred project  ") == ""
+    assert queries == ["  exact query / no inferred project  "]
+
+
 def test_proposal_tool_returns_pending_status_without_approval_tools():
     from hlm import HLMProvider
 
