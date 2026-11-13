@@ -56,7 +56,7 @@ Do not modify unrelated root tests or the user's dirty edits in `backend/src/har
 ```sh
 uv run pytest integrations/hermes/tests -q
 uv run ruff check integrations/hermes
-uv run mypy integrations/hermes/hlm
+uv run pyright integrations/hermes
 uv run pytest -q
 git diff --check
 ```

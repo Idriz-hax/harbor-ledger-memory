@@ -48,7 +48,7 @@ Use a locally running HLM service for local setups. Plain HTTP is accepted only 
 
 The provider uses `POST /api/v1/queries`, `GET /api/v1/notes/content`, `POST /api/v1/notes/content/batch`, `POST /api/v1/agent/writes`, and summary-only paginated `GET /api/v1/agent/writes/pending` (`limit` defaults to 20, with optional `before_id`). Proposal JSON is capped at 512KiB, content at 64KiB UTF-8, paths at 4KiB UTF-8. The `hlm_get_notes_batch` tool sends 1–10 explicit paths and returns independent per-path results. Single and batch note reads return full, untruncated content without an application-level response byte cap; other JSON responses remain capped at 8MiB. `hlm_pending_proposals` includes the configured review URL and navigation instruction; HLM's web UI remains the safe fallback for all approval. The provider exposes no approval/rejection tools. Any optional gated chat resolution must go through host-gated routes, use the same `HLM_TOKEN` identity that created the proposals, and have HLM's `approve_own_proposals` enabled for that token; optional legacy MCP chat approval is separate from the bounded provider API.
 
-The provider performs query-only prefetch and does not ingest conversation turns. Hermes' selected HLM provider is the shared long-term memory source; configure the host not to treat a separate long-term store as a fallback authority.
+The provider performs query-only prefetch and does not ingest conversation turns. Prefetch sends Hermes' query string unchanged to HLM. It does not infer or attach project/workspace context, and session identity does not widen HLM token scope. Hermes' selected HLM provider is the shared long-term memory source; configure the host not to treat a separate long-term store as a fallback authority. Host initialization/prefetch failures are handled as unavailable context by the pinned MemoryManager; direct provider calls still raise errors.
 
 ## Development
 
@@ -58,10 +58,10 @@ From the HLM repository root, run fast tests using host stubs:
 uv run pytest integrations/hermes/tests -q
 ```
 
-Run the pinned real-host loader/`MemoryManager` integration test with the released Hermes package:
+The host API test skips cleanly when Hermes v0.18.1 is not installed. To run its isolated loader/`MemoryManager` test with the pinned release:
 
 ```sh
 uv run --with hermes-agent==0.18.1 pytest integrations/hermes/tests -q
 ```
 
-The second command installs Hermes only in uv's temporary environment; Hermes is not a runtime dependency of the provider directory. Run `uv run ruff check integrations/hermes` and `uv run pyright integrations/hermes` for lint and type checks.
+The second command installs Hermes only in uv's temporary environment; tests create a temporary profile and never inspect or alter a live Hermes profile. Hermes is not a runtime dependency of the provider directory. Run `uv run ruff check integrations/hermes` and `uv run pyright integrations/hermes` for lint and type checks.
