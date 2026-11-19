@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import logging
@@ -122,6 +123,7 @@ class MemoryMarkRequest(BaseModel):
 
 
 logger = logging.getLogger(__name__)
+_INITIAL_SCAN_RETRY_SECONDS = 30
 
 RECENT_RESOLVED_WRITE_LIMIT = 100
 
@@ -655,7 +657,7 @@ def create_app(
         # The streamable-HTTP MCP session manager owns an anyio task group that
         # must live for the whole process; a mounted sub-app's own lifespan is
         # not started by the parent, so we drive it here. Enter it manually
-        # (rather than ``async with``) so a startup error — e.g. a failed scan —
+        # (rather than ``async with``) so a startup error
         # propagates as the original exception instead of being wrapped in an
         # anyio ExceptionGroup by the task-group context.
         manager = mcp_session_manager.run() if mcp_session_manager else None
@@ -697,16 +699,27 @@ def create_app(
                 set_live_traversal = getattr(scanner, "set_live_traversal", None)
                 if callable(set_live_traversal):
                     set_live_traversal(live_traversal)
-                scan_result = scanner.full_scan()
-                if not is_real_scanner:
-                    activity_service.record("scan", _scan_activity_payload(scan_result))
-                # Preserve compatibility with watcher doubles and integrations
-                # that predate the optional live-traversal argument.
-                watcher = VaultWatchService(scanner.boundary, scanner)
-                if callable(set_live_traversal):
-                    set_live_traversal(live_traversal)
-                watcher.start()
-                application.state.vault_watcher = watcher
+                stop_scan = threading.Event()
+
+                def initial_scan() -> None:
+                    while not stop_scan.is_set():
+                        try:
+                            scan_result = scanner.full_scan()
+                            if not is_real_scanner:
+                                activity_service.record("scan", _scan_activity_payload(scan_result))
+                            if stop_scan.is_set():
+                                return
+                            watcher = VaultWatchService(scanner.boundary, scanner)
+                            watcher.start()
+                            application.state.vault_watcher = watcher
+                            return
+                        except Exception:
+                            logger.exception("Initial scan or watcher startup failed; retrying")
+                            if stop_scan.wait(_INITIAL_SCAN_RETRY_SECONDS):
+                                return
+
+                scan_thread = threading.Thread(target=initial_scan, name="initial-vault-scan")
+                scan_thread.start()
                 application.state.activity_service = activity_service
             except Exception:
                 logger.exception("Startup failed; shutting down server")
@@ -714,7 +727,11 @@ def create_app(
             try:
                 yield
             finally:
-                watcher.stop()
+                stop_scan.set()
+                await asyncio.to_thread(scan_thread.join)
+                watcher = getattr(application.state, "vault_watcher", None)
+                if watcher is not None:
+                    watcher.stop()
                 token_service.close()
                 activity_service.close()
         finally:

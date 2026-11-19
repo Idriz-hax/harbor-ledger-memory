@@ -11,6 +11,7 @@ from typing import Any, cast
 logger = logging.getLogger(__name__)
 
 _MODEL_CACHE: dict[str, Any] = {}
+_MODEL_AVAILABLE: dict[str, bool] = {}
 _EMBEDDABLE_MAX = 2000
 _MIN_TEXT_LENGTH = 10
 
@@ -67,7 +68,19 @@ def effective_embedding_model(model_name: str | None) -> str | None:
     if not model_name:
         return None
     if embedding_runtime_available():
-        return model_name
+        if model_name not in _MODEL_AVAILABLE:
+            try:
+                EmbeddingService(model_name).encode("embedding initialization")
+            except Exception as exc:
+                _MODEL_AVAILABLE[model_name] = False
+                _MODEL_CACHE.pop(model_name, None)
+                logger.warning(
+                    "Embedding model %r could not be initialized; semantic search "
+                    "is disabled for this process: %s", model_name, exc
+                )
+            else:
+                _MODEL_AVAILABLE[model_name] = True
+        return model_name if _MODEL_AVAILABLE[model_name] else None
     if not _runtime_warning_emitted:
         _runtime_warning_emitted = True
         logger.warning(

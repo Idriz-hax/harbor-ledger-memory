@@ -5,6 +5,7 @@ from pathlib import Path, PurePosixPath
 
 from fastapi.testclient import TestClient
 
+from conftest import wait_for_initial_scan
 from harbor_ledger_memory.api.app import create_app
 from harbor_ledger_memory.api.auth import AuthContext
 from harbor_ledger_memory.catalog.database import CatalogSession, create_database
@@ -82,6 +83,7 @@ def test_traversal_stream_disconnect_does_not_persist_activity(tmp_path: Path) -
     try:
         publisher = app.state.live_traversal
         with TestClient(app, headers={"Authorization": f"Bearer {token}"}):
+            wait_for_initial_scan(app)
             with CatalogSession(bind=engine) as session:
                 before = session.query(ActivityEvent).count()
             route = next(

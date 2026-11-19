@@ -392,7 +392,24 @@ class TestScoreClamping:
             recent_paths={"AI/nlp/nlp.md": 0.25},
         )
         assert len(candidates) == 1
-        assert candidates[0].retrieval_score == 1.0
+        assert candidates[0].retrieval_score <= 1.0
+
+    def test_distinct_strong_matches_do_not_tie(self, tmp_path: Path) -> None:
+        _, session = _make_session(tmp_path)
+        _seed_notes(session, [
+            {"path": "a/topic.md", "title": "topic", "content": "topic"},
+            {"path": "z/topic.md", "title": "topic", "content": "topic", "summary": "topic"},
+        ])
+        candidates = HybridRetrievalService(session).seeds("topic")
+        assert candidates[0].path == "z/topic.md"
+        assert candidates[0].retrieval_score > candidates[1].retrieval_score
+
+    def test_partial_fts_match_is_returned(self, tmp_path: Path) -> None:
+        _, session = _make_session(tmp_path)
+        _seed_notes(session, [{"path": "a/note.md", "title": "Note", "content": "knowledge"}])
+        candidates = HybridRetrievalService(session).seeds("knowledge management")
+        assert [candidate.path for candidate in candidates] == ["a/note.md"]
+        assert "Full-text match" in candidates[0].reasons
 
 
 class TestReasons:
@@ -422,6 +439,46 @@ class TestReasons:
 
 class TestSemanticSimilarity:
     """Semantic similarity should boost non-lexical candidates."""
+
+    def test_semantic_only_hit_ranks_above_many_lexical_hits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_embedding_runtime: None
+    ) -> None:
+        _, session = _make_session(tmp_path)
+        _seed_notes(session, [
+            {"path": f"a/{i:03}.md", "title": "Note", "content": "knowledge management"}
+            for i in range(60)
+        ] + [{"path": "z/relevant.md", "title": "Concept", "content": "unrelated"}])
+        session.add(NoteEmbedding(
+            note_path="z/relevant.md", embedding_blob=_blob_for((1.0, 0.0)),
+            model_name="test-model", created_at="2026-08-09T00:00:00",
+        ))
+        session.commit()
+        monkeypatch.setattr(embeddings_module, "EmbeddingService", FakeEmbeddingService)
+        monkeypatch.setattr(retrieval_module, "EmbeddingService", FakeEmbeddingService)
+        seeds = HybridRetrievalService(
+            session, QuerySettings(max_seed_nodes=50),
+            memory_settings=MemorySettings(HLM_EMBEDDING_MODEL="test-model"),
+        ).seeds("knowledge management")
+        assert len(seeds) == 50
+        assert seeds[0].path == "z/relevant.md"
+        assert seeds[0].reasons == ("Semantic similarity (1.00)",)
+
+    def test_partial_semantic_hit_ranks_above_many_lexical_hits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_embedding_runtime: None
+    ) -> None:
+        _, session = _make_session(tmp_path)
+        _seed_notes(session, [
+            {"path": f"a/{i:03}.md", "title": "Note", "content": "knowledge management"}
+            for i in range(60)
+        ] + [{"path": "z/relevant.md", "title": "Note", "content": "knowledge"}])
+        session.add(NoteEmbedding(note_path="z/relevant.md", embedding_blob=_blob_for((1.0, 0.0)),
+                                  model_name="test-model", created_at="2026-08-09T00:00:00"))
+        session.commit()
+        monkeypatch.setattr(embeddings_module, "EmbeddingService", FakeEmbeddingService)
+        monkeypatch.setattr(retrieval_module, "EmbeddingService", FakeEmbeddingService)
+        seeds = HybridRetrievalService(session, QuerySettings(max_seed_nodes=50),
+            memory_settings=MemorySettings(HLM_EMBEDDING_MODEL="test-model")).seeds("knowledge management")
+        assert any(seed.path == "z/relevant.md" for seed in seeds)
 
     def test_semantic_only_note_is_a_seed_when_embeddings_are_enabled(
         self,

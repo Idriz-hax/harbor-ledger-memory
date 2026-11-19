@@ -1,9 +1,17 @@
 """Endpoint tests for GET /api/v1/graph — structural graph snapshot."""
 
+from contextlib import contextmanager
 from pathlib import Path
 
-from conftest import authed_client
+from conftest import authed_client, wait_for_initial_scan
 from harbor_ledger_memory.config import Settings
+
+
+@contextmanager
+def indexed_client(settings: Settings):
+    with authed_client(settings) as client:
+        wait_for_initial_scan(client.app)
+        yield client
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -20,7 +28,7 @@ def test_graph_endpoint_returns_empty_snapshot(tmp_path: Path) -> None:
     (tmp_path / "AI").mkdir()
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp = client.get("/api/v1/graph")
         assert resp.status_code == 200
         data = resp.json()
@@ -39,7 +47,7 @@ def test_graph_includes_isolated_notes(tmp_path: Path) -> None:
     (ai / "orphan.md").write_text("# Orphan note\nNo links here.", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp = client.get("/api/v1/graph")
         assert resp.status_code == 200
         data = resp.json()
@@ -58,7 +66,7 @@ def test_graph_excludes_isolated_flag_for_connected_notes(tmp_path: Path) -> Non
     (ai / "child.md").write_text("# Child", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp = client.get("/api/v1/graph")
         assert resp.status_code == 200
         data = resp.json()
@@ -76,7 +84,7 @@ def test_graph_contains_wikilink_edges(tmp_path: Path) -> None:
     (ai / "b.md").write_text("# B", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp = client.get("/api/v1/graph")
         assert resp.status_code == 200
         data = resp.json()
@@ -101,7 +109,7 @@ def test_graph_view_level_two_returns_edge_type(tmp_path: Path) -> None:
     (ai / "b.md").write_text("# B", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp = client.get("/api/v1/graph/view?level=2&page_size=500")
 
     assert resp.status_code == 200
@@ -124,7 +132,7 @@ def test_graph_contains_parent_edges(tmp_path: Path) -> None:
     )
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp = client.get("/api/v1/graph")
         assert resp.status_code == 200
         data = resp.json()
@@ -144,7 +152,7 @@ def test_graph_contains_containment_edges(tmp_path: Path) -> None:
     (ai / "child.md").write_text("# Child\n", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp = client.get("/api/v1/graph")
         assert resp.status_code == 200
         data = resp.json()
@@ -171,7 +179,7 @@ def test_graph_connects_descendants_to_the_nearest_folder_index(tmp_path: Path) 
     (deep / "detail.md").write_text("# Detail\n", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         data = client.get("/api/v1/graph").json()
 
     contains = {
@@ -195,7 +203,7 @@ def test_graph_deterministic_ordering(tmp_path: Path) -> None:
     (ai / "m.md").write_text("# M\n", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp1 = client.get("/api/v1/graph")
         resp2 = client.get("/api/v1/graph")
         assert resp1.json() == resp2.json()
@@ -221,7 +229,7 @@ def test_graph_deterministic_ordering_with_multiple_edges(tmp_path: Path) -> Non
     (ai / "c.md").write_text("# C\n", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp1 = client.get("/api/v1/graph")
         resp2 = client.get("/api/v1/graph")
         assert resp1.json() == resp2.json()
@@ -250,7 +258,7 @@ def test_graph_edge_ids_are_stable(tmp_path: Path) -> None:
     (ai / "y.md").write_text("# Y\n", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp1 = client.get("/api/v1/graph")
         resp2 = client.get("/api/v1/graph")
         edges1 = resp1.json()["edges"]
@@ -267,7 +275,7 @@ def test_graph_generation_field_present(tmp_path: Path) -> None:
     (ai / "note.md").write_text("# Note\n", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp = client.get("/api/v1/graph")
         data = resp.json()
         assert data["generation"] != ""
@@ -280,7 +288,7 @@ def test_graph_ignores_broken_links(tmp_path: Path) -> None:
     (ai / "a.md").write_text("# A\n[[nonexistent]]", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp = client.get("/api/v1/graph")
         data = resp.json()
         # Note should appear (as isolated), but no edges
@@ -297,7 +305,7 @@ def test_graph_mixed_connected_and_isolated(tmp_path: Path) -> None:
     (ai / "isolated.md").write_text("# Isolated\n", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp = client.get("/api/v1/graph")
         data = resp.json()
         nodes_by_path = {n["path"]: n for n in data["nodes"]}
@@ -326,13 +334,13 @@ def test_graph_generation_changes_when_title_changes(tmp_path: Path) -> None:
     (ai / "note.md").write_text("# Original Title\n", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         gen1 = client.get("/api/v1/graph").json()["generation"]
 
     # Change the H1 title
     (ai / "note.md").write_text("# Changed Title\n", encoding="utf-8")
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         gen2 = client.get("/api/v1/graph").json()["generation"]
 
     assert gen1 != gen2
@@ -346,13 +354,13 @@ def test_graph_generation_changes_when_explicit_content_changes(tmp_path: Path) 
     (ai / "b.md").write_text("# B\n", encoding="utf-8")
     settings = _settings(tmp_path)
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         gen1 = client.get("/api/v1/graph").json()["generation"]
 
     # Add a wikilink to create an explicit edge
     (ai / "a.md").write_text("# A\n[[b]]\n", encoding="utf-8")
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         gen2 = client.get("/api/v1/graph").json()["generation"]
 
     assert gen1 != gen2
@@ -369,7 +377,7 @@ def test_graph_only_structural_edge_types(tmp_path: Path) -> None:
 
     ALLOWED_EDGE_TYPES = {"links_to", "parent_of", "contains"}
 
-    with authed_client(settings) as client:
+    with indexed_client(settings) as client:
         resp = client.get("/api/v1/graph")
         data = resp.json()
 

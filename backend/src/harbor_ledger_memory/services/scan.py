@@ -219,6 +219,21 @@ class ScanService:
         vault_hashes = {
             identity: content_hash for identity, _, content_hash, _, _ in parsed_files
         }
+        emb_model = effective_embedding_model(self._embedding_model)
+        preserved_embeddings = {
+            path: (blob, created_at)
+            for path, blob, created_at in session.execute(
+                select(
+                    NoteEmbedding.note_path,
+                    NoteEmbedding.embedding_blob,
+                    NoteEmbedding.created_at,
+                )
+                .where(NoteEmbedding.model_name == emb_model)
+            )
+            if emb_model
+            and path in vault_hashes
+            and previous_hashes.get(path) == vault_hashes[path]
+        }
         added_paths = tuple(
             sorted(path for path in vault_hashes if path not in previous_hashes)
         )
@@ -240,6 +255,9 @@ class ScanService:
         old_topology = _edge_set(GraphBuilder(session).build())
         try:
             clear_catalog(session)
+            for instance in list(session.identity_map.values()):
+                if isinstance(instance, NoteEmbedding):
+                    session.expunge(instance)
             started_at = _timestamp()
             scan_run = ScanRun(
                 started_at=started_at,
@@ -266,9 +284,20 @@ class ScanService:
                     scan_timestamp=started_at,
                     resolved_links=link_rows[identity],
                 )
-                text = embeddable_text(note.title, note.summary, note.content)
-                if text is not None:
-                    embedding_inputs.append((identity, text))
+                if identity in preserved_embeddings:
+                    blob, created_at = preserved_embeddings[identity]
+                    session.add(
+                        NoteEmbedding(
+                            note_path=identity,
+                            embedding_blob=blob,
+                            model_name=emb_model,
+                            created_at=created_at,
+                        )
+                    )
+                else:
+                    text = embeddable_text(note.title, note.summary, note.content)
+                    if text is not None:
+                        embedding_inputs.append((identity, text))
                 for diagnostic in note.diagnostics:
                     diagnostic.scan_run_id = scan_run.id
                 for diagnostic in diagnostics:
@@ -285,7 +314,6 @@ class ScanService:
                                 line=diagnostic.line,
                             )
                         )
-            emb_model = effective_embedding_model(self._embedding_model)
             if emb_model and embedding_inputs:
                 embedding_service = EmbeddingService(emb_model)
                 vectors = embedding_service.encode_batch(

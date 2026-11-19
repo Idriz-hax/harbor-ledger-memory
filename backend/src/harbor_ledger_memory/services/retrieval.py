@@ -28,19 +28,17 @@ _TITLE_TOKEN_WEIGHT = 0.80
 _TAG_WEIGHT = 0.65
 _SUMMARY_TOKEN_WEIGHT = 0.55
 _PROJECT_WEIGHT = 0.35
-_EMBEDDING_WEIGHT = 0.40
+_EMBEDDING_WEIGHT = 0.60
 
 
 def _normalize_fts_scores(scores: list[float]) -> dict[int, float]:
     """Normalize bm25 scores (negative floats) to [0, 1] per result index."""
     if not scores:
         return {}
-    worst = min(scores)
-    best = max(scores)
-    if best == worst:
+    best = min(scores)
+    if best >= 0:
         return {i: 1.0 for i in range(len(scores))}
-    span = best - worst
-    return {i: (s - worst) / span for i, s in enumerate(scores)}
+    return {i: max(0.0, s / best) for i, s in enumerate(scores)}
 
 
 def _tokens_for_string(value: str) -> set[str]:
@@ -100,7 +98,7 @@ class HybridRetrievalService:
             return ()
 
         token_set = {t.lower() for t in tokens}
-        fts_query = " AND ".join(quote_fts_token(t) for t in tokens)
+        fts_query = " OR ".join(quote_fts_token(t) for t in tokens)
 
         # --- Phase 1: FTS search (with generous limit to capture all candidates) ---
         from sqlalchemy import text as sa_text
@@ -276,21 +274,19 @@ class HybridRetrievalService:
                     score += _EMBEDDING_WEIGHT * similarity
                     reasons.append(f"Semantic similarity ({similarity:.2f})")
 
-            # Clamp to 1.0
-            score = min(score, 1.0)
-
             if score > 0:
                 candidates.append((path, score, reasons))
 
         # --- Phase 5: Sort and truncate ---
         candidates.sort(key=lambda c: (-c[1], c[0]))
+        scale = max(1.0, candidates[0][1]) if candidates else 1.0
         max_nodes = self._settings.max_seed_nodes
         candidates = candidates[:max_nodes]
 
         return tuple(
             SeedCandidate(
                 path=path,
-                retrieval_score=round(score, 4),
+                retrieval_score=round(score / scale, 4),
                 reasons=tuple(reasons),
             )
             for path, score, reasons in candidates

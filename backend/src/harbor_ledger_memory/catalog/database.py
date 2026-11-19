@@ -71,7 +71,7 @@ def create_database(url: str) -> Engine:
         raise ValueError("the catalog requires a SQLite database URL")
 
     engine_kwargs: dict[str, Any] = {
-        "connect_args": {"check_same_thread": False},
+        "connect_args": {"check_same_thread": False, "timeout": 30},
     }
     if parsed_url.database in (None, ":memory:"):
         engine_kwargs["poolclass"] = StaticPool

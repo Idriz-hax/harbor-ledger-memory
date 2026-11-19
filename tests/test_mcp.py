@@ -303,17 +303,25 @@ def test_restricted_mcp_query_filters_outputs_and_side_effects(tmp_path: Path) -
 
         serialized = json.dumps(result)
         assert "Private/secret.md" not in serialized
-        assert result["selected_memories"] == []
+        assert [item["path"] for item in result["selected_memories"]] == [
+            "Public/readable.md"
+        ]
         assert result["excluded_nodes"] == []
         assert result["short_term_evidence"]["hit_paths"] == []
+        assert subscription.get_nowait().node_path == "Public/readable.md"
         with pytest.raises(Empty):
             subscription.get_nowait()
 
         engine = create_database(settings.database_url)
         session = CatalogSession(bind=engine)
         try:
-            assert session.scalars(select(ContextSelection)).all() == []
-            assert session.scalars(select(ActivationVisit)).all() == []
+            assert [row.path for row in session.scalars(select(ContextSelection))] == [
+                "Public/readable.md"
+            ]
+            assert all(
+                row.path != "Private/secret.md"
+                for row in session.scalars(select(ActivationVisit))
+            )
         finally:
             session.close()
             engine.dispose()

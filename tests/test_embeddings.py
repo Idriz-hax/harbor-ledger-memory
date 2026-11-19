@@ -316,11 +316,37 @@ class TestEffectiveEmbeddingModel:
         monkeypatch.setattr(
             embeddings_module, "embedding_runtime_available", lambda: True
         )
+        monkeypatch.setattr(embeddings_module.EmbeddingService, "_load_model", _fake_load_model)
         with _captured_embedding_logs() as records:
             result = embeddings_module.effective_embedding_model("m")
 
         assert result == "m"
         assert [r for r in records if r.levelno == logging.WARNING] == []
+
+    @pytest.mark.parametrize("failure_stage", ["load", "encode"])
+    def test_broken_model_is_disabled_once(self, monkeypatch: pytest.MonkeyPatch, failure_stage: str) -> None:
+        from harbor_ledger_memory.services import embeddings as embeddings_module
+
+        monkeypatch.setattr(embeddings_module, "embedding_runtime_available", lambda: True)
+        attempts = []
+
+        def load(_service):
+            attempts.append(1)
+            if failure_stage == "load":
+                raise RuntimeError("model unavailable")
+
+            class BrokenModel:
+                def encode(self, *_args, **_kwargs):
+                    raise RuntimeError("encoder unavailable")
+
+            return BrokenModel()
+
+        monkeypatch.setattr(embeddings_module.EmbeddingService, "_load_model", load)
+        with _captured_embedding_logs() as records:
+            assert embeddings_module.effective_embedding_model(f"broken-{failure_stage}") is None
+            assert embeddings_module.effective_embedding_model(f"broken-{failure_stage}") is None
+        assert len(attempts) == 1
+        assert len([r for r in records if r.levelno == logging.WARNING]) == 1
 
     def test_runtime_missing_returns_none_and_warns_once(
         self,

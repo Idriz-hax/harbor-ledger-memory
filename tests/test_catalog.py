@@ -40,6 +40,15 @@ def test_memory_path_type_declares_cache_safety() -> None:
     assert MemoryPathType.__dict__.get("cache_ok") is True
 
 
+def test_sqlite_busy_timeout_is_30_seconds(tmp_path: Path) -> None:
+    engine = create_database(f"sqlite:///{tmp_path / 'timeout.db'}")
+    try:
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar() == 30000
+    finally:
+        engine.dispose()
+
+
 def run_migration(tmp_path: Path, *, offline: bool = False) -> Config:
     database_path = tmp_path / "migration.db"
     config = Config(str(Path(__file__).parents[1] / "backend" / "alembic.ini"))

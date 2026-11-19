@@ -1,11 +1,13 @@
 """Shared pytest configuration for the project tests."""
 
 import tempfile
+import time
 import uuid
 from pathlib import Path, PurePosixPath
 
 import pytest
 from fastapi.testclient import TestClient
+from fastapi import FastAPI
 from sqlalchemy.engine import make_url
 
 from harbor_ledger_memory.api.app import create_app
@@ -93,3 +95,12 @@ def authed_client(settings: Settings) -> TestClient:
         admin=True,
     ).plaintext
     return TestClient(app, headers={"Authorization": f"Bearer {token}"})
+
+
+def wait_for_initial_scan(app: FastAPI) -> None:
+    """Wait until the initial scan and its activity publication have finished."""
+    deadline = time.monotonic() + 15
+    while not hasattr(app.state, "vault_watcher"):
+        if time.monotonic() >= deadline:
+            raise AssertionError("initial scan did not complete within 15 seconds")
+        time.sleep(0.01)

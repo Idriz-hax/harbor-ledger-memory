@@ -213,6 +213,7 @@ def test_full_scan_persists_embeddings_when_configured(
     tmp_path: Path, monkeypatch, mock_embedding_runtime: None
 ) -> None:
     monkeypatch.setattr(scan_module, "EmbeddingService", FakeEmbeddingService)
+    monkeypatch.setattr(scan_module, "effective_embedding_model", lambda model: model)
     settings_with_model = fixture_settings(
         tmp_path, MemorySettings(embedding_model="test-model")
     )
@@ -224,6 +225,99 @@ def test_full_scan_persists_embeddings_when_configured(
         expected_paths = ["AI/INDEX.md", "AI/Knowledge/example.md"]
         assert [row.note_path for row in rows] == expected_paths
         assert {row.model_name for row in rows} == {"test-model"}
+    finally:
+        service._session.close()
+
+
+def test_full_scan_reuses_only_unchanged_matching_embeddings(
+    tmp_path: Path, monkeypatch, mock_embedding_runtime: None
+) -> None:
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    for name in ("keep", "change", "missing", "delete"):
+        (ai / f"{name}.md").write_text(f"# {name} content long enough\n")
+    calls = []
+
+    class RecordingEmbeddingService(FakeEmbeddingService):
+        def encode_batch(self, texts):
+            calls.append(texts)
+            return super().encode_batch(texts)
+
+    monkeypatch.setattr(scan_module, "EmbeddingService", RecordingEmbeddingService)
+    monkeypatch.setattr(scan_module, "effective_embedding_model", lambda model: model)
+    settings = Settings(
+        vault_path=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+        memory=MemorySettings(embedding_model="test-model"),
+    )
+    service = ScanService.from_settings(settings)
+    try:
+        service.full_scan()
+        session = service._session
+        keep = session.get(NoteEmbedding, "AI/keep.md")
+        original = (keep.embedding_blob, keep.created_at)
+        session.delete(session.get(NoteEmbedding, "AI/missing.md"))
+        session.commit()
+        (ai / "change.md").write_text("# changed content long enough\n")
+        (ai / "delete.md").unlink()
+        (ai / "new.md").write_text("# new content long enough\n")
+        result = service.full_scan()
+        assert len(calls[-1]) == 3
+        assert result.changed_paths == ("AI/change.md",)
+        assert result.added_paths == ("AI/new.md",)
+        assert result.deleted_paths == ("AI/delete.md",)
+        rows = {row.note_path: row for row in session.scalars(select(NoteEmbedding))}
+        assert set(rows) == {"AI/keep.md", "AI/change.md", "AI/missing.md", "AI/new.md"}
+        assert (rows["AI/keep.md"].embedding_blob, rows["AI/keep.md"].created_at) == original
+        monkeypatch.setattr(
+            scan_module, "EmbeddingService", ConstructionFailingEmbeddingService
+        )
+        service.full_scan()
+        assert len(calls) == 2
+        monkeypatch.setattr(scan_module, "EmbeddingService", RecordingEmbeddingService)
+        service._embedding_model = "other-model"
+        service.full_scan()
+        assert len(calls[-1]) == 4
+        assert {row.model_name for row in session.scalars(select(NoteEmbedding))} == {"other-model"}
+        service._embedding_model = None
+        service.full_scan()
+        assert session.scalars(select(NoteEmbedding)).all() == []
+    finally:
+        service._session.close()
+
+
+def test_degraded_scan_failure_rolls_back_embeddings(
+    tmp_path: Path, monkeypatch, mock_embedding_runtime: None
+) -> None:
+    from harbor_ledger_memory.services import graph_materialization
+
+    monkeypatch.setattr(scan_module, "EmbeddingService", FakeEmbeddingService)
+    monkeypatch.setattr(scan_module, "effective_embedding_model", lambda model: model)
+    settings = fixture_settings(tmp_path, MemorySettings(embedding_model="test-model"))
+    service = ScanService.from_settings(settings)
+    try:
+        service.full_scan()
+        before = [
+            (row.note_path, row.embedding_blob, row.model_name, row.created_at)
+            for row in service._session.scalars(
+                select(NoteEmbedding).order_by(NoteEmbedding.note_path)
+            )
+        ]
+        monkeypatch.setattr(scan_module, "effective_embedding_model", lambda model: None)
+
+        def fail_materialization(*args, **kwargs):
+            raise RuntimeError("materialization failed")
+
+        monkeypatch.setattr(graph_materialization, "materialize_graph", fail_materialization)
+        with pytest.raises(RuntimeError, match="materialization failed"):
+            service.full_scan()
+        after = [
+            (row.note_path, row.embedding_blob, row.model_name, row.created_at)
+            for row in service._session.scalars(
+                select(NoteEmbedding).order_by(NoteEmbedding.note_path)
+            )
+        ]
+        assert before and after == before
     finally:
         service._session.close()
 
@@ -287,6 +381,7 @@ def test_full_scan_rolls_back_notes_and_embeddings_when_encoding_fails(
     tmp_path: Path, monkeypatch, mock_embedding_runtime: None
 ) -> None:
     monkeypatch.setattr(scan_module, "EmbeddingService", FailingEmbeddingService)
+    monkeypatch.setattr(scan_module, "effective_embedding_model", lambda model: model)
     settings_with_model = fixture_settings(
         tmp_path, MemorySettings(embedding_model="test-model")
     )
@@ -306,6 +401,7 @@ def test_full_scan_preserves_previous_catalog_when_rescan_encoding_fails(
 ) -> None:
     settings = fixture_settings(tmp_path, MemorySettings(embedding_model="test-model"))
     monkeypatch.setattr(scan_module, "EmbeddingService", FakeEmbeddingService)
+    monkeypatch.setattr(scan_module, "effective_embedding_model", lambda model: model)
     initial_service = ScanService.from_settings(settings)
     try:
         initial_service.full_scan()
@@ -347,6 +443,8 @@ def test_full_scan_preserves_previous_catalog_when_rescan_encoding_fails(
 
     monkeypatch.setattr(scan_module, "EmbeddingService", FailingEmbeddingService)
     failing_service = ScanService.from_settings(settings)
+    failing_service._embedding_model = "different-model"
+    monkeypatch.setattr(scan_module, "effective_embedding_model", lambda model: model)
     try:
         with pytest.raises(RuntimeError, match="encoder unavailable"):
             failing_service.full_scan()
@@ -401,6 +499,7 @@ def test_full_scan_preserves_previous_embeddings_when_batch_cardinality_is_inval
 ) -> None:
     settings = fixture_settings(tmp_path, MemorySettings(embedding_model="test-model"))
     monkeypatch.setattr(scan_module, "EmbeddingService", FakeEmbeddingService)
+    monkeypatch.setattr(scan_module, "effective_embedding_model", lambda model: model)
     initial_service = ScanService.from_settings(settings)
     try:
         initial_service.full_scan()
@@ -422,6 +521,8 @@ def test_full_scan_preserves_previous_embeddings_when_batch_cardinality_is_inval
 
     monkeypatch.setattr(scan_module, "EmbeddingService", encoder)
     failing_service = ScanService.from_settings(settings)
+    failing_service._embedding_model = "different-model"
+    monkeypatch.setattr(scan_module, "effective_embedding_model", lambda model: model)
     try:
         with pytest.raises(
             RuntimeError,

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import queue
+import sqlite3
 import threading
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -11,7 +12,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from conftest import authed_client
+from conftest import authed_client, wait_for_initial_scan
 from harbor_ledger_memory.api import app as app_module
 from harbor_ledger_memory.api.app import create_app
 from harbor_ledger_memory.catalog.database import CatalogSession, create_database
@@ -428,30 +429,90 @@ def test_app_lifespan_scans_then_starts_and_stops_watcher(
     monkeypatch.setattr(app_module, "VaultWatchService", FakeWatcher)
 
     with authed_client(settings):
-        assert scanner.calls == 1
-        assert FakeWatcher.started is True
-    assert FakeWatcher.stopped is True
+        pass
+    assert scanner.calls == 1
+    if FakeWatcher.started:
+        assert FakeWatcher.stopped is True
 
 
-def test_app_lifespan_scan_failure_aborts_startup(
+def test_app_lifespan_scan_failure_retries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class FailingScanner:
         boundary = object()
+        calls = 0
+        retried = threading.Event()
 
         def full_scan(self) -> None:
-            raise RuntimeError("scan failed")
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("scan failed")
+            self.retried.set()
 
     FakeWatcher.started = False
     scanner = FailingScanner()
     settings = Settings(vault_path=tmp_path)
     monkeypatch.setattr(app_module.ScanService, "from_settings", lambda _: scanner)
     monkeypatch.setattr(app_module, "VaultWatchService", FakeWatcher)
+    monkeypatch.setattr(app_module, "_INITIAL_SCAN_RETRY_SECONDS", 0.01)
+    logged = threading.Event()
+    monkeypatch.setattr(app_module.logger, "exception", lambda *args: logged.set())
 
-    with pytest.raises(RuntimeError, match="scan failed"):
-        with authed_client(settings):
-            pass
-    assert FakeWatcher.started is False
+    with authed_client(settings):
+        assert scanner.retried.wait(5)
+    assert logged.is_set()
+
+
+def test_initial_scan_does_not_block_serving_and_shutdown_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered, release, serving, exited = (threading.Event() for _ in range(4))
+    closed: list[str] = []
+    db_path = tmp_path / "catalog.db"
+
+    class BlockingScanner(FakeScanner):
+        def full_scan(self) -> None:
+            with sqlite3.connect(db_path) as connection:
+                connection.execute("CREATE TABLE IF NOT EXISTS scan_shutdown_test (value INTEGER)")
+                connection.execute("INSERT INTO scan_shutdown_test VALUES (1)")
+                entered.set()
+                assert release.wait(5)
+
+    for service in (app_module.TokenService, app_module.ActivityService):
+        original_close = service.close
+
+        def close(self: Any, original: Any = original_close) -> None:
+            closed.append(type(self).__name__)
+            original(self)
+
+        monkeypatch.setattr(service, "close", close)
+
+    monkeypatch.setattr(app_module.ScanService, "from_settings", lambda _: BlockingScanner())
+    monkeypatch.setattr(app_module, "VaultWatchService", FakeWatcher)
+    FakeWatcher.started = False
+
+    def serve() -> None:
+        with authed_client(Settings(vault_path=tmp_path, database_url=f"sqlite:///{db_path}")) as client:
+            assert client.get("/health").status_code == 200
+            assert entered.wait(5)
+            assert not FakeWatcher.started
+            serving.set()
+        exited.set()
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    try:
+        assert serving.wait(5)
+        assert not exited.wait(0.2)
+        assert not closed
+    finally:
+        release.set()
+        thread.join(5)
+    assert exited.is_set()
+    assert set(closed) == {"TokenService", "ActivityService"}
+    with sqlite3.connect(db_path, timeout=0.1) as connection:
+        assert connection.execute("SELECT value FROM scan_shutdown_test").fetchall() == [(1,)]
+        connection.execute("INSERT INTO scan_shutdown_test VALUES (2)")
 
 
 def test_serve_base_layout(tmp_path: Path) -> None:
@@ -1835,7 +1896,8 @@ def test_post_write_scan_reaches_application_activity_service(
         admin=True,
     )
     client = TestClient(application, headers={"Authorization": f"Bearer {plaintext}"})
-    with client:  # startup scan is recorded before the subscription
+    with client:
+        wait_for_initial_scan(application)
         subscriber = application.state.activity_service.subscribe()
         write_path = "AI/proposed/rescan.md"
         created = client.post(
