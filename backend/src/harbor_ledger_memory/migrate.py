@@ -10,7 +10,6 @@ Handles two scenarios:
 
 from __future__ import annotations
 
-import re
 from importlib import resources
 from pathlib import Path
 
@@ -118,19 +117,6 @@ def _has_alembic_version(engine: Engine) -> bool:
         return result.fetchone() is not None
 
 
-def _is_newer_revision(revision: str, known_heads: list[str]) -> bool:
-    """Check whether an unknown numbered revision is newer than this runtime."""
-    revision_number = re.match(r"^(\d+)_", revision)
-    head_numbers = [re.match(r"^(\d+)_", head) for head in known_heads]
-    return bool(
-        revision_number
-        and head_numbers
-        and all(head_numbers)
-        and int(revision_number.group(1))
-        > max(int(head.group(1)) for head in head_numbers)
-    )
-
-
 def upgrade_to_head(database_url: str) -> None:
     """Apply all outstanding Alembic migrations to *database_url*.
 
@@ -164,18 +150,26 @@ def upgrade_to_head(database_url: str) -> None:
 
     engine = create_engine(database_url)
     try:
-        # A newer runtime may have already applied additive migrations. Do not
-        # let an older install fail startup (or rewrite the newer DB's version).
         script = ScriptDirectory.from_config(cfg)
         if _has_alembic_version(engine):
             with engine.connect() as connection:
                 revisions = connection.execute(
                     text("SELECT version_num FROM alembic_version")
                 ).scalars().all()
-            if revisions and all(
-                _is_newer_revision(revision, script.get_heads())
-                for revision in revisions
+            if (
+                revisions == ["0022_agent_fact_relations"]
+                and revisions[0]
+                not in {revision.revision for revision in script.walk_revisions()}
+                and inspect(engine).has_table("api_tokens")
             ):
+                if "agent_principal" not in _column_names(engine, "api_tokens"):
+                    with engine.begin() as connection:
+                        connection.execute(
+                            text(
+                                "ALTER TABLE api_tokens "
+                                "ADD COLUMN agent_principal VARCHAR(128)"
+                            )
+                        )
                 return
         # If the database was created by SQLAlchemy create_all() (no Alembic
         # tracking), the activity_events table may lack the 0007 metadata

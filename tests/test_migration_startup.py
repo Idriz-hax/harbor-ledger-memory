@@ -3,6 +3,8 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
+from alembic.util.exc import CommandError
 from fastapi.testclient import TestClient
 
 from harbor_ledger_memory.api.app import create_app
@@ -25,6 +27,23 @@ def _column_names(db_path: Path, table: str) -> set[str]:
         return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     finally:
         conn.close()
+
+
+def test_unknown_numeric_revision_is_not_assumed_compatible(tmp_path: Path) -> None:
+    db_path = tmp_path / "catalog.db"
+    database_url = f"sqlite:///{db_path}"
+    upgrade_to_head(database_url)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("UPDATE alembic_version SET version_num = '9999_unrelated'")
+        conn.execute("ALTER TABLE api_tokens DROP COLUMN agent_principal")
+
+    with pytest.raises(CommandError, match="9999_unrelated"):
+        upgrade_to_head(database_url)
+    assert "agent_principal" not in _column_names(db_path, "api_tokens")
+    with sqlite3.connect(str(db_path)) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchall() == [
+            ("9999_unrelated",)
+        ]
 
 
 def _make_old_schema(db_path: Path) -> None:
@@ -76,16 +95,33 @@ def test_startup_applies_migrations_for_activity_metadata(tmp_path: Path) -> Non
         assert col in cols, f"column {col} missing after startup migration"
 
 
-def test_upgrade_skips_unknown_newer_schema_revision(tmp_path: Path) -> None:
-    """A newer database can still be opened by an older additive-only runtime."""
+def test_unknown_newer_revision_preserves_revision_and_repairs_token_schema(
+    tmp_path: Path,
+) -> None:
+    """Unknown newer revisions stay put while required additive columns are ensured."""
     db_path = tmp_path / "catalog.db"
-    upgrade_to_head(f"sqlite:///{db_path}")
+    database_url = f"sqlite:///{db_path}"
+    upgrade_to_head(database_url)
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         "UPDATE alembic_version SET version_num = '0022_agent_fact_relations'"
     )
+    conn.execute(
+        """INSERT INTO api_tokens
+           (name, token_hash, scopes, rules, admin, approve_own_proposals, created_at)
+           VALUES ('legacy', ?, '[]', NULL, 0, 0, '2026-11-19T00:00:00Z')""",
+        ("a" * 64,),
+    )
+    conn.execute("ALTER TABLE api_tokens DROP COLUMN agent_principal")
     conn.commit()
     conn.close()
+
+    upgrade_to_head(database_url)
+    assert "agent_principal" in _column_names(db_path, "api_tokens")
+    with sqlite3.connect(str(db_path)) as conn:
+        assert conn.execute(
+            "SELECT name, token_hash, agent_principal FROM api_tokens"
+        ).fetchall() == [("legacy", "a" * 64, None)]
 
     settings = Settings(vault_path=tmp_path, database_url=f"sqlite:///{db_path}")
     with TestClient(create_app(settings)) as client:
