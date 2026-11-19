@@ -74,3 +74,28 @@ def test_startup_applies_migrations_for_activity_metadata(tmp_path: Path) -> Non
     cols = _column_names(db_path, "activity_events")
     for col in _ACTIVITY_METADATA_COLUMNS:
         assert col in cols, f"column {col} missing after startup migration"
+
+
+def test_upgrade_skips_unknown_newer_schema_revision(tmp_path: Path) -> None:
+    """A newer database can still be opened by an older additive-only runtime."""
+    db_path = tmp_path / "catalog.db"
+    upgrade_to_head(f"sqlite:///{db_path}")
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "UPDATE alembic_version SET version_num = '0022_agent_fact_relations'"
+    )
+    conn.commit()
+    conn.close()
+
+    settings = Settings(vault_path=tmp_path, database_url=f"sqlite:///{db_path}")
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/health").status_code == 200
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        revision = conn.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()[0]
+        assert revision == "0022_agent_fact_relations"
+    finally:
+        conn.close()

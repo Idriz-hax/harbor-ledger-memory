@@ -20,6 +20,12 @@ from harbor_ledger_memory.config import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolate_opencode_profile(monkeypatch, tmp_path_factory):
+    home = tmp_path_factory.mktemp("cli-home")
+    monkeypatch.setenv("HOME", str(home))
+
+
 def build_wheel(destination: Path) -> Path:
     project_root = Path(__file__).resolve().parents[1]
     subprocess.run(

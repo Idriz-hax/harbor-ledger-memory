@@ -132,6 +132,14 @@ def test_ui_get_issues_cookie_and_cookie_session_is_propose_only(
             ).status_code
             == 201
         )
+        events = client.get("/api/v1/activity").json()["events"]
+        event = next(e for e in events if e["event_type"] == "token_created")
+        assert event["payload"]["actor"] == {"source": "Web UI"}
+        assert event["payload"]["target"] == {
+            "name": "ui-token",
+            "agent_principal": None,
+        }
+        assert all(value not in str(event) for value in client.cookies.values())
 
 
 def test_missing_and_invalid_token_yield_401(tmp_path: Path) -> None:
@@ -492,9 +500,7 @@ def test_token_update_over_rest(tmp_path: Path) -> None:
         assert data["rules"] == [{"path": "AI", "access": "propose-write"}]
         # Empty body -> 400 (service-level: nothing to update).
         assert (
-            client.patch(
-                "/api/v1/tokens/worker", json={}, headers=headers
-            ).status_code
+            client.patch("/api/v1/tokens/worker", json={}, headers=headers).status_code
             == 400
         )
         # Malformed rule -> 422 (pydantic FolderRule validation).

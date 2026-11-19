@@ -40,13 +40,14 @@ import '@fontsource/ibm-plex-sans/400.css'
 import '@fontsource/ibm-plex-sans/600.css'
 import '@fontsource/ibm-plex-mono/400.css'
 
-type Screen = 'graph' | 'approvals' | 'settings'
+type Screen = 'graph' | 'approvals' | 'settings' | 'activity-history'
 const RETURN_SCREEN_KEY = 'hlm_ui_return_screen'
 const KEEPALIVE_MS = 25 * 60 * 1000
 const SCREEN_META: Record<Screen, { label: string; icon: string; description: string }> = {
   graph: { label: 'Memory Chart', icon: '⌁', description: 'Explore linked notes and live memory routes' },
   approvals: { label: 'Approvals', icon: '✓', description: 'Review pending vault writes' },
   settings: { label: 'Settings', icon: '⌑', description: 'Configure access, tokens, and audit' },
+  'activity-history': { label: 'Activity history', icon: '⌑', description: 'Review activity history' },
 }
 export type Activity = { id: number; event_type: string; created_at: string; payload: Record<string, unknown> }
 export const mergeActivityEvents = (history: Activity[], current: Activity[]) => {
@@ -97,7 +98,7 @@ export const api = async <T,>(url: string, init?: RequestInit) => {
   return response.json() as Promise<T>
 }
 export type TokenRule = { path: string; access: string }
-export type TokenSummary = { name: string; rules: TokenRule[]; admin: boolean; approve_own_proposals: boolean; created_at: string; revoked_at?: string | null }
+export type TokenSummary = { name: string; rules: TokenRule[]; admin: boolean; approve_own_proposals: boolean; created_at: string; revoked_at?: string | null; agent_principal?: string | null }
 /* Short, scannable rule summary for a token list row: only the rules that
    deviate from the default read are named. */
 const RULE_SUMMARY_LABEL: Record<string, string> = { none: 'none', 'propose-write': 'propose', 'auto-write': 'write' }
@@ -119,6 +120,9 @@ type TokenEditorProps = {
   open: boolean
   mode: 'create' | 'edit'
   tokenName: string
+  principal: string
+  principalBound: boolean
+  onPrincipalChange: (value: string) => void
   rules: TokenRule[]
   folders: string[]
   admin: boolean
@@ -207,7 +211,7 @@ function FolderPermissionTree({ folders, rules, onChange }: { folders: string[];
   </Box>
 }
 
-function TokenEditor({ open, mode, tokenName, rules, folders, admin, approveOwn, busy, error, created, revealed, copied, onClose, onNameChange, onRulesChange, onAdminChange, onApproveOwnChange, onSubmit, onReveal, onCopy }: TokenEditorProps) {
+function TokenEditor({ open, mode, tokenName, principal, principalBound, onPrincipalChange, rules, folders, admin, approveOwn, busy, error, created, revealed, copied, onClose, onNameChange, onRulesChange, onAdminChange, onApproveOwnChange, onSubmit, onReveal, onCopy }: TokenEditorProps) {
   return <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="sm" aria-labelledby="token-editor-title">
     <DialogTitle id="token-editor-title">{mode === 'create' ? 'Generate token' : `Edit token ${tokenName}`}</DialogTitle>
     <DialogContent dividers>
@@ -217,6 +221,8 @@ function TokenEditor({ open, mode, tokenName, rules, folders, admin, approveOwn,
         <Box sx={{ display: 'flex', gap: 1 }}><Button variant="contained" onClick={onCopy}>{copied ? 'Copied ✓' : 'Copy token'}</Button><Button variant="outlined" onClick={onReveal}>{revealed ? 'Hide token' : 'Reveal token'}</Button></Box>
       </Box> : <Box sx={{ display: 'grid', gap: 2 }}>
         <TextField autoFocus={mode === 'create'} id="token-name" size="small" label="Token name" name="token-name" autoComplete="off" value={tokenName} disabled={mode === 'edit'} onChange={e => onNameChange(e.target.value)} placeholder={`${tokenNameSuggestion()}…`} inputProps={{ spellCheck: false }} />
+        <TextField label="Agent principal" size="small" value={principal} onChange={e => onPrincipalChange(e.target.value)} inputProps={{ readOnly: principalBound, spellCheck: false }} helperText={principalBound ? 'This binding cannot be changed or cleared. Revoke and create a new token instead.' : 'Optional; once assigned, this binding cannot be changed or cleared.'} />
+        <Typography variant="caption" color="text.secondary">Private-memory access also depends on server configuration and folder ACLs.</Typography>
         <Box>
           <Typography component="div" variant="subtitle2" sx={{ mb: 1 }}>Folder permissions</Typography>
           <FolderPermissionTree folders={folders} rules={rules} onChange={onRulesChange} />
@@ -343,10 +349,10 @@ export function App() {
               {(publicGraphOnly ? ['graph'] as Screen[] : ['graph', 'approvals', 'settings'] as Screen[]).map((item, index) => (
                 <ListItem key={item} disablePadding sx={{ mb: 1 }}>
                   <ListItemButton
-                    selected={screen === item}
+                    selected={screen === item || (item === 'settings' && screen === 'activity-history')}
                     onClick={() => setScreen(item)}
                     aria-label={`${SCREEN_META[item].label} — ${SCREEN_META[item].description}`}
-                    aria-current={screen === item ? 'page' : undefined}
+                    aria-current={screen === item || (item === 'settings' && screen === 'activity-history') ? 'page' : undefined}
                     title={SCREEN_META[item].label}
                     sx={{ minHeight: 52, gap: 1.5 }}
                   >
@@ -369,7 +375,7 @@ export function App() {
           {error && <Alert severity="error">{error}</Alert>}
           {screen === 'graph' && uiModeLoaded && <TideAtlas events={events} onRefresh={refresh} publicGraphOnly={publicGraphOnly} />}
           {screen === 'approvals' && <Approvals onPendingCountChange={setPendingApprovals} />}
-          {screen === 'settings' && <Settings />}
+          {(screen === 'settings' || screen === 'activity-history') && <Settings history={screen === 'activity-history'} onViewHistory={() => setScreen('activity-history')} onBackToSettings={() => setScreen('settings')} />}
         </Box>
       </Box>
       }
@@ -1325,7 +1331,21 @@ const normalizeMemoryState = (payload: unknown): MemoryState => {
   return candidate as MemoryState
 }
 
-export function Settings({ approvals = false, onPendingCountChange }: { approvals?: boolean; onPendingCountChange?: (count: number) => void } = {}) {
+function AuditEventRow({ event, eventLabel }: { event: Activity; eventLabel: string }) {
+  const redacted = event.payload?.redacted === true
+  const payload = redacted ? {} : event.payload ?? {}
+  const actor = payload.actor && typeof payload.actor === 'object' ? payload.actor as Record<string, unknown> : {}
+  const target = payload.target && typeof payload.target === 'object' ? payload.target as Record<string, unknown> : {}
+  const text = (value: unknown) => typeof value === 'string' ? value : ''
+  const actorText = redacted ? 'Details visible to admin tokens only' : [text(actor.source), text(actor.name), text(actor.agent_principal)].filter(Boolean).join(' · ') || 'Actor unavailable (legacy event)'
+  const targetText = [text(target.name), text(target.agent_principal)].filter(Boolean).join(' · ')
+  return <Box className="audit-row" sx={{ display: 'grid', gap: 0.5, p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1.5, my: 0.5, overflowWrap: 'anywhere' }}>
+    <Typography variant="body2"><strong>{eventLabel}</strong>{targetText ? ` · ${targetText}` : ''}{text(payload.path) ? ` · ${text(payload.path)}` : ''}{text(payload.status) ? ` · ${text(payload.status)}` : ''}</Typography>
+    <Typography variant="caption" color="text.secondary">{actorText} · <time dateTime={event.created_at}>{formatCreated(event.created_at) || 'Date unavailable'}</time></Typography>
+  </Box>
+}
+
+export function Settings({ approvals = false, history = false, onViewHistory, onBackToSettings, onPendingCountChange }: { approvals?: boolean; history?: boolean; onViewHistory?: () => void; onBackToSettings?: () => void; onPendingCountChange?: (count: number) => void } = {}) {
   const [settings, setSettings] = useState<any>(null)
   const [settingsError, setSettingsError] = useState('')
   const [settingsLoading, setSettingsLoading] = useState(false)
@@ -1341,6 +1361,15 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
   const [folderCreateError, setFolderCreateError] = useState('')
   const [tokenRows, setTokenRows] = useState<TokenSummary[] | null>(null)
   const [tokenName, setTokenName] = useState('')
+  const [principal, setPrincipal] = useState('')
+  const [principalBound, setPrincipalBound] = useState(false)
+  const [activity, setActivity] = useState<Activity[] | null>(null)
+  const [activityError, setActivityError] = useState('')
+  const loadActivity = useCallback(() => {
+    setActivity(null); setActivityError('')
+    return api<{ events?: Activity[] }>('/api/v1/activity?limit=500').then(r => setActivity(r.events ?? [])).catch(e => setActivityError(e instanceof Error ? e.message : 'failed to load activity'))
+  }, [])
+  useEffect(() => { if (!approvals) void loadActivity() }, [approvals, loadActivity])
   const [tokenAdmin, setTokenAdmin] = useState(false)
   const [approveOwnProposals, setApproveOwnProposals] = useState(false)
   const [generating, setGenerating] = useState(false)
@@ -1459,7 +1488,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
     const name = tokenName.trim() || tokenNameSuggestion()
     setGenerating(true); setTokenError(''); setJustCreated(null)
     try {
-      const r = await api<{ token: string } & TokenSummary>('/api/v1/tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, rules: editorRules, admin: tokenAdmin, approve_own_proposals: approveOwnProposals }) })
+      const r = await api<{ token: string } & TokenSummary>('/api/v1/tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, rules: editorRules, admin: tokenAdmin, approve_own_proposals: approveOwnProposals, ...(principal ? { agent_principal: principal } : {}) }) })
       setJustCreated({ name, token: r.token })
       setRevealed(false); setCopied(false)
       setTokenName(name)
@@ -1500,6 +1529,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
     void loadSettings()
     setJustCreated(null)
     setEditingToken(row.name)
+    setPrincipal(row.agent_principal ?? ''); setPrincipalBound(Boolean(row.agent_principal))
     setEditorRules(row.rules ?? [])
     setEditAdmin(row.admin)
     setEditApproveOwn(row.approve_own_proposals)
@@ -1517,7 +1547,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
       const updated = await api<TokenSummary>(`/api/v1/tokens/${encodeURIComponent(editingToken)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules: parsedRules, admin: editAdmin, approve_own_proposals: editApproveOwn }),
+        body: JSON.stringify({ rules: parsedRules, admin: editAdmin, approve_own_proposals: editApproveOwn, ...(!principalBound && principal ? { agent_principal: principal } : {}) }),
       })
       setTokenRows(prev => prev?.map(row => row.name === updated.name ? updated : row) ?? prev)
        closeTokenEditor()
@@ -1530,6 +1560,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
   const openTokenCreator = () => {
     void loadSettings()
     setTokenName(''); setEditorRules([]); setTokenAdmin(false); setApproveOwnProposals(false)
+    setPrincipal(''); setPrincipalBound(false)
     setTokenError(''); setJustCreated(null); setTokenEditor('create')
   }
 
@@ -1618,7 +1649,19 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
     return [...new Set(paths.filter((path: string) => path && path !== '.'))]
   }, [fallbackFolders, settings?.folders])
   const pending = (writes ?? []).filter(w => w.status === 'pending')
-  const audit = (writes ?? []).filter(w => w.status !== 'pending')
+  const auditLabels: Record<string, string> = { token_created: 'Token created', token_updated: 'Token updated', token_revoked: 'Token revoked', 'vault.mutation.requested': 'Write requested', 'vault.mutation.applied': 'Write applied', 'vault.mutation.rejected': 'Write rejected', 'vault.mutation.failed': 'Write failed' }
+  const audit = (activity ?? []).filter(e => Object.prototype.hasOwnProperty.call(auditLabels, e.event_type)).sort ( (a, b) => b.created_at.localeCompare(a.created_at))
+
+  if (history && !approvals) return <section aria-label="Activity history">
+    <Button onClick={onBackToSettings}>Back to Settings</Button>
+    {activityError && <Alert severity="error" action={<Button onClick={() => void loadActivity()}>Retry</Button>}>Activity unavailable — {activityError}</Alert>}
+    {!activityError && activity === null && <Typography role="status">Loading activity…</Typography>}
+    {activity !== null && audit.length === 0 && <Typography>No activity yet.</Typography>}
+    {audit.map((event, index) => <Box key={event.id}>
+      {(index === 0 || new Date(event.created_at).toDateString() !== new Date(audit[index - 1].created_at).toDateString()) && <Typography component="h2" variant="h3" sx={{ mt: 2 }}>{formatCreated(event.created_at) || 'Date unavailable'}</Typography>}
+      <AuditEventRow event={event} eventLabel={auditLabels[event.event_type]} />
+    </Box>)}
+  </section>
 
   return (
     <Box component="section" sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -1643,9 +1686,10 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
                    <Typography variant="h2" id="tokens-heading">Tokens</Typography>
                    {!adminDenied && <IconButton size="small" color="primary" aria-label="Generate token" title="Generate token" onClick={openTokenCreator} sx={{ minWidth: 44, minHeight: 44 }}><span aria-hidden="true">＋</span></IconButton>}
                    {tokenRows !== null && <Chip size="small" label={tokenRows.length} />}
-                 </Box>
-                 <Typography variant="body2" color="text.secondary">The Web UI uses its own authenticated session. Tokens for trusted REST and MCP clients carry their own folder permissions.</Typography>
-                 {adminDenied && <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>This local session cannot manage external tokens — ask an admin to generate or revoke them.</Typography>}
+                  </Box>
+                  <Typography variant="body2" color="text.secondary">The Web UI uses its own authenticated session. Tokens for trusted REST and MCP clients carry their own folder permissions.</Typography>
+                  <Typography variant="body2" color="text.secondary">A principal identifies an agent; private-memory access also depends on server configuration and folder ACLs.</Typography>
+                  {adminDenied && <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>This local session cannot manage external tokens — ask an admin to generate or revoke them.</Typography>}
                </Box>
              </Box>
              {tokenError && <Alert severity="error" sx={{ mt: 2 }}>{tokenError}</Alert>}
@@ -1656,6 +1700,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
                   <Box sx={{ minWidth: 0, flexGrow: 1 }}>
                     <Typography component="div" variant="body2" sx={{ fontWeight: 600 }}>{row.name}{row.admin && <Chip size="small" label="admin" sx={{ ml: 1, height: 18, fontSize: 10 }} />}</Typography>
                     <Typography variant="caption" color="text.secondary">{ruleSummary(row.rules)}{formatCreated(row.created_at) ? ` · created ${formatCreated(row.created_at)}` : ''}</Typography>
+                    <Typography variant="caption" color="text.secondary">{row.agent_principal ? `Principal: ${row.agent_principal}` : 'No principal bound'}</Typography>
                   </Box>
                    {!row.revoked_at && <Button size="small" variant="text" aria-label={`${editingToken === row.name ? 'Close editor for' : 'Edit'} token ${row.name}`} onClick={() => editingToken === row.name ? closeTokenEditor() : beginTokenEdit(row)}>{editingToken === row.name ? 'Close' : 'Edit'}</Button>}
                   <Button
@@ -1717,7 +1762,7 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
            <Button color="error" variant="contained" onClick={clearMemoryState} disabled={clearingMemoryState}>Clear memory state</Button>
          </DialogActions>
        </Dialog>
-       <TokenEditor open={tokenEditor !== null} mode={tokenEditor ?? 'create'} tokenName={tokenEditor === 'edit' ? (editingToken ?? '') : tokenName} rules={editorRules} folders={discoveredFolders} admin={tokenEditor === 'edit' ? editAdmin : tokenAdmin} approveOwn={tokenEditor === 'edit' ? editApproveOwn : approveOwnProposals} busy={tokenEditor === 'edit' ? editing : generating} error={tokenEditor === 'edit' ? editError : tokenError} created={justCreated} revealed={revealed} copied={copied} onClose={closeTokenEditor} onNameChange={setTokenName} onRulesChange={setEditorRules} onAdminChange={value => tokenEditor === 'edit' ? setEditAdmin(value) : setTokenAdmin(value)} onApproveOwnChange={value => tokenEditor === 'edit' ? setEditApproveOwn(value) : setApproveOwnProposals(value)} onSubmit={tokenEditor === 'edit' ? saveTokenEdit : generateToken} onReveal={() => setRevealed(value => !value)} onCopy={copyToken} />
+        <TokenEditor open={tokenEditor !== null} mode={tokenEditor ?? 'create'} tokenName={tokenEditor === 'edit' ? (editingToken ?? '') : tokenName} principal={principal} principalBound={principalBound} onPrincipalChange={setPrincipal} rules={editorRules} folders={discoveredFolders} admin={tokenEditor === 'edit' ? editAdmin : tokenAdmin} approveOwn={tokenEditor === 'edit' ? editApproveOwn : approveOwnProposals} busy={tokenEditor === 'edit' ? editing : generating} error={tokenEditor === 'edit' ? editError : tokenError} created={justCreated} revealed={revealed} copied={copied} onClose={closeTokenEditor} onNameChange={setTokenName} onRulesChange={setEditorRules} onAdminChange={value => tokenEditor === 'edit' ? setEditAdmin(value) : setTokenAdmin(value)} onApproveOwnChange={value => tokenEditor === 'edit' ? setEditApproveOwn(value) : setApproveOwnProposals(value)} onSubmit={tokenEditor === 'edit' ? saveTokenEdit : generateToken} onReveal={() => setRevealed(value => !value)} onCopy={copyToken} />
       </section>}
        {approvals && <section className="writes-section" aria-label="Pending changes">
         <div className="writes-layout">
@@ -1801,18 +1846,13 @@ export function Settings({ approvals = false, onPendingCountChange }: { approval
           <Typography variant="overline" color="text.secondary">AUDIT</Typography>
            <Typography variant="h2" id="audit-heading">Recent activity</Typography>
         </Box>
-        {writesError && <Typography variant="body2" color="text.secondary">audit unavailable — the writes feed could not be loaded.</Typography>}
-        {!writesError && writes === null && <Box role="status" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, color: 'text.secondary' }}><CircularProgress size={16} /><Typography variant="body2">loading audit…</Typography></Box>}
-        {!writesError && writes !== null && audit.length === 0 && <Typography variant="body2" color="text.secondary">no writes yet — approved, rejected, and failed writes are audited here.</Typography>}
-        {!writesError && writes !== null && audit.length > 0 && <Box component="ul" className="audit-list" sx={{ listStyle: 'none', p: 0, m: 0, display: 'grid', gap: 0.5 }}>
-          {audit.slice(0, 10).map(w => <Box component="li" key={w.id} className={`audit-row audit-row-${w.status}`} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', p: 1.25, border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
-            <Box component="code" className="audit-path" sx={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 12 }}>{w.path}</Box>
-            {w.operation === 'mkdir' && <Typography variant="caption" color="text.secondary">{w.status === 'applied' ? 'folder created' : 'folder proposal'}</Typography>}
-            <Chip size="small" label={statusLabel(w.status)} sx={{ height: 20, fontSize: 10, ml: 'auto' }} />
-            <Box component="time" className="audit-time" dateTime={w.resolved_at ?? w.requested_at} title={w.resolved_at ?? w.requested_at} sx={{ color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }}>{timeAgo(w.resolved_at ?? w.requested_at)}</Box>
-            {w.failure_reason && <Typography variant="caption" color="error.main" title={w.failure_reason}>{w.failure_reason}</Typography>}
-          </Box>)}
-        </Box>}
+        {activityError && <Alert severity="error" action={<Button onClick={() => void loadActivity()}>Retry</Button>}>Activity unavailable — {activityError}</Alert>}
+        {!activityError && activity === null && <Typography role="status">Loading activity…</Typography>}
+        {activity !== null && audit.length === 0 && <Typography variant="body2">No activity yet.</Typography>}
+        {audit.length > 0 && <>
+          <Button onClick={onViewHistory}>View all activity</Button>
+          <Box>{audit.slice(0, 4).map(event => <AuditEventRow key={event.id} event={event} eventLabel={auditLabels[event.event_type]} />)}</Box>
+        </>}
        </section>}
        </div>
     </Box>

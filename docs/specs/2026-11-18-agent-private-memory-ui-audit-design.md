@@ -66,9 +66,12 @@ token without exposing credentials or query text.
   actor unavailable.
 - Add the same audit coverage to CLI token create/update/revoke commands so
   lifecycle history is not limited to REST/UI changes.
-- The existing activity history remains visible to authenticated feed readers,
-  as it is today. No new authorization scope is introduced. The additive
-  principal/actor metadata is not treated as a secret.
+- The existing activity history and stream remain available to authenticated
+  feed readers. For non-admin callers, token lifecycle events retain their
+  event type and timestamp but redact lifecycle payload details (including
+  actor, target, token name, rules, and privilege flags). Other activity events
+  continue to use the existing path-sweeping behavior. Token creation, update,
+  revoke, and token authorization behavior are unchanged.
 
 ### Settings activity history
 
@@ -88,8 +91,9 @@ token without exposing credentials or query text.
 - No new endpoint, database column, migration, or change to memory authorization
   is required.
 - The token-list `agent_principal` field and event payload fields are
-  additive. Existing event envelopes and existing event types remain intact;
-  old records continue to render with missing actor/target metadata.
+  additive. Existing event envelopes and event types remain intact; old
+  records continue to render with missing actor/target metadata for admins.
+  Non-admin activity responses redact token lifecycle payload details.
 - Use the existing path-sweeping behavior of `/api/v1/activity`; do not weaken
   it or expose arbitrary unswept payload fields in the UI.
 

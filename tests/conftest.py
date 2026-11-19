@@ -22,6 +22,13 @@ from harbor_ledger_memory.vault.boundary import VaultBoundary
 _LIVE_CONFIG_ROOT = Path.home() / ".config" / "harbor-ledger-memory"
 
 
+@pytest.fixture(autouse=True)
+def isolate_hlm_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent developer-specific HLM configuration from leaking into tests."""
+    monkeypatch.delenv("HLM_VAULT_PATH", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+
 @pytest.fixture
 def mock_embedding_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     from harbor_ledger_memory.services import embeddings as embeddings_module

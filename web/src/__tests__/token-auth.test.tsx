@@ -69,6 +69,42 @@ afterEach(() => {
 })
 
 describe('Settings · API tokens', () => {
+  it('binds a principal at creation and displays immutable existing bindings', async () => {
+    const user = userEvent.setup()
+    const { calls } = mockApi({
+      'POST /api/v1/tokens': { body: { token: 'secret' } },
+      'GET /api/v1/tokens': { body: [{ name: 'bound', rules: [], admin: false, approve_own_proposals: false, created_at: '', agent_principal: 'agent-one' }] },
+    })
+    render(<Settings />)
+    expect(screen.getByText(/private-memory access also depends on server configuration and folder ACLs/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Principal: agent-one/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /edit token bound/i }))
+    expect(screen.getByLabelText('Agent principal')).toHaveAttribute('readonly')
+    await user.click(screen.getByRole('button', { name: /close editor/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /generate token/i }))
+    await user.type(await screen.findByLabelText('Agent principal'), 'agent-two')
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Generate token' }))
+    await waitFor(() => expect(JSON.parse(calls.find(c => c.method === 'POST' && c.url === '/api/v1/tokens')!.body!).agent_principal).toBe('agent-two'))
+  })
+
+  it('shows safe activity preview and grouped history without query payloads', async () => {
+    mockApi({ 'GET /api/v1/activity': { body: { events: [
+      { id: 1, event_type: 'token_created', created_at: '2026-11-18T12:00:00Z', payload: { actor: { source: 'token', name: 'owner-token', agent_principal: 'owner-agent' }, target: { name: 'agent', agent_principal: 'alpha' }, secret: 'never-show' } },
+      { id: 2, event_type: 'query', created_at: '2026-11-18T13:00:00Z', payload: { query: 'private-query' } },
+      { id: 3, event_type: 'vault.mutation.applied', created_at: '2026-11-17T12:00:00Z', payload: { path: 'safe.md', status: 'applied' } },
+    ] } } })
+    vi.stubGlobal('EventSource', MockEventSource)
+    render(<App />)
+    await userEvent.setup().click(await screen.findByRole('button', { name: /Settings/ }))
+    expect(await screen.findByText(/Token created/)).toBeInTheDocument()
+    expect(screen.getByText(/owner-token/)).toBeInTheDocument()
+    expect(screen.queryByText(/never-show|private-query/)).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: /view all/i }))
+    expect(screen.getByRole('heading', { name: /activity history/i })).toBeInTheDocument()
+    expect(screen.getByText(/safe.md/)).toBeInTheDocument()
+    expect(screen.getByText(/actor unavailable/i)).toBeInTheDocument()
+  })
   it('shows the compact trust summary from additive status fields', async () => {
     mockApi({ 'GET /api/v1/status': { body: { last_scan_completed_at: '2026-09-25T10:00:00Z', indexed_notes: 12, scan_runs: 4, diagnostics: 3, broken_links: 1, ambiguous_links: 0 } } })
     render(<Settings />)

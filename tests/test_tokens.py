@@ -462,9 +462,7 @@ def test_update_reuses_create_validation(tmp_path: Path) -> None:
         with pytest.raises(InvalidTokenRequestError):
             service.update(
                 "agent",
-                rules=(
-                    FolderRule(path=PurePosixPath("AI"), access=FolderAccess.DENY),
-                ),
+                rules=(FolderRule(path=PurePosixPath("AI"), access=FolderAccess.DENY),),
             )
         # Failed updates leave the row untouched.
         listed = service.list()
@@ -486,6 +484,8 @@ def test_update_records_activity_event(tmp_path: Path) -> None:
                 "token_updated",
                 {
                     "name": "agent",
+                    "actor": None,
+                    "target": {"name": "agent", "agent_principal": None},
                     "rules": [],
                     "admin": True,
                     "approve_own_proposals": False,

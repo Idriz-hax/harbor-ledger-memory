@@ -277,6 +277,7 @@ class TokenService:
         agent_principal: str | None = None,
         *,
         activity: Any = None,
+        actor: dict[str, str | None] | None = None,
     ) -> CreatedToken:
         """Create a token; returns the record and the one-time plaintext."""
         name = name.strip()
@@ -315,6 +316,11 @@ class TokenService:
                 "token_created",
                 {
                     "name": name,
+                    "actor": actor,
+                    "target": {
+                        "name": record.name,
+                        "agent_principal": record.agent_principal,
+                    },
                     "rules": [rule.model_dump(mode="json") for rule in parsed_rules],
                     "admin": admin,
                     "approve_own_proposals": approve_own_proposals,
@@ -340,6 +346,7 @@ class TokenService:
         agent_principal: str | None = None,
         set_agent_principal: bool = False,
         activity: Any = None,
+        actor: dict[str, str | None] | None = None,
     ) -> TokenRecord | None:
         """Update an active token's permission metadata in place.
 
@@ -355,8 +362,7 @@ class TokenService:
             and not set_agent_principal
         ):
             raise InvalidTokenRequestError(
-                "nothing to update: provide rules, admin, "
-                "or approve_own_proposals"
+                "nothing to update: provide rules, admin, or approve_own_proposals"
             )
         if rules is not None:
             rules = _parse_create_rules(rules)
@@ -394,6 +400,11 @@ class TokenService:
                 "token_updated",
                 {
                     "name": record.name,
+                    "actor": actor,
+                    "target": {
+                        "name": record.name,
+                        "agent_principal": record.agent_principal,
+                    },
                     "rules": [rule.model_dump(mode="json") for rule in record.rules],
                     "admin": record.admin,
                     "approve_own_proposals": record.approve_own_proposals,
@@ -415,7 +426,13 @@ class TokenService:
                 ).all()
             )
 
-    def revoke(self, name: str, *, activity: Any = None) -> TokenRecord | None:
+    def revoke(
+        self,
+        name: str,
+        *,
+        activity: Any = None,
+        actor: dict[str, str | None] | None = None,
+    ) -> TokenRecord | None:
         """Soft-revoke by name; idempotent. None when the name is unknown.
 
         A name can match several rows once it is reused after revocation, so
@@ -436,7 +453,17 @@ class TokenService:
                 self._session.commit()
             record = _record_from_row(row)
         if activity is not None and was_active:
-            activity.record("token_revoked", {"name": name})
+            activity.record(
+                "token_revoked",
+                {
+                    "name": name,
+                    "actor": actor,
+                    "target": {
+                        "name": record.name,
+                        "agent_principal": record.agent_principal,
+                    },
+                },
+            )
         return record
 
     def verify(self, plaintext: str) -> TokenRecord | None:

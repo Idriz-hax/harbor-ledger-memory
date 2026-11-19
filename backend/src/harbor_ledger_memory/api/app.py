@@ -124,6 +124,8 @@ class MemoryMarkRequest(BaseModel):
 logger = logging.getLogger(__name__)
 
 RECENT_RESOLVED_WRITE_LIMIT = 100
+
+
 class NoteContentResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -166,7 +168,8 @@ class _LanSourceMiddleware:
         path = scope.get("path", "")
         protected = (
             path == "/"
-            or path in {"/health", "/login", "/logout", "/status", "/query", "/settings"}
+            or path
+            in {"/health", "/login", "/logout", "/status", "/query", "/settings"}
             or path.startswith("/api/v1/")
         )
         if scope.get("type") == "http" and protected and self.networks:
@@ -1001,8 +1004,9 @@ def create_app(
         try:
             catalog_status = CatalogStatusService(
                 session,
-                path_filter=lambda path: boundary.is_admitted(path)
-                and auth.policy.can_read(path),
+                path_filter=lambda path: (
+                    boundary.is_admitted(path) and auth.policy.can_read(path)
+                ),
             ).read()
         finally:
             session.close()
@@ -1216,9 +1220,8 @@ def create_app(
             )
             _require_mutation_paths_writable(
                 auth,
-                _mutation_affected_paths(
-                    service, request.source
-                ) + (service.validate_path(request.destination),),
+                _mutation_affected_paths(service, request.source)
+                + (service.validate_path(request.destination),),
             )
             proposal = service.request_move(
                 request.source, request.destination, policy=auth.policy
@@ -1609,6 +1612,17 @@ def create_app(
             session.close()
             engine.dispose()
 
+    def _token_actor(auth: AuthContext) -> dict[str, str | None] | None:
+        if auth.record is not None:
+            return {
+                "source": "token",
+                "name": auth.record.name,
+                "agent_principal": auth.record.agent_principal,
+            }
+        if auth.ui_session is not None:
+            return {"source": "Web UI"}
+        return None
+
     @application.get("/api/v1/tokens", dependencies=[Depends(require_admin)])
     def list_tokens() -> list[dict[str, object]]:  # pyright: ignore[reportUnusedFunction]
         return [
@@ -1617,6 +1631,7 @@ def create_app(
                 "rules": [rule.model_dump(mode="json") for rule in record.rules],
                 "admin": record.admin,
                 "approve_own_proposals": record.approve_own_proposals,
+                "agent_principal": record.agent_principal,
                 "created_at": record.created_at.isoformat(),
             }
             for record in token_service.list()
@@ -1631,6 +1646,7 @@ def create_app(
     )
     def create_token(  # pyright: ignore[reportUnusedFunction]
         body: TokenCreateBody,
+        auth: AuthContext = Depends(require_admin),
     ) -> dict[str, object] | JSONResponse:
         try:
             created = token_service.create(
@@ -1640,6 +1656,7 @@ def create_app(
                 approve_own_proposals=body.approve_own_proposals,
                 agent_principal=body.agent_principal,
                 activity=activity_service,
+                actor=_token_actor(auth),
             )
         except (DuplicateTokenNameError, InvalidTokenRequestError) as exc:
             status = 409 if isinstance(exc, DuplicateTokenNameError) else 400
@@ -1662,6 +1679,7 @@ def create_app(
     def update_token(  # pyright: ignore[reportUnusedFunction]
         name: str,
         body: TokenUpdateBody,
+        auth: AuthContext = Depends(require_admin),
     ) -> dict[str, object] | JSONResponse:
         try:
             record = token_service.update(
@@ -1672,6 +1690,7 @@ def create_app(
                 agent_principal=body.agent_principal,
                 set_agent_principal="agent_principal" in body.model_fields_set,
                 activity=activity_service,
+                actor=_token_actor(auth),
             )
         except InvalidTokenRequestError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -1695,8 +1714,11 @@ def create_app(
     )
     def revoke_token(  # pyright: ignore[reportUnusedFunction]
         name: str,
+        auth: AuthContext = Depends(require_admin),
     ) -> dict[str, object] | JSONResponse:
-        record = token_service.revoke(name, activity=activity_service)
+        record = token_service.revoke(
+            name, activity=activity_service, actor=_token_actor(auth)
+        )
         if record is None:
             return JSONResponse(
                 status_code=404, content={"detail": f"unknown token name: {name}"}
@@ -2330,7 +2352,8 @@ def create_app(
                     401, {"detail": "authentication required", "token_required": True}
                 )
             policy = AccessPolicy(
-                record.rules, record.admin,
+                record.rules,
+                record.admin,
                 agent_principal=record.agent_principal,
                 agent_private_enabled=settings.agent_private_enabled,
                 agent_private_root=settings.index_root / "AgentPrivate",
@@ -2524,7 +2547,13 @@ def _traversal_event_visible(policy: AccessPolicy, event: TraversalEvent) -> boo
 def _sweep_activity_payload(
     policy: AccessPolicy, event_type: str, payload: Mapping[str, Any]
 ) -> Mapping[str, Any] | None:
-    """Sweep one event payload to the token's readable paths."""
+    """Redact token details for non-admins and sweep unreadable paths."""
+    if not policy.admin and event_type in (
+        "token_created",
+        "token_updated",
+        "token_revoked",
+    ):
+        return {"redacted": True}
     if not _activity_payload_readable(policy, payload):
         return None
     if event_type not in ("token_created", "token_updated"):
@@ -2556,8 +2585,7 @@ def _activity_scope_visible(
     if "trace_id" not in payload:
         return True
     return (
-        payload.get("scope_kind") == scope_kind
-        and payload.get("scope_id") == scope_id
+        payload.get("scope_kind") == scope_kind and payload.get("scope_id") == scope_id
     )
 
 

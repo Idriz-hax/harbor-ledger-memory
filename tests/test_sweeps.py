@@ -206,13 +206,8 @@ def test_activity_history_sweeps_unreadable_events(tmp_path: Path) -> None:
         )
 
 
-def test_activity_history_sweeps_token_created_rules(tmp_path: Path) -> None:
-    """token_created events hide rules on paths the observer cannot read.
-
-    A readable token must not learn another token's hidden-folder grants:
-    the event itself stays visible (its name is not a path), but rules on
-    unreadable folders disappear from the served payload.
-    """
+def test_activity_history_hides_token_created_details_from_readers(tmp_path: Path) -> None:
+    """Only admins can read token lifecycle details from activity history."""
     app, db = _make_app(tmp_path)
     admin, reader = _make_tokens(db)
     with TestClient(app) as client:
@@ -246,20 +241,12 @@ def test_activity_history_sweeps_token_created_rules(tmp_path: Path) -> None:
             event for event in swept["events"] if event["event_type"] == "token_created"
         ]
         assert len(reader_created) == 1, "the event stays visible to the reader"
-        # The rule on the reader's hidden folder disappears; the readable
-        # one survives.
-        assert reader_created[0]["payload"]["rules"] == [
-            {"path": "AI", "access": "read"}
-        ]
+        assert reader_created[0]["payload"] == {"redacted": True}
         assert "Secret" not in json.dumps(reader_created)
 
 
-def test_activity_history_sweeps_token_updated_rules(tmp_path: Path) -> None:
-    """token_updated events hide rules on paths the observer cannot read.
-
-    Mirrors the ``token_created`` sweep: a reader must not learn that a
-    token was granted access to its hidden folder through an update event.
-    """
+def test_activity_history_hides_token_updated_details_from_readers(tmp_path: Path) -> None:
+    """Token update payloads are also restricted to admins."""
     app, db = _make_app(tmp_path)
     admin, reader = _make_tokens(db)
     with TestClient(app) as client:
@@ -297,11 +284,7 @@ def test_activity_history_sweeps_token_updated_rules(tmp_path: Path) -> None:
             event for event in swept["events"] if event["event_type"] == "token_updated"
         ]
         assert len(reader_updated) == 1, "the event stays visible to the reader"
-        # The rule on the reader's hidden folder disappears; the readable
-        # one survives.
-        assert reader_updated[0]["payload"]["rules"] == [
-            {"path": "AI", "access": "read"}
-        ]
+        assert reader_updated[0]["payload"] == {"redacted": True}
         assert "Secret" not in json.dumps(reader_updated)
 
 
@@ -351,6 +334,12 @@ def test_sse_stream_sweeps_unreadable_events(tmp_path: Path) -> None:
     client = TestClient(app, headers=_headers(admin))
     with client:
         _request_writes(client, admin)
+        created = client.post(
+            "/api/v1/tokens",
+            json={"name": "streamed"},
+            headers=_headers(admin),
+        )
+        assert created.status_code == 201
         portal = client.portal
         assert portal is not None
         disconnect = portal.call(asyncio.Event)
@@ -388,6 +377,11 @@ def test_sse_stream_sweeps_unreadable_events(tmp_path: Path) -> None:
     assert any(
         payload.get("event_type") == "vault.mutation.requested"
         and payload.get("payload", {}).get("path") == _VISIBLE_WRITE
+        for payload in payloads
+    )
+    assert any(
+        payload.get("event_type") == "token_created"
+        and payload.get("payload") == {"redacted": True}
         for payload in payloads
     )
     for payload in payloads:

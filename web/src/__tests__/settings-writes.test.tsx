@@ -47,7 +47,7 @@ const { readFileSync } = (await import(fsSpecifier)) as { readFileSync: (path: s
 const css = readFileSync(`${process.cwd()}/src/styles.css`, 'utf8')
 
 /* Queue of GET /api/v1/writes bodies; the last entry repeats for later calls. */
-function mockWrites(lists: unknown[], options: { getWrites?: Failure; postWrites?: Failure; postFailures?: Record<number, Failure> } = {}) {
+function mockWrites(lists: unknown[], options: { getWrites?: Failure; postWrites?: Failure; postFailures?: Record<number, Failure>; events?: unknown[] } = {}) {
   let listCalls = 0
   const calls: FetchCall[] = []
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -72,6 +72,7 @@ function mockWrites(lists: unknown[], options: { getWrites?: Failure; postWrites
       return { ok: true, json: async () => response ?? { ...pendingProposal, path: body.path ?? '', content: body.content ?? '', operation: body.operation ?? '' } } as Response
     }
     if (options.getWrites && method === 'GET' && /^\/api\/v1\/writes$/.test(url)) return fail(options.getWrites)
+    if (url.startsWith('/api/v1/activity')) return { ok: true, json: async () => ({ events: options.events ?? [] }) } as Response
     if (url.includes('/api/v1/settings')) return { ok: true, json: async () => SETTINGS_BODY } as Response
     if (method === 'GET' && /^\/api\/v1\/writes$/.test(url)) {
       const body = listCalls < lists.length ? lists[listCalls++] : lists[lists.length - 1]
@@ -199,29 +200,40 @@ describe('Settings · vault writes', () => {
     await waitFor(() => expect(writesGets(calls).length).toBe(2))
   })
 
-  it('renders recent audit records with status and failure reason', async () => {
-    mockWrites([{
-      proposals: [
-        { ...pendingProposal, id: 9, path: 'AI/kept.md', status: 'applied', resolved_at: minutesAgo(30) },
-        { ...pendingProposal, id: 8, path: 'AI/failed.md', status: 'failed', failure_reason: 'vault path disappeared', resolved_at: minutesAgo(12) },
-      ],
-    }])
+  it('renders safe mutation activity and omits arbitrary payloads', async () => {
+    mockWrites([{ proposals: [] }], { events: [{ id: 8, event_type: 'vault.mutation.failed', created_at: minutesAgo(12), payload: { path: 'AI/failed.md', status: 'failed', failure_reason: 'secret failure' } }, { id: 9, event_type: 'query', created_at: minutesAgo(1), payload: { query: 'secret query' } }] })
     render(<Settings />)
-    expect(await screen.findByText('AI/kept.md')).toBeTruthy()
-    expect(screen.getByText('AI/failed.md')).toBeTruthy()
-    expect(screen.getByText('applied')).toBeTruthy()
-    expect(screen.getByText('failed')).toBeTruthy()
-    expect(screen.getByText('vault path disappeared')).toBeTruthy()
+    expect(await screen.findByText(/AI\/failed.md/)).toBeTruthy()
+    expect(screen.getByText(/Actor unavailable/)).toBeTruthy()
+    expect(screen.queryByText(/secret failure|secret query/)).toBeNull()
+  })
+
+  it('announces activity loading, retries errors, and shows an empty state', async () => {
+    let resolveActivity!: (response: Response) => void
+    let requests = 0
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input).startsWith('/api/v1/activity')) {
+        requests++
+        if (requests === 1) return new Promise<Response>(resolve => { resolveActivity = resolve })
+        return Promise.resolve({ ok: true, json: async () => ({ events: [] }) } as Response)
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) } as Response)
+    }))
+    render(<Settings />)
+    expect(screen.getByText('Loading activity…')).toHaveAttribute('role', 'status')
+    resolveActivity({ ok: false, status: 503, text: async () => 'offline' } as Response)
+    expect(await screen.findByText(/Activity unavailable/)).toBeTruthy()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('No activity yet.')).toBeTruthy()
+    expect(requests).toBe(2)
   })
 
   it('uses neutral audit wording when a folder proposal is rejected', async () => {
-    mockWrites([{
-      proposals: [{ ...pendingProposal, id: 10, path: 'AI/Rejected', content: '', operation: 'mkdir', status: 'rejected', resolved_at: minutesAgo(3) }],
-    }])
+    mockWrites([{ proposals: [] }], { events: [{ id: 10, event_type: 'vault.mutation.rejected', created_at: minutesAgo(3), payload: { path: 'AI/Rejected', status: 'rejected' } }] })
     render(<Settings />)
 
-    expect(await screen.findByText('AI/Rejected')).toBeTruthy()
-    expect(screen.getByText('folder proposal')).toBeTruthy()
+    expect(await screen.findByText(/AI\/Rejected/)).toBeTruthy()
+    expect(screen.getByText('Write rejected')).toBeTruthy()
     expect(screen.queryByText('folder created')).toBeNull()
   })
 
@@ -391,23 +403,23 @@ describe('Settings · vault writes', () => {
     expect(footer?.querySelectorAll('.write-actions button').length).toBe(2)
   })
 
-  it('renders a ten-event full-width audit in Settings', async () => {
+  it('renders a compact activity preview in Settings', async () => {
     const audit = Array.from({ length: 11 }, (_, index) => ({
-      ...pendingProposal,
       id: 100 + index,
-      path: `AI/audit-${index}.md`,
-      status: 'applied' as const,
-      resolved_at: minutesAgo(index + 1),
+      event_type: 'vault.mutation.applied',
+      payload: { path: `AI/audit-${index}.md` },
+      created_at: minutesAgo(index + 1),
     }))
-    mockWrites([{ proposals: audit }])
+    mockWrites([{ proposals: [] }], { events: audit })
     const { container } = render(<Settings />)
-    await screen.findByText('AI/audit-0.md')
+    await screen.findByText(/AI\/audit-0.md/)
     const workspace = container.querySelector('.settings-workspace-layout')
     expect(workspace).toHaveAttribute('data-layout', 'quiet-split')
     expect(workspace?.querySelector('.tokens-section')).toBeTruthy()
     expect(container.querySelector('.write-proposals-region')).toBeNull()
     expect(container.querySelector('.audit-region')).toBeTruthy()
-    expect(container.querySelectorAll('.audit-row')).toHaveLength(10)
+    expect(container.querySelectorAll('.audit-row')).toHaveLength(4)
+    expect(screen.getByRole('button', { name: 'View all activity' })).toBeTruthy()
   })
 
   it('collapses the writes layout at ≤900px and stacks card actions at narrow widths', () => {
@@ -450,19 +462,33 @@ describe('Settings · vault writes', () => {
     expect(screen.queryByRole('button', { name: 'Reject AI/new.md' })).toBeNull()
   })
 
-  it('shows the completed write audit in Settings without review controls', async () => {
-    mockWrites([{ proposals: [
-      { ...pendingProposal, id: 21, path: 'AI/applied.md', status: 'applied', resolved_at: minutesAgo(3) },
-      { ...pendingProposal, id: 22, path: 'AI/rejected.md', status: 'rejected', resolved_at: minutesAgo(2) },
-      { ...pendingProposal, id: 23, path: 'AI/failed.md', status: 'failed', failure_reason: 'vault unavailable', resolved_at: minutesAgo(1) },
-    ] }])
+  it('shows redacted activity without token details', async () => {
+    mockWrites([{ proposals: [] }], { events: [
+      { id: 1, event_type: 'token_created', created_at: '2026-11-18T12:00:00Z', payload: { redacted: true, actor: { name: 'private-actor' }, target: { name: 'private-token' }, path: 'private-path', status: 'private-status' } },
+    ] })
     render(<Settings />)
-    expect(await screen.findByText('AI/applied.md')).toBeTruthy()
-    expect(screen.getByText('AI/rejected.md')).toBeTruthy()
-    expect(screen.getByText('AI/failed.md')).toBeTruthy()
-    expect(screen.getByText('vault unavailable')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Approve AI/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Reject AI/ })).toBeNull()
+    expect(await screen.findByText(/Details visible to admin tokens only/)).toBeTruthy()
+    expect(screen.queryByText(/private-(actor|token|path|status)/)).toBeNull()
+    expect(screen.queryByText(/Actor unavailable/)).toBeNull()
+  })
+
+  it('opens grouped activity as a page and returns to Settings', async () => {
+    mockWrites([{ proposals: [] }], { events: [
+      { id: 1, event_type: 'token_created', created_at: '2026-11-18T12:00:00Z', payload: { actor: { source: 'Web UI' }, target: { name: 'agent' } } },
+      { id: 2, event_type: 'vault.mutation.rejected', created_at: '2026-11-17T12:00:00Z', payload: { path: 'AI/rejected.md' } },
+    ] })
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} removeEventListener() {} })
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Settings/ }))
+    await user.click(await screen.findByRole('button', { name: 'View all activity' }))
+    expect(screen.getByRole('heading', { name: 'Activity history' })).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Tokens' })).toBeNull()
+    expect(await screen.findByText(/AI\/rejected.md/)).toBeTruthy()
+    expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(2)
+    await user.click(screen.getByRole('button', { name: 'Back to Settings' }))
+    expect(await screen.findByRole('heading', { name: 'Tokens' })).toBeTruthy()
   })
 
   it('places approvals in primary navigation and shows a pending badge', async () => {

@@ -552,9 +552,18 @@ def token_create(
     settings = _load_settings()
     rules = [_parse_rule(raw) for raw in rule]
     service = _token_service(settings)
+    activity = ActivityService(settings.database_url)
     try:
-        created = service.create(name, rules, admin, agent_principal=agent_principal)
+        created = service.create(
+            name,
+            rules,
+            admin,
+            agent_principal=agent_principal,
+            activity=activity,
+            actor={"source": "CLI"},
+        )
     finally:
+        activity.close()
         service.close()
     admin_note = " [admin]" if created.admin else ""
     typer.echo(created.plaintext)
@@ -601,6 +610,7 @@ def token_update(
     settings = _load_settings()
     parsed = [_parse_rule(raw) for raw in rule]
     service = _token_service(settings)
+    activity = ActivityService(settings.database_url)
     try:
         record = service.update(
             name,
@@ -611,11 +621,14 @@ def token_update(
             approve_own_proposals=approve_own_proposals,
             agent_principal=agent_principal,
             set_agent_principal=agent_principal is not None,
+            activity=activity,
+            actor={"source": "CLI"},
         )
     except InvalidTokenRequestError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     finally:
+        activity.close()
         service.close()
     if record is None:
         typer.echo(f"Error: no active token named '{name}'", err=True)
@@ -656,9 +669,11 @@ def token_revoke(name: str = typer.Argument(..., help="Token name to revoke.")) 
     """Revoke a token by name (idempotent)."""
     settings = _load_settings()
     service = _token_service(settings)
+    activity = ActivityService(settings.database_url)
     try:
-        record = service.revoke(name)
+        record = service.revoke(name, activity=activity, actor={"source": "CLI"})
     finally:
+        activity.close()
         service.close()
     if record is None:
         typer.echo(f"Error: no token named '{name}'", err=True)
