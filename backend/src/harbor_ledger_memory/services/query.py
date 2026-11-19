@@ -259,6 +259,18 @@ class QueryService:
                 "graph_path": _activation_segments(activated),
             },
         )
+        for memory in selected:
+            self._activity_service.record(
+                "memory_access",
+                {
+                    "action": "query_result",
+                    "path": memory.path,
+                    "tool": "query",
+                    "scope_kind": request.scope_kind,
+                    "scope_id": request.scope_id,
+                    "trace_id": str(trace_uuid),
+                },
+            )
 
         # --- Stage 6: Build and return result ---
         return QueryResult(

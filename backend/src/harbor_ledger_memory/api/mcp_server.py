@@ -90,7 +90,9 @@ def build_mcp_server(
         if record is None:
             raise ToolError("authentication required: provide a valid API token")
         return AccessPolicy(
-            record.rules, record.admin, agent_principal=record.agent_principal,
+            record.rules,
+            record.admin,
+            agent_principal=record.agent_principal,
             agent_private_enabled=settings.agent_private_enabled,
             agent_private_root=settings.index_root / "AgentPrivate",
         )
@@ -321,8 +323,9 @@ def build_mcp_server(
         try:
             catalog = CatalogStatusService(
                 session,
-                path_filter=lambda path: VaultBoundary(settings).is_admitted(path)
-                and policy.can_read(path),
+                path_filter=lambda path: (
+                    VaultBoundary(settings).is_admitted(path) and policy.can_read(path)
+                ),
             ).read()
             return json.dumps(
                 token_status_payload(policy, settings, catalog),
@@ -379,8 +382,10 @@ def build_mcp_server(
         try:
             graph = GraphBuilder(
                 session,
-                path_filter=lambda candidate_path: boundary.is_admitted(candidate_path)
-                and policy.can_read(candidate_path),
+                path_filter=lambda candidate_path: (
+                    boundary.is_admitted(candidate_path)
+                    and policy.can_read(candidate_path)
+                ),
             ).build()
             result = GraphService(graph).neighbours(candidate.as_posix())
             kept = [asdict(item) for item in result if policy.can_read(item.path)]
@@ -389,7 +394,7 @@ def build_mcp_server(
             session.close()
             engine.dispose()
 
-    def _read_note(path: str, policy: AccessPolicy) -> dict[str, object]:
+    def _read_note(path: str, policy: AccessPolicy, tool: str) -> dict[str, object]:
         boundary = VaultBoundary(settings)
         try:
             identity = boundary.validate_identity(PurePosixPath(path))
@@ -400,9 +405,21 @@ def build_mcp_server(
             ):
                 raise VaultPathError("not readable")
             snapshot = boundary.read_file(identity)
+            content = snapshot.content.decode("utf-8")
+            scope = _scope()
+            activity_service.record(
+                "memory_access",
+                {
+                    "action": "explicit_read",
+                    "path": identity.as_posix(),
+                    "tool": tool,
+                    "scope_kind": scope.scope_kind,
+                    "scope_id": scope.scope_id,
+                },
+            )
             return {
                 "path": identity.as_posix(),
-                "content": snapshot.content.decode("utf-8"),
+                "content": content,
                 "revision": (
                     snapshot.version.sha256 if snapshot.version else snapshot.sha256
                 ),
@@ -413,7 +430,7 @@ def build_mcp_server(
     @mcp.tool()
     def read_note(path: str) -> str:  # pyright: ignore[reportUnusedFunction]
         """Read the complete content and revision of one readable Markdown note."""
-        result = _read_note(path, _policy())
+        result = _read_note(path, _policy(), "read_note")
         if "error" in result:
             raise ToolError("note unavailable")
         return json.dumps(result, ensure_ascii=False)
@@ -432,7 +449,9 @@ def build_mcp_server(
         return [
             TextContent(
                 type="text",
-                text=json.dumps(_read_note(path, policy), ensure_ascii=False),
+                text=json.dumps(
+                    _read_note(path, policy, "read_notes"), ensure_ascii=False
+                ),
             )
             for path in paths
         ]

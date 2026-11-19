@@ -103,41 +103,21 @@ textarea:focus-visible {
   border-radius: 7px;
 }
 
-/* --- Activity radar (bottom-right of chart) --- */
-.activity-radar {
-  position: absolute;
-  bottom: 14px;
-  right: 14px;
-  z-index: 3;
-  min-width: 180px;
-  max-width: 260px;
-  padding: 10px 12px;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 10px;
-  line-height: 1.6;
-  color: var(--muted);
-}
-.activity-radar .radar-title {
-  font-size: 9px;
-  letter-spacing: .12em;
-  color: var(--accent);
-  margin-bottom: 6px;
-  opacity: .8;
-}
-.activity-radar .radar-event {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.activity-radar .radar-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
+/* The queue sits outside the chart so it remains readable at every width. */
+.activity-queue { margin-top: 14px; padding: 20px 24px; border: 1px solid; border-radius: 14px; }
+.activity-queue-heading { display: flex; justify-content: space-between; align-items: end; gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.activity-queue-kicker, .activity-queue-count, .activity-queue-marker, .activity-queue-item time { font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .08em; opacity: .7; }
+.activity-queue-heading h3 { margin: 3px 0 0; font: 500 24px/1.1 "Newsreader", Georgia, serif; }
+.activity-queue-list { list-style: none; margin: 0; padding: 0; }
+.activity-queue-item { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.activity-queue-item:last-child { border-bottom: 0; padding-bottom: 0; }
+.activity-queue-marker { color: #34a996; font-weight: 600; }
+.activity-queue-detail { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; flex: 1; min-width: 0; }
+.activity-queue-action { font-size: 13px; font-weight: 600; min-width: 100px; }
+.activity-queue-path { font-family: "IBM Plex Mono", monospace; font-size: 11px; opacity: .75; overflow-wrap: anywhere; }
+.activity-queue-scope { font-family: "IBM Plex Mono", monospace; font-size: 10px; opacity: .7; white-space: nowrap; }
+.activity-queue-item time { flex-shrink: 0; white-space: nowrap; }
+.activity-queue-empty { margin: 16px 0 0; font-size: 13px; opacity: .7; }
 
 /* --- Legend (bottom-left of chart) --- */
 .atlas-legend {
@@ -231,7 +211,8 @@ textarea:focus-visible {
   .write-card-foot { flex-direction: column; align-items: stretch; gap: 10px }
   .write-actions .write-btn { flex: 1 }
   .write-actions .write-action-error { width: 100% }
-  .activity-radar { display: none }
+  .activity-queue { padding: 16px; }
+  .activity-queue-item { gap: 10px; }
 }
 
 @media (max-width: 700px) {

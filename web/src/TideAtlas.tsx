@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import cytoscape, { Core, StylesheetJson } from 'cytoscape'
-import { Alert, Box, Button, Chip, Drawer, IconButton, Paper, Stack, Tooltip, Typography, useMediaQuery } from '@mui/material'
-import { Add, CenterFocusStrong, Close, Fullscreen, Remove, Refresh, Shuffle, Terrain } from '@mui/icons-material'
+import { Alert, Box, Button, Drawer, IconButton, Paper, Stack, Tooltip, Typography, useMediaQuery } from '@mui/material'
+import { Add, CenterFocusStrong, Close, Fullscreen, Remove, Refresh, Shuffle } from '@mui/icons-material'
 import { api, type Activity } from './main'
-import { activityColors, type ActivityKind } from './appTheme'
+import { type ActivityKind } from './appTheme'
 import { MAX_ZOOM, MIN_ZOOM, viewLevelForZoom, type GraphView, type GraphCluster } from './graphView'
 import { buildCoastalPlacement, clearPositionOverrides, isIndexPath, loadPositionOverrides, savePositionOverride, settleOneHop, type Island } from './coastalLayout'
 import { LiveTraversalController, type LiveTraversalEvent } from './liveTraversal'
@@ -26,6 +26,13 @@ export const topLevelFolder = (scope: string) => scope.split('/').filter(Boolean
 
 const stableHash = (value: string) => [...value].reduce((hash, character) => ((hash * 31) + character.charCodeAt(0)) >>> 0, 2166136261)
 
+const activityScope = (event: Activity) => {
+  const { scope_kind: kind, scope_id: id } = event.payload
+  if (typeof kind !== 'string' || !kind) return null
+  const label = kind === 'agent' ? 'Agent' : kind === 'token' ? 'Token' : 'Scope'
+  return typeof id === 'string' && id ? `${label} · ${stableHash(id).toString(16).padStart(8, '0')}` : label
+}
+
 /** Stable, high-contrast colors keep a folder recognizable across view changes. */
 export const folderGroupColor = (folder: string) => folderPalette[stableHash(folder) % folderPalette.length]
 
@@ -36,7 +43,7 @@ export const readableActivityType = (eventType: string) => eventType
 
 export const activityTarget = (event: Activity) => {
   const payload = event.payload as Record<string, unknown>
-  const target = payload.path ?? payload.note_path ?? payload.scope ?? payload.target
+  const target = payload.path ?? payload.note_path
   return typeof target === 'string' && target.trim() ? target : 'No target'
 }
 
@@ -69,7 +76,8 @@ const computeStyles = (): StylesheetJson => [
     shape: 'ellipse',
     'text-valign': 'bottom',
     'text-margin-y': 5,
-    'text-opacity': 0,
+    'text-opacity': 0.72,
+    'min-zoomed-font-size': 8,
     'text-wrap': 'ellipsis',
     'text-max-width': '100',
   }},
@@ -90,6 +98,7 @@ const computeStyles = (): StylesheetJson => [
     'border-width': '3',
     'border-color': '#e6bf69',
     'text-opacity': 1,
+    'min-zoomed-font-size': 0,
     'font-weight': 'bold',
     'font-size': '11',
     'z-index': 99,
@@ -115,6 +124,7 @@ const computeStyles = (): StylesheetJson => [
   }},
   { selector: 'node.is-neighbor', style: {
     'text-opacity': 1,
+    'min-zoomed-font-size': 0,
     'z-index': 98,
   }},
   { selector: 'edge.is-neighbor', style: {
@@ -265,8 +275,7 @@ export function TideAtlas({ events, onRefresh, publicGraphOnly = false }: { even
   const [fullScreen, setFullScreen] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [rescanSuccess, setRescanSuccess] = useState<{ notes: number; diagnostics: number } | null>(null)
-  const [traversalConnected, setTraversalConnected] = useState(false)
-  const [activeTraversalCount, setActiveTraversalCount] = useState(0)
+  const [traversalError, setTraversalError] = useState(false)
   const [islands, setIslands] = useState<Island[]>([])
   const [layoutRevision, setLayoutRevision] = useState(0)
   const viewRef = useRef(view)
@@ -389,7 +398,6 @@ export function TideAtlas({ events, onRefresh, publicGraphOnly = false }: { even
     coreRef.current = instance
     const traversalController = new LiveTraversalController(instance, {
       reducedMotion,
-      onActivityChange: setActiveTraversalCount,
       nodeIdForPath: path => {
         const current = viewRef.current
         if (!current) return undefined
@@ -520,13 +528,13 @@ export function TideAtlas({ events, onRefresh, publicGraphOnly = false }: { even
     if (publicGraphOnly) return
     if (typeof EventSource === 'undefined') return
     const stream = new EventSource('/api/v1/graph/traversal/stream')
-    stream.onopen = () => setTraversalConnected(true)
-    stream.onerror = () => setTraversalConnected(false)
+    stream.onopen = () => setTraversalError(false)
+    stream.onerror = () => setTraversalError(true)
     const onTraversal = (event: Event) => {
       try { traversalControllerRef.current?.apply(JSON.parse((event as MessageEvent).data) as LiveTraversalEvent) } catch { /* ignore malformed events */ }
     }
     stream.addEventListener('traversal', onTraversal)
-    return () => { stream.removeEventListener('traversal', onTraversal); stream.close(); setTraversalConnected(false) }
+    return () => { stream.removeEventListener('traversal', onTraversal); stream.close(); setTraversalError(false) }
   }, [publicGraphOnly])
 
   /* Apply view data without a global layout. Every node stays draggable. */
@@ -552,25 +560,23 @@ export function TideAtlas({ events, onRefresh, publicGraphOnly = false }: { even
      work happens here: activity is a visual signal layered over stable positions. */
   useEffect(() => {
     const instance = coreRef.current
-    if (!instance || !events.length) return
-    const latest = events[0]
+    if (!instance || !view || !events.length) return
+    const latest = [...events].reverse().find(event => event.event_type === 'memory_access')
+    if (!latest) return
     if (lastEventId.current === latest.id) return
-    lastEventId.current = latest.id
     const payload = latest.payload as Record<string, string>
     const targetPath = payload.path ?? payload.note_path ?? payload.scope ?? ''
     if (!targetPath) return
-    const matches = instance.nodes().filter(n => {
-      const nodeId = String(n.data('id') ?? '')
-      const nodeScope = String(n.data('scope') ?? '')
-      return nodeId === targetPath || nodeScope === targetPath || targetPath.includes(nodeId)
-    })
+    const target = view.clusters.filter(cluster => targetPath === cluster.scope || targetPath.startsWith(`${cluster.scope}/`)).sort((a, b) => b.scope.length - a.scope.length)[0]
+    const matches = instance.nodes().filter(n => n.id() === target?.id)
     if (!matches.length) return
+    lastEventId.current = latest.id
     const targetIds = new Set(matches.map(node => node.id()))
     const routeEdges = instance.edges().filter(edge => targetIds.has(String(edge.data('source'))) || targetIds.has(String(edge.data('target'))))
     const routeNodeIds = new Set([...targetIds, ...routeEdges.map(edge => String(edge.data('source'))), ...routeEdges.map(edge => String(edge.data('target')))])
     const routeNodes = instance.nodes().filter(node => routeNodeIds.has(node.id()))
     const prev = pulseRef.current
-    if (prev) { prev.cancelled = true; if (prev.timer !== null) window.clearTimeout(prev.timer) }
+    if (prev) { prev.cancelled = true; if (prev.timer !== null) window.clearTimeout(prev.timer); instance.elements().removeClass('activity-glow activity-beacon route-trace') }
     const handle = { cancelled: false, elements: routeEdges, timer: null as number | null }
     pulseRef.current = handle
     const reduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -600,7 +606,7 @@ export function TideAtlas({ events, onRefresh, publicGraphOnly = false }: { even
        routeEdges.removeClass('route-trace')
        if (pulseRef.current === handle) pulseRef.current = null
     }, reduced ? 0 : 900)
-  }, [events])
+  }, [events, view])
 
   /* Cleanup pulse on unmount. */
   useEffect(() => () => {
@@ -678,8 +684,8 @@ export function TideAtlas({ events, onRefresh, publicGraphOnly = false }: { even
   }
   const chartHeight = fullScreen ? '100vh' : small ? 'calc(100vh - 180px)' : 'min(760px, calc(100vh - 250px))'
 
-  /* Last 5 events for the compact radar panel. */
-  const radarEvents = events.slice(-5).reverse()
+  /* The activity stream is supplied oldest first. */
+  const radarEvents = events.filter(event => event.event_type === 'memory_access').reverse()
   const folderGroups = [...new Set((view?.clusters ?? []).map(cluster => topLevelFolder(cluster.scope)))].sort()
 
   const toScreenX = (x: number) => x * viewport.zoom + viewport.pan.x
@@ -693,11 +699,10 @@ export function TideAtlas({ events, onRefresh, publicGraphOnly = false }: { even
         <Typography color="text.secondary">A bounded survey of the local ledger. Zoom in to enter an archive; zoom out to read its coastline.</Typography>
       </Box>
       <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
-        {!publicGraphOnly && <Box className="live-indicator">
-          <Box className={!traversalConnected ? 'live-dot disconnected' : 'live-dot'} />
-          <span>{traversalConnected ? `LIVE • ${activeTraversalCount} active` : 'RECONNECTING'}</span>
+        {!publicGraphOnly && traversalError && <Box className="live-indicator" role="status">
+          <Box className="live-dot disconnected" />
+          <span>RECONNECTING</span>
         </Box>}
-        <Chip icon={<Terrain />} label={scanning ? 'scanning' : 'active'} color="primary" variant="outlined" sx={{ borderColor: 'rgba(118, 163, 174, .3)', color: 'text.secondary', fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' }} />
         {!publicGraphOnly && <Button startIcon={<Refresh />} onClick={handleRescan} disabled={scanning} sx={{ color: 'text.secondary', border: 1, borderColor: 'rgba(118, 163, 174, .3)', borderRadius: 6, '&:hover': { borderColor: 'rgba(230, 191, 105, .5)', background: 'rgba(230, 191, 105, .06)' } }}>
           {scanning ? 'Scanning…' : 'Rescan'}
         </Button>}
@@ -745,33 +750,23 @@ export function TideAtlas({ events, onRefresh, publicGraphOnly = false }: { even
          <Box className="legend-item"><Box sx={{ width: 10, height: 10, transform: 'rotate(45deg)', background: 'rgba(200, 216, 214, .34)', border: '1px solid rgba(200, 216, 214, .72)' }} /><span>index</span></Box>
       </Box>
 
-       {/* Activity radar — bottom-right */}
-       {!publicGraphOnly && <Box className="activity-radar glass-panel" aria-label="Recent activity">
-         <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: .75 }}>
-           <Box className="radar-title">ACTIVITY</Box>
-           <Typography component="span" sx={{ fontSize: 10, color: 'rgba(233, 243, 242, .45)', fontFamily: '"IBM Plex Mono", monospace' }}>
-             {events.length} {events.length === 1 ? 'event' : 'events'}
-           </Typography>
-         </Stack>
-         {radarEvents.length === 0 ? (
-           <Typography component="p" sx={{ m: 0, fontSize: 11, color: 'rgba(233, 243, 242, .5)' }}>No recent activity</Typography>
-         ) : radarEvents.map(event => {
-           const kind = eventToKind(event.event_type)
-           const target = activityTarget(event)
-           const shortTarget = target.length > 28 ? `…${target.slice(-27)}` : target
-           return (
-             <Box key={event.id} className="radar-event" title={`${readableActivityType(event.event_type)} · ${target}`}>
-               <Box className="radar-dot" sx={{ background: activityColors[kind], boxShadow: `0 0 5px ${activityColors[kind]}` }} />
-               <Box sx={{ minWidth: 0, lineHeight: 1.15 }}>
-                 <Box component="span" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{readableActivityType(event.event_type)}</Box>
-                 <Box component="span" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'rgba(233, 243, 242, .48)', fontSize: 10 }}>{shortTarget}</Box>
-               </Box>
-               <Box component="span" sx={{ ml: 'auto', pl: .75, flexShrink: 0, color: 'rgba(233, 243, 242, .4)', fontSize: 10 }}>{relativeActivityTime(event.created_at)}</Box>
-             </Box>
-           )
-         })}
-       </Box>}
-    </Paper>
+     </Paper>
+    <Box component="details" sx={{ mt: 1.5, color: 'text.secondary', fontSize: 13, '& summary': { cursor: 'pointer', py: 1 }, '& ol': { maxHeight: 240, overflowY: 'auto', pl: 3 }, '& button': { color: 'text.primary', background: 'transparent', border: 0, textAlign: 'left', cursor: 'pointer', py: 1, px: 1, overflowWrap: 'anywhere' }, '& button:hover': { textDecoration: 'underline' } }}>
+      <summary>Browse map features</summary>
+      {!view ? <p>Loading map features…</p> : view.clusters.length === 0 ? <p>No map features available.</p> : <ol>
+        {[...view.clusters].sort((a, b) => a.scope.localeCompare(b.scope)).map(cluster => <li key={cluster.id}><button type="button" onClick={() => view.level === 2 ? setSelected(cluster) : void selectCluster(cluster)}>{cluster.label} · {cluster.scope}</button></li>)}
+      </ol>}
+    </Box>
+    {!publicGraphOnly && <Box component="section" className="activity-queue" aria-label="Activity queue" sx={{ bgcolor: 'background.paper', color: 'text.primary', borderColor: 'divider' }}>
+      <Box className="activity-queue-heading"><Box><span className="activity-queue-kicker">THE LEDGER IN MOTION</span><h3>Recent activity</h3></Box><span className="activity-queue-count">{radarEvents.length} {radarEvents.length === 1 ? 'event' : 'events'}</span></Box>
+      {radarEvents.length === 0 ? <p className="activity-queue-empty">No recent activity</p> : <ol aria-label="Recent activity" className="activity-queue-list">
+        {radarEvents.map((event, index) => <li key={event.id} className="activity-queue-item">
+          <span className="activity-queue-marker" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
+          <span className="activity-queue-detail"><span className="activity-queue-action">{event.event_type === 'memory_access' ? event.payload.action === 'query_result' ? 'Query result' : event.payload.action === 'explicit_read' ? 'Explicit read' : 'Memory access' : readableActivityType(event.event_type)}</span><span className="activity-queue-path">{activityTarget(event)}</span>{activityScope(event) && <span className="activity-queue-scope">{activityScope(event)}</span>}</span>
+          <time dateTime={event.created_at}>{relativeActivityTime(event.created_at)}</time>
+        </li>)}
+      </ol>}
+    </Box>}
 
     {/* Node detail drawer */}
     <Drawer anchor={small ? 'bottom' : 'right'} open={Boolean(selected)} onClose={() => setSelected(null)} PaperProps={{ sx: { p: 3, width: small ? '100%' : 360, background: 'rgba(12, 18, 24, .92)', backdropFilter: 'blur(15px)', borderLeft: small ? 0 : '1px solid rgba(106, 137, 156, .2)' } }}>

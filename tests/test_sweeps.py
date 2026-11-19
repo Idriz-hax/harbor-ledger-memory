@@ -25,13 +25,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.types import Message
 
-from harbor_ledger_memory.api.app import create_app
+from harbor_ledger_memory.api.app import _swept_sse_frame, create_app
 from harbor_ledger_memory.config import (
     ApiSettings,
     FolderAccess,
     FolderRule,
     Settings,
 )
+from harbor_ledger_memory.services.access import AccessPolicy
+from harbor_ledger_memory.services.activity import ActivityService
+from harbor_ledger_memory.services.memory_marks import token_scope
 from harbor_ledger_memory.services.tokens import TokenService
 
 _QUERY = "memory systems"
@@ -64,6 +67,48 @@ def _make_app(tmp_path: Path) -> tuple[FastAPI, str]:
 
 def _headers(plaintext: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {plaintext}"}
+
+
+def test_memory_access_scope_and_acl_history_and_sse(tmp_path: Path) -> None:
+    app, db = _make_app(tmp_path)
+    service = TokenService(db)
+    owner, owner_key = service.create("owner", rules=[])
+    _, other_key = service.create("other", rules=[])
+    admin, admin_key = service.create("admin", rules=[], admin=True)
+    scope = token_scope(owner.id)
+    with TestClient(app) as client:
+        activity = app.state.activity_service
+        payload = {
+            "action": "explicit_read",
+            "path": "AI/note.md",
+            "tool": "read_note",
+            "scope_kind": scope.scope_kind,
+            "scope_id": scope.scope_id,
+        }
+        event = activity.record("memory_access", payload)
+        for key, visible in [(owner_key, True), (other_key, False), (admin_key, True)]:
+            events = client.get("/api/v1/activity", headers=_headers(key)).json()[
+                "events"
+            ]
+            assert any(item["id"] == event.id for item in events) is visible
+        frame = ActivityService.sse_message(event)
+        assert _swept_sse_frame(
+            AccessPolicy(owner.rules, False), frame, (scope.scope_kind, scope.scope_id)
+        )
+        assert (
+            _swept_sse_frame(
+                AccessPolicy(owner.rules, False), frame, ("token", "other")
+            )
+            is None
+        )
+        assert _swept_sse_frame(
+            AccessPolicy(admin.rules, True), frame, ("token", "other")
+        )
+        denied = AccessPolicy(
+            [FolderRule(path=PurePosixPath("AI"), access=FolderAccess.NONE)], True
+        )
+        assert _swept_sse_frame(denied, frame, ("token", "other")) is None
+    service.close()
 
 
 def _seed_vault_files(tmp_path: Path) -> None:
@@ -206,7 +251,9 @@ def test_activity_history_sweeps_unreadable_events(tmp_path: Path) -> None:
         )
 
 
-def test_activity_history_hides_token_created_details_from_readers(tmp_path: Path) -> None:
+def test_activity_history_hides_token_created_details_from_readers(
+    tmp_path: Path,
+) -> None:
     """Only admins can read token lifecycle details from activity history."""
     app, db = _make_app(tmp_path)
     admin, reader = _make_tokens(db)
@@ -245,7 +292,9 @@ def test_activity_history_hides_token_created_details_from_readers(tmp_path: Pat
         assert "Secret" not in json.dumps(reader_created)
 
 
-def test_activity_history_hides_token_updated_details_from_readers(tmp_path: Path) -> None:
+def test_activity_history_hides_token_updated_details_from_readers(
+    tmp_path: Path,
+) -> None:
     """Token update payloads are also restricted to admins."""
     app, db = _make_app(tmp_path)
     admin, reader = _make_tokens(db)

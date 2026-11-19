@@ -1920,7 +1920,11 @@ def create_app(
         scope = _auth_scope(auth)
         for event in activity_service.history(limit=limit, after_id=after_id):
             if not _activity_scope_visible(
-                scope.scope_kind, scope.scope_id, event.event_type, event.payload
+                scope.scope_kind,
+                scope.scope_id,
+                event.event_type,
+                event.payload,
+                admin=auth.policy.admin,
             ):
                 continue
             payload = _sweep_activity_payload(
@@ -2578,8 +2582,15 @@ def _activity_scope_visible(
     scope_id: str,
     event_type: str,
     payload: Mapping[str, Any],
+    *,
+    admin: bool = False,
 ) -> bool:
     """Query activity is visible only to its exact authenticated scope."""
+    if event_type == "memory_access":
+        return admin or (
+            payload.get("scope_kind") == scope_kind
+            and payload.get("scope_id") == scope_id
+        )
     if event_type != "query":
         return True
     if "trace_id" not in payload:
@@ -2641,6 +2652,7 @@ def _swept_sse_frame(
             scope[1],
             str(envelope.get("event_type", "")),
             cast(Mapping[str, Any], payload),
+            admin=policy.admin,
         ):
             return None
         swept = _sweep_activity_payload(

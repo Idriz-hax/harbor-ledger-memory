@@ -296,7 +296,9 @@ def test_restricted_mcp_query_filters_outputs_and_side_effects(tmp_path: Path) -
                 transport.state.mcp_server.call_tool(
                     "query", {"text": "unreadable secret phrase"}
                 )
-            ).content[0].text
+            )
+            .content[0]
+            .text
         )
 
         serialized = json.dumps(result)
@@ -353,10 +355,10 @@ def test_restricted_mcp_query_redacts_unreadable_summary_link(tmp_path: Path) ->
         )
         result = json.loads(
             asyncio.run(
-                transport.state.mcp_server.call_tool(
-                    "query", {"text": "public phrase"}
-                )
-            ).content[0].text
+                transport.state.mcp_server.call_tool("query", {"text": "public phrase"})
+            )
+            .content[0]
+            .text
         )
         summary = result["selected_memories"][0]["summary"]
         assert "[[REDACTED]]" in summary
@@ -399,10 +401,10 @@ def test_restricted_mcp_feedback_rejects_unreadable_trace_path(tmp_path: Path) -
         try:
             queried = json.loads(
                 asyncio.run(
-                    server.call_tool(
-                        "query", {"text": "unreadable feedback phrase"}
-                    )
-                ).content[0].text
+                    server.call_tool("query", {"text": "unreadable feedback phrase"})
+                )
+                .content[0]
+                .text
             )
         finally:
             hlm_mcp_token.reset(unrestricted_token)
@@ -480,20 +482,51 @@ def test_mcp_read_note_and_explicit_batch_returns_complete_ordered_results(
         server = transport.state.mcp_server
         one = asyncio.run(server.call_tool("read_note", {"path": "Public/large.md"}))
         assert json.loads(one.content[0].text)["content"] == large
-        batch = asyncio.run(server.call_tool("read_notes", {"paths": [
-            "Public/small.md", "missing.md", "Private/secret.md", "../escape.md",
-        ]}))
+        batch = asyncio.run(
+            server.call_tool(
+                "read_notes",
+                {
+                    "paths": [
+                        "Public/small.md",
+                        "missing.md",
+                        "Private/secret.md",
+                        "../escape.md",
+                    ]
+                },
+            )
+        )
         results = [json.loads(block.text) for block in batch.content]
         assert [result["path"] for result in results] == [
-            "Public/small.md", "missing.md", "Private/secret.md", "../escape.md"
+            "Public/small.md",
+            "missing.md",
+            "Private/secret.md",
+            "../escape.md",
         ]
         assert results[0]["content"] == "# Small"
         assert results[0]["revision"]
         assert [result.get("error") for result in results[1:]] == [
-            "note unavailable", "note unavailable", "note unavailable"
+            "note unavailable",
+            "note unavailable",
+            "note unavailable",
         ]
         with pytest.raises(ToolError):
             asyncio.run(server.call_tool("read_notes", {"paths": ["missing.md"] * 11}))
+        with pytest.raises(ToolError):
+            asyncio.run(server.call_tool("read_note", {"path": "missing.md"}))
+        events = [
+            event
+            for event in activity.history(limit=100)
+            if event.event_type == "memory_access"
+        ]
+        assert [(event.payload["tool"], event.payload["path"]) for event in events] == [
+            ("read_note", "Public/large.md"),
+            ("read_notes", "Public/small.md"),
+        ]
+        assert all(
+            set(event.payload) == {"action", "path", "tool", "scope_kind", "scope_id"}
+            for event in events
+        )
+        assert all(event.payload["action"] == "explicit_read" for event in events)
     finally:
         hlm_mcp_token.reset(token)
         token_service.close()

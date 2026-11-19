@@ -560,7 +560,9 @@ def test_query_activity_payload_includes_graph_refs_and_path(tmp_path: Path) -> 
         ),
     )
     try:
-        result = service.query(QueryRequest(query="memory"))
+        result = service.query(
+            QueryRequest(query="memory", scope_kind="token", scope_id="test-scope")
+        )
         message = subscriber.get_nowait()
 
         assert result.selected_memories
@@ -607,6 +609,22 @@ def test_query_activity_payload_includes_graph_refs_and_path(tmp_path: Path) -> 
         assert persisted["graph_path"] == expected_path
         assert persisted["selected_paths"]
         assert persisted["trace_id"]
+        accesses = [
+            event.payload
+            for event in activity.history()
+            if event.event_type == "memory_access"
+        ]
+        assert accesses == [
+            {
+                "action": "query_result",
+                "path": memory.path,
+                "tool": "query",
+                "scope_kind": "token",
+                "scope_id": "test-scope",
+                "trace_id": str(result.trace_id),
+            }
+            for memory in result.selected_memories
+        ]
     finally:
         activity.close()
         engine.dispose()

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { TideAtlas, activityTarget, folderGroupColor, idleFloatOffset, nodeMotionPhase, readableActivityType, relativeActivityTime, topLevelFolder } from '../TideAtlas'
 import { cytoscapeMock, emitMockEvent, setMockZoom } from '../test/cytoscape-mock'
 
@@ -32,16 +33,27 @@ class MockTraversalEventSource {
 }
 
 describe('TideAtlas controls and viewport', () => {
-  it('renders traversal stream connection status, not scan status', async () => {
+  it('reveals subdued node labels only when zoomed close enough', () => {
+    mockAtlas([view(2, null)])
+    render(<TideAtlas events={[]} />)
+    const styles = (cytoscapeMock.current as unknown as { styleList: Array<{ selector: string; style: Record<string, unknown> }> }).styleList
+    const node = styles.find(rule => rule.selector === 'node')?.style
+    expect(node?.['text-opacity']).toBeGreaterThan(0)
+    expect(node?.['text-opacity']).toBeLessThan(1)
+    expect(node?.['min-zoomed-font-size']).toBeGreaterThan(0)
+  })
+  it('keeps reconnect and rescan controls without redundant header status chips', async () => {
     vi.stubGlobal('EventSource', MockTraversalEventSource)
     mockAtlas([view(2, null)])
     render(<TideAtlas events={[]} />)
-    MockTraversalEventSource.current?.onerror?.()
-    expect(screen.getByText('RECONNECTING')).toBeInTheDocument()
-    MockTraversalEventSource.current?.onopen?.()
-    await waitFor(() => expect(screen.getByText(/LIVE.*0 active/)).toBeInTheDocument())
-    MockTraversalEventSource.current?.onerror?.()
+    expect(screen.getByRole('button', { name: 'Rescan' })).toBeEnabled()
+    expect(screen.queryByText(/^active$/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^LIVE/)).not.toBeInTheDocument()
+    act(() => MockTraversalEventSource.current?.onerror?.())
     await waitFor(() => expect(screen.getByText('RECONNECTING')).toBeInTheDocument())
+    act(() => MockTraversalEventSource.current?.onopen?.())
+    await waitFor(() => expect(screen.queryByText('RECONNECTING')).not.toBeInTheDocument())
+    expect(screen.queryByText(/^LIVE/)).not.toBeInTheDocument()
   })
 
   it('shows live activity while a traversal trace is draining', async () => {
@@ -55,9 +67,9 @@ describe('TideAtlas controls and viewport', () => {
       MockTraversalEventSource.current?.emit({ trace_id: 'trace', sequence: 1, mode: 'read', node_path: 'AI' })
     })
 
-    expect(screen.getByText(/LIVE.*1 active/)).toBeInTheDocument()
+    expect(screen.queryByText(/^LIVE/)).not.toBeInTheDocument()
     await act(async () => { vi.advanceTimersByTime(1550) })
-    expect(screen.getByText(/LIVE.*0 active/)).toBeInTheDocument()
+    expect(screen.queryByText(/^LIVE/)).not.toBeInTheDocument()
     vi.useRealTimers()
   })
 
@@ -249,6 +261,21 @@ describe('TideAtlas controls and viewport', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Catalog rebuilt from Markdown')
   })
 
+  it('shows rescan progress and errors without a separate scanning chip', async () => {
+    let rejectScan!: (reason: Error) => void
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes('/api/v1/scan')) return new Promise<Response>((_, reject) => { rejectScan = reject })
+      return Promise.resolve({ ok: true, json: async () => view(2, null) } as Response)
+    }))
+    render(<TideAtlas events={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Rescan' }))
+    expect(screen.getByRole('button', { name: 'Scanning…' })).toBeDisabled()
+    expect(screen.queryByText(/^scanning$/i)).not.toBeInTheDocument()
+    await act(async () => rejectScan(new Error('Scan unavailable')))
+    expect(await screen.findByText('Scan unavailable')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Rescan' })).toBeEnabled()
+  })
+
   it('updates in place across a LOD boundary without refitting', async () => {
     mockAtlas([view(1, null), view(0, null, [cluster('coast', 'AI')])])
     render(<TideAtlas events={[]} />)
@@ -319,6 +346,39 @@ describe('TideAtlas controls and viewport', () => {
     expect(screen.getByText('AI/Knowledge')).toBeInTheDocument()
   })
 
+  it('offers a collapsed keyboard browse route into level 1 archives', async () => {
+    const user = userEvent.setup()
+    const fetchMock = mockAtlas([view(1, null, [cluster('archive', 'AI/Knowledge', 'Knowledge')]), view(2, 'AI/Knowledge', [cluster('note', 'AI/Knowledge/Note.md', 'Note')])])
+    render(<TideAtlas events={[]} />)
+    const summary = await screen.findByText('Browse map features')
+    await waitFor(() => expect(cytoscapeMock.nodeIds()).toContain('archive'))
+    expect(summary.parentElement).not.toHaveAttribute('open')
+    await user.tab()
+    summary.focus()
+    await user.keyboard('{Enter}')
+    await user.tab()
+    expect(screen.getByRole('button', { name: /Knowledge/ })).toHaveFocus()
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(fetchMock.mock.calls.some(call => String(call[0]).includes('scope=AI%2FKnowledge'))).toBe(true))
+  })
+
+  it('opens a level 2 feature with the keyboard while keeping latest activity on the chart', async () => {
+    const user = userEvent.setup()
+    mockAtlas([view(2, null, [cluster('one', 'AI/One.md', 'One'), cluster('two', 'AI/Two.md', 'Two')])])
+    render(<TideAtlas events={[
+      { id: 1, event_type: 'memory_access', created_at: new Date().toISOString(), payload: { path: 'AI/One.md', action: 'query_result' } },
+      { id: 2, event_type: 'memory_access', created_at: new Date().toISOString(), payload: { path: 'AI/Two.md', action: 'explicit_read' } },
+    ]} />)
+    await waitFor(() => expect(cytoscapeMock.classesFor('two')).toContain('activity-glow'))
+    expect(cytoscapeMock.classesFor('one')).not.toContain('activity-glow')
+    const summary = screen.getByText('Browse map features')
+    summary.focus()
+    await user.keyboard('{Enter}{Tab}')
+    expect(screen.getByRole('button', { name: /One/ })).toHaveFocus()
+    await user.keyboard('{Enter}')
+    expect(await screen.findByRole('region', { name: 'Selected chart feature' })).toHaveTextContent('AI/One.md')
+  })
+
   it('clears a stale scope and reloads the whole vault after a scoped 400', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
@@ -385,35 +445,74 @@ describe('TideAtlas controls and viewport', () => {
     expect(cytoscapeMock.positionFor('harbor')).not.toEqual({ x: 999, y: 999 })
   })
 
-  it('renders compact activity details and an empty state', async () => {
+  it('renders ordered memory access details without query text or note contents', async () => {
     const createdAt = new Date(Date.now() - 65_000).toISOString()
     mockAtlas([view(2, null)])
-    render(<TideAtlas events={[{ id: 4, event_type: 'vault.mutation.applied', created_at: createdAt, payload: { path: 'AI/Notes/Harbor.md' } }]} />)
-    expect(screen.getByText('1 event')).toBeInTheDocument()
-    expect(screen.getByText('Vault Mutation Applied')).toBeInTheDocument()
+    render(<TideAtlas events={[
+      { id: 4, event_type: 'memory_access', created_at: createdAt, payload: { path: 'AI/Notes/Harbor.md', action: 'query_result', scope_kind: 'token', scope_id: 'secret-token-name', query: 'private query', content: 'private content' } },
+      { id: 5, event_type: 'memory_access', created_at: new Date().toISOString(), payload: { path: 'AI/Notes/Other.md', action: 'explicit_read', scope_kind: 'agent', scope_id: 'private-agent-principal' } },
+    ]} />)
+    const queue = screen.getByRole('list', { name: 'Recent activity' })
+    expect(queue.firstElementChild).toHaveTextContent('Explicit read')
+    expect(screen.getByText('Query result')).toBeInTheDocument()
     expect(screen.getByText('AI/Notes/Harbor.md')).toBeInTheDocument()
     expect(screen.getByText('1m ago')).toBeInTheDocument()
+    expect(screen.queryByText('private query')).not.toBeInTheDocument()
+    expect(screen.queryByText('private content')).not.toBeInTheDocument()
+    expect(screen.getByText(/^Agent · [a-f0-9]{8}$/)).toBeInTheDocument()
+    expect(screen.getByText(/^Token · [a-f0-9]{8}$/)).toBeInTheDocument()
+    expect(queue).not.toHaveTextContent('secret-token-name')
+    expect(queue).not.toHaveTextContent('private-agent-principal')
 
     const empty = render(<TideAtlas events={[]} />)
     expect(screen.getByText('No recent activity')).toBeInTheDocument()
     empty.unmount()
   })
 
-  it('shows the newest five events in the activity radar', () => {
+  it('shows all 20 retained memory accesses newest first', () => {
     mockAtlas([view(2, null)])
-    const events = Array.from({ length: 6 }, (_, index) => ({
+    const events = Array.from({ length: 20 }, (_, index) => ({
       id: index + 1,
-      event_type: `event-${index + 1}`,
+      event_type: 'memory_access',
       created_at: new Date().toISOString(),
-      payload: { path: `note-${index + 1}.md` },
+      payload: { path: `note-${index + 1}.md`, action: 'explicit_read' },
     }))
 
     render(<TideAtlas events={events} />)
 
-    expect(screen.queryByText('Event 1')).not.toBeInTheDocument()
-    for (let index = 2; index <= 6; index += 1) {
-      expect(screen.getByText(`Event ${index}`)).toBeInTheDocument()
-    }
+    const rows = screen.getByRole('list', { name: 'Recent activity' }).children
+    expect(rows).toHaveLength(20)
+    expect(screen.getByText('20 events')).toBeInTheDocument()
+    Array.from(rows).forEach((row, index) => expect(row).toHaveTextContent(`note-${20 - index}.md`))
+  })
+
+  it('excludes unrelated events from the queue and graph highlight', async () => {
+    mockAtlas([view(2, null, [cluster('one', 'AI/One.md'), cluster('two', 'AI/Two.md')])])
+    render(<TideAtlas events={[
+      { id: 1, event_type: 'memory_access', created_at: new Date().toISOString(), payload: { path: 'AI/One.md', action: 'explicit_read' } },
+      { id: 2, event_type: 'vault.create', created_at: new Date().toISOString(), payload: { path: 'AI/Two.md' } },
+    ]} />)
+    expect(screen.getByRole('list', { name: 'Recent activity' }).children).toHaveLength(1)
+    expect(screen.getByText('1 event')).toBeInTheDocument()
+    expect(screen.queryByText('Vault Create')).not.toBeInTheDocument()
+    await waitFor(() => expect(cytoscapeMock.classesFor('one')).toContain('activity-glow'))
+    expect(cytoscapeMock.classesFor('two')).not.toContain('activity-glow')
+  })
+
+  it('maps the latest incoming event after the graph loads', async () => {
+    mockAtlas([view(2, null, [cluster('one', 'AI/One.md')])])
+    render(<TideAtlas events={[{ id: 1, event_type: 'memory_access', created_at: new Date().toISOString(), payload: { path: 'AI/One.md', action: 'query_result' } }]} />)
+    await waitFor(() => expect(cytoscapeMock.classesFor('one')).toContain('activity-glow'))
+  })
+
+  it('uses stable scope labels without displaying unknown principals', () => {
+    mockAtlas([view(2, null)])
+    const event = { id: 1, event_type: 'memory_access', created_at: new Date().toISOString(), payload: { path: 'A.md', action: 'explicit_read', scope_kind: 'custom-principal', scope_id: 'private-principal' } }
+    const rendered = render(<TideAtlas events={[event]} />)
+    const label = screen.getByText(/^Scope · [a-f0-9]{8}$/).textContent
+    expect(screen.queryByText(/private-principal|custom-principal/)).not.toBeInTheDocument()
+    rendered.rerender(<TideAtlas events={[{ ...event, id: 2 }]} />)
+    expect(screen.getByText(label!)).toBeInTheDocument()
   })
 
   it('formats activity values without exposing raw event names', () => {
@@ -529,15 +628,15 @@ describe('TideAtlas controls and viewport', () => {
     expect(cytoscapeMock.classesFor('lane')).toContain('is-neighbor')
   })
 
-  it('traces only the activity target route and uses a beacon for writes', async () => {
+  it('traces only the memory access target route', async () => {
     mockAtlas([{
       ...view(2, null, [cluster('one', 'AI/One.md'), cluster('two', 'AI/Two.md'), cluster('three', 'Projects/Three.md')]),
       edges: [{ id: 'lane', source: 'one', target: 'two', weight: 1 }, { id: 'far-lane', source: 'two', target: 'three', weight: 1 }],
     }])
     const rendered = render(<TideAtlas events={[]} />)
     await waitFor(() => expect(cytoscapeMock.nodeIds()).toContain('one'))
-    rendered.rerender(<TideAtlas events={[{ id: 8, event_type: 'vault.create', created_at: new Date().toISOString(), payload: { path: 'AI/One.md' } }]} />)
-    await waitFor(() => expect(cytoscapeMock.classesFor('one')).toEqual(expect.arrayContaining(['activity-glow', 'activity-beacon'])))
+    rendered.rerender(<TideAtlas events={[{ id: 8, event_type: 'memory_access', created_at: new Date().toISOString(), payload: { path: 'AI/One.md', action: 'explicit_read' } }]} />)
+    await waitFor(() => expect(cytoscapeMock.classesFor('one')).toContain('activity-glow'))
     expect(cytoscapeMock.classesFor('two')).toContain('route-trace')
     expect(cytoscapeMock.classesFor('three')).not.toContain('route-trace')
     expect(cytoscapeMock.classesFor('far-lane')).not.toContain('route-trace')
