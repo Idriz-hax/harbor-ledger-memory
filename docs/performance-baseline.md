@@ -33,13 +33,75 @@ was 34.7 ms p50 / 40.1 ms p95. These were previously measured results, not
 rerun during this baseline capture; see that report for methodology and
 limitations.
 
-## Not measured yet
+## Additional local measurements
 
-- Service-ready startup and idle CPU/RSS.
-- Scan throughput and peak RSS at representative vault sizes.
-- Installed wheel/artifact size and dependency footprint separate from `.venv`.
-- Fresh end-to-end query measurements on this exact worktree.
+Measured on the same machine and checkout on 2026-11-27. These measurements
+use temporary synthetic vaults and databases only; no real vault data was
+read. The checkout still contained pre-existing uncommitted backend changes,
+so these are reference measurements for this worktree, not a clean-release
+comparison.
 
-Keep real-vault measurements local. If performed later, record aggregate
-metrics only; do not include note contents or sensitive derived details in
-reports or send them outside this environment.
+### Service startup and idle resources
+
+Started the actual `hlm serve` process three times, each with an isolated
+temporary `HOME`, SQLite database, and 500 short synthetic Markdown notes.
+Embedding was disabled. “Full scan ready” means the initial scan completed,
+not merely that the HTTP server began accepting requests. Idle samples were
+taken for 8 seconds after scan completion.
+
+| Measurement | Result |
+| --- | ---: |
+| `/health` available, p50 (n=3) | 693 ms (674–1,368 ms) |
+| Initial scan complete / service ready, p50 (n=3) | 908 ms (892–1,587 ms) |
+| Idle RSS, median across trials | 113.6 MiB |
+| Idle CPU, approximate process average over 8 seconds | 0.25% |
+
+The first process launch was slower than subsequent launches; these three
+trials are too few to characterize cold-machine variance.
+
+### Synthetic full-scan throughput
+
+Each trial ran `ScanService.full_scan()` in a fresh Python process against a
+temporary vault with short notes and no links or embeddings. Peak RSS is the
+median maximum resident set size across three fresh processes.
+
+| Synthetic notes | Scan p50 (n=3) | Throughput p50 | Peak RSS p50 |
+| ---: | ---: | ---: | ---: |
+| 500 | 0.346 s | 1,445 notes/s | 77.3 MiB |
+| 2,000 | 1.122 s | 1,783 notes/s | 92.0 MiB |
+
+### Fresh lexical query latency
+
+Each run created and scanned a fresh synthetic catalog, then made one initial
+query followed by 20 warmed `QueryService.query()` calls in the same process.
+The table reports medians across three processes. Embeddings were disabled.
+
+| Synthetic notes | First query p50 | Warm query p50 | Warm query p95 |
+| ---: | ---: | ---: | ---: |
+| 500 | 62.9 ms | 57.4 ms | 70.1 ms |
+| 2,000 | 211.1 ms | 199.0 ms | 207.5 ms |
+
+This is a direct service query with local SQLite, not HTTP transport. The
+optional `sentence-transformers` package is not installed in the benchmark
+environment, so semantic query timing was not rerun on this worktree.
+
+### Built artifact and clean runtime footprint
+
+Built the sdist and wheel from this checkout into a temporary directory, then
+installed the wheel into a fresh Python 3.12 environment with the locked
+runtime dependencies and no development dependencies.
+
+| Measurement | Result |
+| --- | ---: |
+| Wheel (compressed) | 1,147,109 bytes (1.09 MiB) |
+| Source archive (compressed) | 2,008,280 bytes (1.91 MiB) |
+| Installed HLM package files | 2,568 KiB |
+| Fresh runtime environment site-packages (HLM + 51 runtime packages) | 62,540 KiB (61.1 MiB) |
+
+The runtime environment size is not directly comparable with the developer
+`.venv`: the latter includes development and build tooling. The wheel is pure
+Python and does not bundle third-party dependencies.
+
+Keep any real-vault measurements local. Record aggregate metrics only; do not
+include note contents or sensitive derived details in reports or send them
+outside this environment.
