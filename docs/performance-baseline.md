@@ -144,6 +144,20 @@ Python and does not bundle third-party dependencies. The embeddings-enabled
 footprint includes PyTorch, transformer/runtime libraries, and HLM; model
 weights are a separate cache.
 
+## Recommended first optimization
+
+First investigate keeping the optional semantic runtime out of the service's
+startup/scan critical path when it is not needed. In this synthetic fixture,
+configuring MiniLM increased scan-ready time from 1.07 s to 3.14 s and idle RSS
+from 105.2 MiB to 449.3 MiB; the embeddings extra added 722.5 MiB to installed
+site-packages plus 87.4 MiB of cached model weights. Keep semantic search
+available as an option, but avoid loading/indexing it as a prerequisite for
+lexical service readiness if the product behavior can tolerate semantic
+results becoming available later. The tradeoff is delayed semantic retrieval;
+measure its first-use experience and confirm on a representative real vault
+before deciding on the implementation. These synthetic figures justify
+investigating this path first, not promising the same gains on every vault.
+
 Keep any real-vault measurements local. Record aggregate metrics only; do not
 include note contents or sensitive derived details in reports or send them
 outside this environment.
