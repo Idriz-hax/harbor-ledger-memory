@@ -3,7 +3,9 @@
 This is a point-in-time reference, not a performance guarantee. The startup
 measurements below are from the local development checkout and include its
 uncommitted backend changes; they should not be treated as a clean-release
-baseline. No real vault data was read.
+baseline. No real vault data was read. The app's configured vault and index
+root were unavailable in this environment, so the application-scale tests use
+synthetic vaults of 500 and 2,000 short Markdown notes.
 
 ## Local import and footprint
 
@@ -43,47 +45,82 @@ comparison.
 
 ### Service startup and idle resources
 
-Started the actual `hlm serve` process three times, each with an isolated
+Started the actual `hlm serve` process ten times, each with an isolated
 temporary `HOME`, SQLite database, and 500 short synthetic Markdown notes.
-Embedding was disabled. “Full scan ready” means the initial scan completed,
-not merely that the HTTP server began accepting requests. Idle samples were
-taken for 8 seconds after scan completion.
+Embedding was disabled. “Scan ready” means the initial scan completed, not
+merely that the HTTP server began accepting requests. RSS and CPU were sampled
+for 8 seconds after scan completion. CPU is approximate because macOS process
+CPU-time reporting has coarse resolution over this interval.
 
-| Measurement | Result |
-| --- | ---: |
-| `/health` available, p50 (n=3) | 693 ms (674–1,368 ms) |
-| Initial scan complete / service ready, p50 (n=3) | 908 ms (892–1,587 ms) |
-| Idle RSS, median across trials | 113.6 MiB |
-| Idle CPU, approximate process average over 8 seconds | 0.25% |
+| Measurement | p50 | p95 | Range |
+| --- | ---: | ---: | ---: |
+| `/health` available (n=10) | 786 ms | 1,020 ms | 604–1,062 ms |
+| Initial scan complete / service ready (n=10) | 1,072 ms | 1,261 ms | 850–1,369 ms |
+| Idle RSS (per-trial median, n=10) | 105.2 MiB | 113.1 MiB | 39.1–113.2 MiB |
+| Idle CPU average (per-trial, n=10) | 0.56% | 0.75% | 0.25–0.88% |
 
-The first process launch was slower than subsequent launches; these three
-trials are too few to characterize cold-machine variance.
+These were ten fresh processes on the same machine; operating-system caches
+were not cleared between trials.
 
 ### Synthetic full-scan throughput
 
 Each trial ran `ScanService.full_scan()` in a fresh Python process against a
-temporary vault with short notes and no links or embeddings. Peak RSS is the
-median maximum resident set size across three fresh processes.
+temporary vault with short notes and no links. Ten trials were run at each
+size. Peak RSS is the median maximum resident set size across the ten
+processes. Both lexical-only and embedding-enabled scans were measured; the
+latter used the local `all-MiniLM-L6-v2` model cache with network access
+disabled.
 
-| Synthetic notes | Scan p50 (n=3) | Throughput p50 | Peak RSS p50 |
-| ---: | ---: | ---: | ---: |
-| 500 | 0.346 s | 1,445 notes/s | 77.3 MiB |
-| 2,000 | 1.122 s | 1,783 notes/s | 92.0 MiB |
+| Mode / notes | Scan p50 | Scan p95 | Throughput p50 | Peak RSS p50 (max) |
+| --- | ---: | ---: | ---: | ---: |
+| Lexical / 500 | 0.345 s | 0.384 s | 1,447 notes/s | 77.3 MiB (77.3) |
+| Lexical / 2,000 | 1.141 s | 1.170 s | 1,754 notes/s | 92.0 MiB (92.2) |
+| MiniLM / 500 | 3.215 s | 3.636 s | 156 notes/s | 568.0 MiB (571.7) |
+| MiniLM / 2,000 | 4.577 s | 4.688 s | 437 notes/s | 617.2 MiB (617.5) |
 
 ### Fresh lexical query latency
 
 Each run created and scanned a fresh synthetic catalog, then made one initial
-query followed by 20 warmed `QueryService.query()` calls in the same process.
-The table reports medians across three processes. Embeddings were disabled.
+query followed by 30 warmed `QueryService.query()` calls in the same process.
+Ten fresh processes were run at each size. Embeddings were disabled. p95/p99
+are the medians of each process's warm-query percentile.
 
-| Synthetic notes | First query p50 | Warm query p50 | Warm query p95 |
-| ---: | ---: | ---: | ---: |
-| 500 | 62.9 ms | 57.4 ms | 70.1 ms |
-| 2,000 | 211.1 ms | 199.0 ms | 207.5 ms |
+| Synthetic notes | First query p50 | Warm p50 | Warm p95 | Warm p99 |
+| ---: | ---: | ---: | ---: | ---: |
+| 500 | 65.0 ms | 59.5 ms | 72.2 ms | 76.3 ms |
+| 2,000 | 220.8 ms | 204.1 ms | 236.1 ms | 250.9 ms |
 
-This is a direct service query with local SQLite, not HTTP transport. The
-optional `sentence-transformers` package is not installed in the benchmark
-environment, so semantic query timing was not rerun on this worktree.
+This is a direct service query with local SQLite, not HTTP transport. Semantic
+query measurements follow, using the optional embedding runtime.
+
+### Semantic model and query cost
+
+The embeddings extra was installed into a separate, clean environment; no
+dependencies were added to the checkout's `.venv`. The tested stack was Python
+3.12.13, PyTorch 2.13.0, sentence-transformers 5.7.0, and Transformers 5.14.1
+on Apple MPS (`mps:0`). Hub access was disabled; the pre-cached MiniLM weights
+occupied 89,480 KiB on disk. Ten fresh processes measured model encode/load
+with cached weights; ten query trials per catalog each made one initial query
+and 30 warm queries.
+
+| Measurement | p50 | p95 | Range |
+| --- | ---: | ---: | ---: |
+| First model encode in a fresh process (n=10) | 2.74 s | 3.18 s | 2.59–4.27 s |
+| First semantic query, 500 notes (n=10) | 2.76 s | 3.08 s | — |
+| Warm semantic query, 500 notes | 81.5 ms | 93.3 ms | p99 180.1 ms |
+| First semantic query, 2,000 notes (n=10) | 3.62 s | 4.00 s | — |
+| Warm semantic query, 2,000 notes | 287.8 ms | 375.9 ms | p99 412.0 ms |
+| Semantic-query process peak RSS, 500 notes | 508.6 MiB | — | — |
+| Semantic-query process peak RSS, 2,000 notes | 548.9 MiB | — | — |
+
+For the semantic-enabled server, ten fresh CLI processes scanned 500 notes
+before scan-ready. `/health` was available at 576 ms p50 / 736 ms p95; the
+initial embedding scan completed at 3.14 s p50 / 3.31 s p95 (2.98–4.69 s
+range). Idle RSS was 449.3 MiB p50 (394.2–449.6 MiB range), and idle CPU was
+approximately 0.25% p50 / 0.63% p95 in five additional 8-second idle samples.
+This compared with 1.07 s scan-ready and 105.2 MiB idle RSS with embeddings
+disabled. These measurements show startup cost when embeddings are configured,
+not a universal default; the model is an optional extra.
 
 ### Built artifact and clean runtime footprint
 
@@ -97,11 +134,29 @@ runtime dependencies and no development dependencies.
 | Source archive (compressed) | 2,008,280 bytes (1.91 MiB) |
 | Installed HLM package files | 2,568 KiB |
 | Fresh runtime environment site-packages (HLM + 51 runtime packages) | 62,540 KiB (61.1 MiB) |
+| Fresh embeddings-enabled site-packages (HLM + 72 runtime packages) | 802,340 KiB (783.5 MiB) |
+| Added site-packages footprint for embeddings extra | 739,800 KiB (722.5 MiB) |
+| Cached MiniLM model weights (separate from Python install) | 89,480 KiB (87.4 MiB) |
 
 The runtime environment size is not directly comparable with the developer
 `.venv`: the latter includes development and build tooling. The wheel is pure
-Python and does not bundle third-party dependencies.
+Python and does not bundle third-party dependencies. The embeddings-enabled
+footprint includes PyTorch, transformer/runtime libraries, and HLM; model
+weights are a separate cache.
 
 Keep any real-vault measurements local. Record aggregate metrics only; do not
 include note contents or sensitive derived details in reports or send them
 outside this environment.
+
+## Coverage limits
+
+- The configured application vault/index root was not available locally, so
+  no real-vault scan or query was performed. Synthetic workload sizes are
+  representative benchmarks, not a substitute for that vault's note/link
+  distribution.
+- No concurrent-client/load test, sustained watcher test, power-use test, or
+  first-time model download was run. Model measurements use cached local
+  weights and no network access.
+- All application measurements describe the current dirty checkout and local
+  Apple Silicon environment; compare future results on the same machine and
+  workload before drawing performance conclusions.
