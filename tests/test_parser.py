@@ -129,6 +129,23 @@ def test_parser_preserves_valid_fields_and_extras_with_field_diagnostics(
     assert all(issue.line in {3, 4} for issue in result.diagnostics)
 
 
+@pytest.mark.parametrize("value", ["[[AI/INDEX]]", "[[AI/INDEX|Index]]"])
+def test_parser_accepts_parent_wikilink(value: str, tmp_path: Path) -> None:
+    note_path = tmp_path / "parent.md"
+    note_path.write_text(f"---\nparent: {value}\n---\n", encoding="utf-8")
+    result = parse_note(note_path, PurePosixPath("AI/parent.md"))
+    assert result.frontmatter.parent == value
+    assert not result.diagnostics
+
+
+def test_parser_rejects_other_parent_list_shapes(tmp_path: Path) -> None:
+    note_path = tmp_path / "parent.md"
+    note_path.write_text("---\nparent: [one, two]\n---\n", encoding="utf-8")
+    result = parse_note(note_path, PurePosixPath("AI/parent.md"))
+    assert result.frontmatter.parent is None
+    assert any(issue.code == "frontmatter.field.invalid" for issue in result.diagnostics)
+
+
 def test_parser_ignores_headings_and_links_inside_fenced_code(tmp_path: Path) -> None:
     note_path = tmp_path / "fenced.md"
     note_path.write_text(

@@ -1,5 +1,7 @@
 import hashlib
 import struct
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -126,6 +128,297 @@ def test_full_scan_indexes_only_ai_tree(tmp_path: Path) -> None:
         assert result.files_indexed == 2
         assert all(path.startswith("AI/") for path in result.indexed_paths)
         assert session.scalars(select(Note)).all()[0].path.startswith("AI/")
+    finally:
+        session.close()
+
+
+def test_incremental_scan_is_available_and_updates_changed_note(tmp_path: Path) -> None:
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    note = ai / "note.md"
+    note.write_text("# Old\n", encoding="utf-8")
+    service, session = make_scan_service(tmp_path)
+    try:
+        service.full_scan(defer_embeddings=True)
+        note.write_text("# New\n", encoding="utf-8")
+        result = service.incremental_scan(["AI/note.md"])
+        assert result.changed_paths == ("AI/note.md",)
+        assert (
+            session.scalar(select(Note.title).where(Note.path == "AI/note.md")) == "New"
+        )
+    finally:
+        session.close()
+
+
+def test_scan_instances_share_operation_lock(tmp_path: Path, monkeypatch) -> None:
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    (ai / "note.md").write_text("# Note\n", encoding="utf-8")
+    service, session = make_scan_service(tmp_path)
+    service.full_scan(defer_embeddings=True)
+    other, other_session = make_scan_service(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    original = service.boundary.iter_admitted_snapshots
+
+    def blocked():
+        entered.set()
+        assert release.wait(3)
+        return original()
+
+    monkeypatch.setattr(service.boundary, "iter_admitted_snapshots", blocked)
+    first = threading.Thread(target=lambda: service.full_scan(defer_embeddings=True))
+    second_done = threading.Event()
+    second = threading.Thread(
+        target=lambda: (other.incremental_scan(["AI/note.md"]), second_done.set())
+    )
+    try:
+        first.start()
+        assert entered.wait(2)
+        second.start()
+        time.sleep(0.1)
+        assert not second_done.is_set()
+        release.set()
+        first.join(3)
+        second.join(3)
+        assert second_done.is_set()
+    finally:
+        release.set()
+        first.join(3)
+        second.join(3)
+        session.close()
+        other_session.close()
+
+
+def test_incremental_reads_only_requested_and_unchanged_is_noop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    for name in ("a", "b"):
+        (ai / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
+    service, session = make_scan_service(tmp_path)
+    try:
+        service.full_scan(defer_embeddings=True)
+        reads = []
+        original = service.boundary.read_file
+        monkeypatch.setattr(
+            service.boundary,
+            "read_file",
+            lambda identity: (reads.append(identity.as_posix()), original(identity))[1],
+        )
+        result = service.incremental_scan(["AI/a.md"])
+        assert reads == ["AI/a.md"]
+        assert result.files_indexed == 0 and result.changed_paths == ()
+        assert (
+            session.scalar(select(ScanRun.status).order_by(ScanRun.id.desc()))
+            == "complete"
+        )
+    finally:
+        session.close()
+
+
+def test_incremental_changed_hash_drops_only_changed_vector(tmp_path: Path) -> None:
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    for name in ("a", "b"):
+        (ai / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
+    service, session = make_scan_service(tmp_path)
+    try:
+        service.full_scan(defer_embeddings=True)
+        for name in ("a", "b"):
+            session.add(
+                NoteEmbedding(
+                    note_path=f"AI/{name}.md",
+                    embedding_blob=name.encode(),
+                    model_name="m",
+                    created_at="then",
+                )
+            )
+        session.commit()
+        (ai / "a.md").write_text("# Edited\n", encoding="utf-8")
+        service.incremental_scan(["AI/a.md"])
+        rows = {
+            r.note_path: r.embedding_blob
+            for r in session.scalars(select(NoteEmbedding))
+        }
+        assert rows == {"AI/b.md": b"b"}
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("kind", ["new", "deleted", "unsafe"])
+def test_incremental_invalid_path_preserves_projection(
+    tmp_path: Path, kind: str
+) -> None:
+    from harbor_ledger_memory.services.scan import FullScanRequired
+    from harbor_ledger_memory.graph.builder import GraphBuilder
+
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    target = ai / "a.md"
+    target.write_text("# A\n", encoding="utf-8")
+    service, session = make_scan_service(tmp_path)
+    try:
+        service.full_scan(defer_embeddings=True)
+        before = (
+            session.scalar(select(Note.content_hash).where(Note.path == "AI/a.md")),
+            set(GraphBuilder(session).build().edges()),
+        )
+        if kind == "new":
+            (ai / "new.md").write_text("# New\n", encoding="utf-8")
+            path = "AI/new.md"
+        elif kind == "deleted":
+            target.unlink()
+            path = "AI/a.md"
+        else:
+            outside = tmp_path / "outside.md"
+            outside.write_text("# Outside\n", encoding="utf-8")
+            target.unlink()
+            target.symlink_to(outside)
+            path = "AI/a.md"
+        with pytest.raises(FullScanRequired):
+            service.incremental_scan([path])
+        after = (
+            session.scalar(select(Note.content_hash).where(Note.path == "AI/a.md")),
+            set(GraphBuilder(session).build().edges()),
+        )
+        assert after == before
+    finally:
+        session.close()
+
+
+def test_incremental_graph_and_fts_match_full_scan(tmp_path: Path) -> None:
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    (ai / "a.md").write_text("# A\n[[b]]\n", encoding="utf-8")
+    (ai / "b.md").write_text("# B\n", encoding="utf-8")
+    service, session = make_scan_service(tmp_path)
+    fresh, fresh_session = make_scan_service(tmp_path)
+    try:
+        service.full_scan(defer_embeddings=True)
+        fresh.full_scan(defer_embeddings=True)
+        (ai / "a.md").write_text("# Changed\n[[missing]]\n", encoding="utf-8")
+        service.incremental_scan(["AI/a.md"])
+        fresh.full_scan(defer_embeddings=True)
+
+        def projection(s):
+            return (
+                [
+                    (n.path, n.title, n.content)
+                    for n in s.scalars(select(Note).order_by(Note.path))
+                ],
+                sorted(GraphBuilder(s).build().edges()),
+            )
+
+        from harbor_ledger_memory.graph.builder import GraphBuilder
+
+        assert projection(session) == projection(fresh_session)
+        from harbor_ledger_memory.catalog.database import search_fts
+
+        assert (
+            [n.path for n in search_fts(session, "Changed")]
+            == [n.path for n in search_fts(fresh_session, "Changed")]
+            == ["AI/a.md"]
+        )
+    finally:
+        session.close()
+        fresh_session.close()
+
+
+def test_incremental_materialization_failure_rolls_back(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from harbor_ledger_memory.services import graph_materialization
+
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    note = ai / "a.md"
+    note.write_text("# Old\n", encoding="utf-8")
+    service, session = make_scan_service(tmp_path)
+    try:
+        service.full_scan(defer_embeddings=True)
+        from harbor_ledger_memory.catalog.models import (
+            GraphProjectionVersion,
+            GraphNodeFact,
+            GraphEdgeFact,
+        )
+
+        before = (
+            session.scalar(select(Note.content_hash).where(Note.path == "AI/a.md")),
+            session.scalar(select(ScanRun.id).order_by(ScanRun.id.desc())),
+            [
+                (v.id, v.active)
+                for v in session.scalars(select(GraphProjectionVersion)).all()
+            ],
+            [
+                (n.version_id, n.path)
+                for n in session.scalars(select(GraphNodeFact)).all()
+            ],
+            [
+                (e.version_id, e.source, e.target)
+                for e in session.scalars(select(GraphEdgeFact)).all()
+            ],
+        )
+        note.write_text("# New\n", encoding="utf-8")
+        monkeypatch.setattr(
+            graph_materialization,
+            "materialize_graph",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("failed")),
+        )
+        with pytest.raises(RuntimeError, match="failed"):
+            service.incremental_scan(["AI/a.md"])
+        after = (
+            session.scalar(select(Note.content_hash).where(Note.path == "AI/a.md")),
+            session.scalar(select(ScanRun.id).order_by(ScanRun.id.desc())),
+            [
+                (v.id, v.active)
+                for v in session.scalars(select(GraphProjectionVersion)).all()
+            ],
+            [
+                (n.version_id, n.path)
+                for n in session.scalars(select(GraphNodeFact)).all()
+            ],
+            [
+                (e.version_id, e.source, e.target)
+                for e in session.scalars(select(GraphEdgeFact)).all()
+            ],
+        )
+        assert after == before
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("failure", ["traversal", "activity"])
+def test_incremental_notification_failure_does_not_report_scan_failure(
+    tmp_path: Path, monkeypatch, caplog, failure: str
+) -> None:
+    caplog.set_level("ERROR")
+    scan_module.logger.disabled = False
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    (ai / "a.md").write_text("# A\n", encoding="utf-8")
+    service, session = make_scan_service(tmp_path)
+    attempts = []
+
+    class Publisher:
+        def publish(self, event):
+            attempts.append("traversal")
+            raise RuntimeError("traversal boom")
+
+    class Activity:
+        def record(self, *args):
+            attempts.append("activity")
+            raise RuntimeError("activity boom")
+
+    try:
+        service.full_scan(defer_embeddings=True)
+        (ai / "a.md").write_text("# Changed\n", encoding="utf-8")
+        service.set_live_traversal(Publisher())
+        service.set_activity_service(Activity())
+        result = service.incremental_scan(["AI/a.md"])
+        assert result.changed_paths == ("AI/a.md",)
+        assert attempts == ["traversal", "activity"]
+        assert "notification" in caplog.text.lower()
     finally:
         session.close()
 
@@ -268,7 +561,10 @@ def test_full_scan_reuses_only_unchanged_matching_embeddings(
         assert result.deleted_paths == ("AI/delete.md",)
         rows = {row.note_path: row for row in session.scalars(select(NoteEmbedding))}
         assert set(rows) == {"AI/keep.md", "AI/change.md", "AI/missing.md", "AI/new.md"}
-        assert (rows["AI/keep.md"].embedding_blob, rows["AI/keep.md"].created_at) == original
+        assert (
+            rows["AI/keep.md"].embedding_blob,
+            rows["AI/keep.md"].created_at,
+        ) == original
         monkeypatch.setattr(
             scan_module, "EmbeddingService", ConstructionFailingEmbeddingService
         )
@@ -278,10 +574,113 @@ def test_full_scan_reuses_only_unchanged_matching_embeddings(
         service._embedding_model = "other-model"
         service.full_scan()
         assert len(calls[-1]) == 4
-        assert {row.model_name for row in session.scalars(select(NoteEmbedding))} == {"other-model"}
+        assert {row.model_name for row in session.scalars(select(NoteEmbedding))} == {
+            "other-model"
+        }
         service._embedding_model = None
         service.full_scan()
         assert session.scalars(select(NoteEmbedding)).all() == []
+    finally:
+        service._session.close()
+
+
+def test_deferred_scan_skips_runtime_and_preserves_matching_vectors(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    (ai / "note.md").write_text("# note content long enough\n")
+    settings = Settings(
+        vault_path=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+        memory=MemorySettings(embedding_model="test-model"),
+    )
+    service = ScanService.from_settings(settings)
+    try:
+        monkeypatch.setattr(
+            scan_module, "effective_embedding_model", lambda model: None
+        )
+        # Seed a vector using the configured identity without a model runtime.
+        service._embedding_model = None
+        service.full_scan()
+        service._session.add(
+            NoteEmbedding(
+                note_path="AI/note.md",
+                embedding_blob=b"vector",
+                model_name="test-model",
+                created_at="old",
+            )
+        )
+        service._session.commit()
+        service._embedding_model = "test-model"
+        monkeypatch.setattr(
+            scan_module,
+            "effective_embedding_model",
+            lambda model: (_ for _ in ()).throw(AssertionError("runtime probed")),
+        )
+        result = service.full_scan(defer_embeddings=True)
+        assert result.files_indexed == 1
+        row = service._session.get(NoteEmbedding, "AI/note.md")
+        assert (
+            row is not None
+            and row.embedding_blob == b"vector"
+            and row.created_at == "old"
+        )
+    finally:
+        service._session.close()
+
+
+def test_reconcile_embeddings_batches_and_rechecks_hash(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ai = tmp_path / "AI"
+    ai.mkdir()
+    for name in ("a", "b", "c"):
+        (ai / f"{name}.md").write_text(f"# {name} content long enough\n")
+    settings = Settings(
+        vault_path=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+        memory=MemorySettings(embedding_model="test-model"),
+    )
+    service = ScanService.from_settings(settings)
+    calls: list[int] = []
+
+    class Recording(FakeEmbeddingService):
+        def encode_batch(self, texts):
+            calls.append(len(texts))
+            # Simulate a concurrent catalog update while encoding is in flight.
+            if not calls[:-1]:
+                from sqlalchemy import update
+
+                service._session.execute(
+                    update(Note)
+                    .where(Note.path == "AI/a.md")
+                    .values(content_hash="new-hash")
+                )
+                service._session.commit()
+            return super().encode_batch(texts)
+
+    try:
+        monkeypatch.setattr(
+            scan_module, "effective_embedding_model", lambda model: model
+        )
+        monkeypatch.setattr(scan_module, "EmbeddingService", Recording)
+        service._embedding_model = None
+        service.full_scan()
+        service._embedding_model = "test-model"
+        # Avoid full_scan encoding; populate lexical catalog only.
+        service.full_scan(defer_embeddings=True)
+        inserted = service.reconcile_embeddings(batch_size=2)
+        assert calls == [2, 1]
+        assert inserted == 2
+        assert (
+            service._session.scalar(
+                select(NoteEmbedding.note_path).where(
+                    NoteEmbedding.note_path == "AI/a.md"
+                )
+            )
+            is None
+        )
     finally:
         service._session.close()
 
@@ -303,12 +702,16 @@ def test_degraded_scan_failure_rolls_back_embeddings(
                 select(NoteEmbedding).order_by(NoteEmbedding.note_path)
             )
         ]
-        monkeypatch.setattr(scan_module, "effective_embedding_model", lambda model: None)
+        monkeypatch.setattr(
+            scan_module, "effective_embedding_model", lambda model: None
+        )
 
         def fail_materialization(*args, **kwargs):
             raise RuntimeError("materialization failed")
 
-        monkeypatch.setattr(graph_materialization, "materialize_graph", fail_materialization)
+        monkeypatch.setattr(
+            graph_materialization, "materialize_graph", fail_materialization
+        )
         with pytest.raises(RuntimeError, match="materialization failed"):
             service.full_scan()
         after = [

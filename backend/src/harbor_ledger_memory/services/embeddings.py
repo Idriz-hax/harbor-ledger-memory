@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import struct
+import threading
 from importlib import import_module
 from typing import Any, cast
 
@@ -12,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 _MODEL_CACHE: dict[str, Any] = {}
 _MODEL_AVAILABLE: dict[str, bool] = {}
+_MODEL_LOCK = threading.RLock()
+_ENCODE_LOCK = threading.RLock()
 _EMBEDDABLE_MAX = 2000
 _MIN_TEXT_LENGTH = 10
 
@@ -68,19 +71,20 @@ def effective_embedding_model(model_name: str | None) -> str | None:
     if not model_name:
         return None
     if embedding_runtime_available():
-        if model_name not in _MODEL_AVAILABLE:
-            try:
-                EmbeddingService(model_name).encode("embedding initialization")
-            except Exception as exc:
-                _MODEL_AVAILABLE[model_name] = False
-                _MODEL_CACHE.pop(model_name, None)
-                logger.warning(
-                    "Embedding model %r could not be initialized; semantic search "
-                    "is disabled for this process: %s", model_name, exc
-                )
-            else:
-                _MODEL_AVAILABLE[model_name] = True
-        return model_name if _MODEL_AVAILABLE[model_name] else None
+        with _MODEL_LOCK:
+            if model_name not in _MODEL_AVAILABLE:
+                try:
+                    EmbeddingService(model_name).encode("embedding initialization")
+                except Exception as exc:
+                    _MODEL_AVAILABLE[model_name] = False
+                    _MODEL_CACHE.pop(model_name, None)
+                    logger.warning(
+                        "Embedding model %r could not be initialized; semantic search "
+                        "is disabled for this process: %s", model_name, exc
+                    )
+                else:
+                    _MODEL_AVAILABLE[model_name] = True
+            return model_name if _MODEL_AVAILABLE[model_name] else None
     if not _runtime_warning_emitted:
         _runtime_warning_emitted = True
         logger.warning(
@@ -107,12 +111,13 @@ class EmbeddingService:
         self._model_name = model_name
 
     def _load_model(self) -> Any:
-        if self._model_name not in _MODEL_CACHE:
-            sentence_transformers = cast(Any, import_module("sentence_transformers"))
-            _MODEL_CACHE[self._model_name] = sentence_transformers.SentenceTransformer(
-                self._model_name
-            )
-        return _MODEL_CACHE[self._model_name]
+        with _MODEL_LOCK:
+            if self._model_name not in _MODEL_CACHE:
+                sentence_transformers = cast(Any, import_module("sentence_transformers"))
+                _MODEL_CACHE[self._model_name] = sentence_transformers.SentenceTransformer(
+                    self._model_name
+                )
+            return _MODEL_CACHE[self._model_name]
 
     def encode(self, text: str) -> tuple[float, ...]:
         """Encode a text string into a 384-dimensional vector."""
@@ -121,7 +126,8 @@ class EmbeddingService:
             "intfloat/multilingual-e5-"
         ):
             text = f"query: {text}"
-        vector = model.encode(text, convert_to_numpy=True)
+        with _ENCODE_LOCK:
+            vector = model.encode(text, convert_to_numpy=True)
         return tuple(float(v) for v in vector.flatten())
 
     def encode_batch(self, texts: list[str]) -> list[tuple[float, ...]]:
@@ -131,7 +137,8 @@ class EmbeddingService:
             "intfloat/multilingual-e5-"
         ):
             texts = [f"passage: {text}" for text in texts]
-        vectors = model.encode(texts, convert_to_numpy=True)
+        with _ENCODE_LOCK:
+            vectors = model.encode(texts, convert_to_numpy=True)
         return [tuple(float(v) for v in vec.flatten()) for vec in vectors]
 
     def to_blob(self, vector: tuple[float, ...]) -> bytes:

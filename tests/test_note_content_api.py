@@ -264,7 +264,7 @@ def test_note_content_works_without_startup_scan(
         rules=(FolderRule(path=PurePosixPath("AI"), access=FolderAccess.READ),),
     ).plaintext
 
-    def no_scan(_self: ScanService) -> None:
+    def no_scan(_self: ScanService, **_kwargs: object) -> None:
         return None
 
     monkeypatch.setattr(ScanService, "full_scan", no_scan)

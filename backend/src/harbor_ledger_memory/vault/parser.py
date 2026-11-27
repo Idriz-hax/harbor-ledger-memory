@@ -297,7 +297,17 @@ def _parse_frontmatter(
         if field not in values:
             continue
         try:
-            standard[field] = _source_string(values[field])
+            value = values[field]
+            if (
+                field == "parent"
+                and isinstance(value, list)
+                and len(value) == 1
+                and isinstance(value[0], list)
+                and len(value[0]) == 1
+                and isinstance(value[0][0], str)
+            ):
+                value = f"[[{value[0][0]}]]"
+            standard[field] = _source_string(value)
         except (TypeError, ValueError) as exc:
             diagnostics.append(
                 ParseDiagnostic(

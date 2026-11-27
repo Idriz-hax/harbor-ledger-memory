@@ -1,6 +1,8 @@
 """Tests for the local sentence-transformer embedding service."""
 
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Generator
 from contextlib import contextmanager
 
@@ -164,6 +166,87 @@ class TestEmbeddingServiceBlob:
         vector: tuple[float, ...] = tuple([0.5] * 384)
         blob = service.to_blob(vector)
         assert len(blob) == 384 * 4  # 4 bytes per float32
+
+
+def test_concurrent_first_use_constructs_model_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from harbor_ledger_memory.services import embeddings as module
+
+    monkeypatch.setattr(module, "_MODEL_CACHE", {})
+    monkeypatch.setattr(module, "_MODEL_AVAILABLE", {})
+    calls = 0
+    lock = threading.Lock()
+
+    class Runtime:
+        def __init__(self, _name: str) -> None:
+            nonlocal calls
+            with lock:
+                calls += 1
+
+    monkeypatch.setattr(module, "import_module", lambda _name: type("ST", (), {"SentenceTransformer": Runtime}))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        models = list(pool.map(lambda _: module.EmbeddingService("single-flight")._load_model(), range(16)))
+    assert calls == 1
+    assert all(model is models[0] for model in models)
+
+
+def test_effective_embedding_model_probe_is_single_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harbor_ledger_memory.services import embeddings as module
+
+    monkeypatch.setattr(module, "_MODEL_CACHE", {})
+    monkeypatch.setattr(module, "_MODEL_AVAILABLE", {})
+    monkeypatch.setattr(module, "embedding_runtime_available", lambda: True)
+    rendezvous = threading.Barrier(2)
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def load(_service: object) -> _FakeSentenceTransformer:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        class Model:
+            def encode(self, *_args: object, **_kwargs: object) -> _FakeEncodedVector:
+                return _FakeEncodedVector([1.0] * 384)
+
+        return Model()
+
+    monkeypatch.setattr(module.EmbeddingService, "_load_model", load)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        def probe(_index: int) -> str | None:
+            rendezvous.wait(timeout=2)
+            return module.effective_embedding_model("single-flight-probe")
+
+        results = list(pool.map(probe, range(2)))
+    assert results == ["single-flight-probe", "single-flight-probe"]
+    assert calls == 1
+
+
+def test_concurrent_encode_calls_are_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    from harbor_ledger_memory.services import embeddings as module
+
+    active = 0
+    maximum_active = 0
+    guard = threading.Lock()
+    entered = threading.Event()
+
+    class ConcurrentCheckModel(_FakeSentenceTransformer):
+        def encode(self, texts, *, convert_to_numpy):  # type: ignore[no-untyped-def]
+            nonlocal active, maximum_active
+            with guard:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            entered.set()
+            threading.Event().wait(0.02)
+            with guard:
+                active -= 1
+            return super().encode(texts, convert_to_numpy=convert_to_numpy)
+
+    monkeypatch.setattr(module.EmbeddingService, "_load_model", lambda _self: ConcurrentCheckModel())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda text: module.EmbeddingService("serialize").encode(text), ["one", "two"]))
+    assert len(results) == 2
+    assert maximum_active == 1
 
 
 class TestEmbeddingServiceEncode:

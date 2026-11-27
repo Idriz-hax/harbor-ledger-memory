@@ -39,15 +39,25 @@ class FakeScanner:
     boundary = object()
     calls = 0
 
-    def full_scan(self) -> None:
+    def full_scan(self, **kwargs: Any) -> None:
         self.calls += 1
 
 
 class FakeWatcher:
     started = False
     stopped = False
+    reconciliation_wakeup: threading.Event | None = None
+    constructed = threading.Event()
 
-    def __init__(self, boundary: object, scanner: FakeScanner) -> None:
+    def __init__(
+        self,
+        boundary: object,
+        scanner: FakeScanner,
+        *,
+        reconciliation_wakeup: threading.Event | None = None,
+    ) -> None:
+        type(self).reconciliation_wakeup = reconciliation_wakeup
+        type(self).constructed.set()
         pass
 
     def start(self) -> None:
@@ -422,17 +432,186 @@ def test_app_lifespan_scans_then_starts_and_stops_watcher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     scanner = FakeScanner()
+    scanned = threading.Event()
+    original_scan = scanner.full_scan
+
+    def scan(**kwargs: Any) -> None:
+        original_scan(**kwargs)
+        scanned.set()
+
+    scanner.full_scan = scan  # type: ignore[method-assign]
     FakeWatcher.started = False
     FakeWatcher.stopped = False
-    settings = Settings(vault_path=tmp_path)
+    FakeWatcher.constructed.clear()
+    settings = Settings(
+        vault_path=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+    )
     monkeypatch.setattr(app_module.ScanService, "from_settings", lambda _: scanner)
     monkeypatch.setattr(app_module, "VaultWatchService", FakeWatcher)
 
     with authed_client(settings):
-        pass
+        assert scanned.wait(5)
+        assert FakeWatcher.constructed.wait(5)
     assert scanner.calls == 1
+    assert FakeWatcher.reconciliation_wakeup is not None
     if FakeWatcher.started:
         assert FakeWatcher.stopped is True
+
+
+def test_app_startup_waits_for_initial_scan_and_watcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered, release = threading.Event(), threading.Event()
+    serving = threading.Event()
+
+    class BlockingScanner(FakeScanner):
+        def full_scan(self, **kwargs: Any) -> None:
+            entered.set()
+            assert release.wait(5)
+
+    class BlockingWatcher(FakeWatcher):
+        def start(self) -> None:
+            super().start()
+            serving.set()
+
+    monkeypatch.setattr(app_module.ScanService, "from_settings", lambda _: BlockingScanner())
+    monkeypatch.setattr(app_module, "VaultWatchService", BlockingWatcher)
+    app = create_app(Settings(vault_path=tmp_path))
+    outcomes: list[object] = []
+
+    def enter_client() -> None:
+        try:
+            with TestClient(app) as client:
+                outcomes.append(client.get("/health").status_code)
+        except Exception as exc:
+            outcomes.append(exc)
+
+    thread = threading.Thread(target=enter_client)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        assert not serving.wait(0.2)
+        assert thread.is_alive()
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert outcomes == [200]
+    assert serving.is_set()
+
+
+def test_embedding_reconciliation_repeats_after_wakeup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(vault_path=tmp_path)
+    initial_scanned = threading.Event()
+    reconcile_calls: queue.Queue[int] = queue.Queue()
+    scanner = FakeScanner()
+
+    def full_scan(**kwargs: Any) -> None:
+        scanner.calls += 1
+        initial_scanned.set()
+
+    scanner.full_scan = full_scan  # type: ignore[method-assign]
+    scanner.set_activity_service = lambda _: None  # type: ignore[attr-defined]
+    scanner.set_live_traversal = lambda _: None  # type: ignore[attr-defined]
+    settings.memory.embedding_model = "test-model"
+
+    class Worker:
+        _session = type("Session", (), {"close": lambda self: None})()
+
+        def reconcile_embeddings(self) -> None:
+            reconcile_calls.put(1)
+
+    monkeypatch.setattr(app_module.ScanService, "from_settings", lambda _: scanner if not scanner.calls else Worker())
+    monkeypatch.setattr(app_module, "VaultWatchService", FakeWatcher)
+    FakeWatcher.started = False
+
+    with TestClient(create_app(settings)) as client:
+        assert initial_scanned.wait(5)
+        assert reconcile_calls.get(timeout=5) == 1
+        client.app.state.embedding_reconciliation_wakeup.set()
+        assert reconcile_calls.get(timeout=5) == 1
+
+
+def test_embedding_reconciliation_shutdown_wakes_idle_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wakeup = threading.Event()
+    settings = Settings(
+        vault_path=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
+    )
+    reconciliation_done = threading.Event()
+    release_reconciliation = threading.Event()
+    lifespan_exited = threading.Event()
+    worker_threads: list[threading.Thread] = []
+    original_thread = threading.Thread
+    original_join = threading.Thread.join
+    worker_join_called = threading.Event()
+
+    def track_join(thread: threading.Thread, *args: Any, **kwargs: Any) -> None:
+        if thread.name == "embedding-reconciliation":
+            worker_join_called.set()
+        original_join(thread, *args, **kwargs)
+
+    monkeypatch.setattr(threading.Thread, "join", track_join)
+
+    def track_thread(*args: Any, **kwargs: Any) -> threading.Thread:
+        thread = original_thread(*args, **kwargs)
+        if kwargs.get("name") == "embedding-reconciliation":
+            worker_threads.append(thread)
+        return thread
+
+    scan_done = threading.Event()
+    scanner = FakeScanner()
+    scanner.set_activity_service = lambda _: None  # type: ignore[attr-defined]
+    scanner.set_live_traversal = lambda _: None  # type: ignore[attr-defined]
+    settings.memory.embedding_model = "test-model"
+
+    def full_scan(**kwargs: Any) -> None:
+        scanner.calls += 1
+        scan_done.set()
+
+    scanner.full_scan = full_scan  # type: ignore[method-assign]
+
+    class Worker:
+        _session = type("Session", (), {"close": lambda self: None})()
+
+        def reconcile_embeddings(self) -> None:
+            reconciliation_done.set()
+            release_reconciliation.wait()
+
+    monkeypatch.setattr(
+        app_module.ScanService,
+        "from_settings",
+        lambda _: scanner if scanner.calls == 0 else Worker(),
+    )
+    monkeypatch.setattr(app_module, "VaultWatchService", FakeWatcher)
+    FakeWatcher.started = False
+    client = TestClient(create_app(settings))
+    monkeypatch.setattr(app_module.threading, "Thread", track_thread)
+    client.app.state.embedding_reconciliation_wakeup = wakeup
+    client.__enter__()
+    shutdown_thread: threading.Thread | None = None
+    try:
+        assert scan_done.wait(5)
+        assert reconciliation_done.wait(5)
+    finally:
+        def exit_client() -> None:
+            client.__exit__(None, None, None)
+            lifespan_exited.set()
+
+        shutdown_thread = original_thread(target=exit_client)
+        shutdown_thread.start()
+        assert worker_join_called.wait(5)
+        release_reconciliation.set()
+        shutdown_thread.join(5)
+    assert lifespan_exited.is_set()
+    assert shutdown_thread is not None and not shutdown_thread.is_alive()
+    assert len(worker_threads) == 1
+    assert not worker_threads[0].is_alive()
 
 
 def test_app_lifespan_scan_failure_retries(
@@ -443,7 +622,7 @@ def test_app_lifespan_scan_failure_retries(
         calls = 0
         retried = threading.Event()
 
-        def full_scan(self) -> None:
+        def full_scan(self, **kwargs: Any) -> None:
             self.calls += 1
             if self.calls == 1:
                 raise RuntimeError("scan failed")
@@ -463,7 +642,7 @@ def test_app_lifespan_scan_failure_retries(
     assert logged.is_set()
 
 
-def test_initial_scan_does_not_block_serving_and_shutdown_waits(
+def test_initial_scan_blocks_startup_and_closes_services_on_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     entered, release, serving, exited = (threading.Event() for _ in range(4))
@@ -471,12 +650,15 @@ def test_initial_scan_does_not_block_serving_and_shutdown_waits(
     db_path = tmp_path / "catalog.db"
 
     class BlockingScanner(FakeScanner):
-        def full_scan(self) -> None:
+        def full_scan(self, **kwargs: Any) -> None:
             with sqlite3.connect(db_path) as connection:
                 connection.execute("CREATE TABLE IF NOT EXISTS scan_shutdown_test (value INTEGER)")
                 connection.execute("INSERT INTO scan_shutdown_test VALUES (1)")
                 entered.set()
                 assert release.wait(5)
+
+        def set_activity_service(self, service: Any) -> None:
+            pass
 
     for service in (app_module.TokenService, app_module.ActivityService):
         original_close = service.close
@@ -492,22 +674,25 @@ def test_initial_scan_does_not_block_serving_and_shutdown_waits(
     FakeWatcher.started = False
 
     def serve() -> None:
-        with authed_client(Settings(vault_path=tmp_path, database_url=f"sqlite:///{db_path}")) as client:
-            assert client.get("/health").status_code == 200
+        app = create_app(Settings(vault_path=tmp_path, database_url=f"sqlite:///{db_path}"))
+        token = app.state.token_service.create("shutdown-test").plaintext
+        with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as client:
             assert entered.wait(5)
-            assert not FakeWatcher.started
+            assert client.get("/health").status_code == 200
             serving.set()
         exited.set()
 
     thread = threading.Thread(target=serve)
     thread.start()
     try:
-        assert serving.wait(5)
-        assert not exited.wait(0.2)
+        assert entered.wait(5)
+        assert not serving.is_set()
         assert not closed
     finally:
         release.set()
-        thread.join(5)
+    assert serving.wait(5)
+    thread.join(5)
+    assert not thread.is_alive()
     assert exited.is_set()
     assert set(closed) == {"TokenService", "ActivityService"}
     with sqlite3.connect(db_path, timeout=0.1) as connection:

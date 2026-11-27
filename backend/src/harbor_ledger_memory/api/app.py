@@ -700,26 +700,67 @@ def create_app(
                 if callable(set_live_traversal):
                     set_live_traversal(live_traversal)
                 stop_scan = threading.Event()
+                scan_ready = threading.Event()
+                embedding_wakeup = getattr(
+                    application.state, "embedding_reconciliation_wakeup", None
+                ) or threading.Event()
+                application.state.embedding_reconciliation_wakeup = embedding_wakeup
+                embedding_thread: threading.Thread | None = None
 
                 def initial_scan() -> None:
+                    nonlocal embedding_thread
+                    retry_delay = 1.0
                     while not stop_scan.is_set():
                         try:
-                            scan_result = scanner.full_scan()
+                            scan_result = scanner.full_scan(defer_embeddings=is_real_scanner)
                             if not is_real_scanner:
                                 activity_service.record("scan", _scan_activity_payload(scan_result))
                             if stop_scan.is_set():
                                 return
-                            watcher = VaultWatchService(scanner.boundary, scanner)
+                            watcher = VaultWatchService(
+                                scanner.boundary,
+                                scanner,
+                                reconciliation_wakeup=embedding_wakeup,
+                            )
                             watcher.start()
                             application.state.vault_watcher = watcher
+                            scan_ready.set()
+                            if not is_real_scanner:
+                                return
+                            if is_real_scanner and settings.memory.embedding_model:
+                                def reconcile() -> None:
+                                    delay = 1.0
+                                    while not stop_scan.is_set():
+                                        worker = ScanService.from_settings(settings)
+                                        try:
+                                            worker.reconcile_embeddings()
+                                            delay = 1.0
+                                        except Exception:
+                                            logger.exception("Background embedding reconciliation failed")
+                                            if stop_scan.wait(delay):
+                                                break
+                                            delay = min(300.0, delay * 2)
+                                            continue
+                                        finally:
+                                            worker._session.close()
+                                        if stop_scan.is_set():
+                                            break
+                                        embedding_wakeup.wait()
+                                        embedding_wakeup.clear()
+                                        delay = 1.0
+
+                                embedding_thread = threading.Thread(target=reconcile, name="embedding-reconciliation")
+                                embedding_thread.start()
                             return
                         except Exception:
                             logger.exception("Initial scan or watcher startup failed; retrying")
-                            if stop_scan.wait(_INITIAL_SCAN_RETRY_SECONDS):
+                            if stop_scan.wait(retry_delay):
                                 return
+                            retry_delay = min(300.0, retry_delay * 2)
 
                 scan_thread = threading.Thread(target=initial_scan, name="initial-vault-scan")
                 scan_thread.start()
+                await asyncio.to_thread(scan_ready.wait)
                 application.state.activity_service = activity_service
             except Exception:
                 logger.exception("Startup failed; shutting down server")
@@ -728,7 +769,10 @@ def create_app(
                 yield
             finally:
                 stop_scan.set()
+                embedding_wakeup.set()
                 await asyncio.to_thread(scan_thread.join)
+                if embedding_thread is not None:
+                    await asyncio.to_thread(embedding_thread.join)
                 watcher = getattr(application.state, "vault_watcher", None)
                 if watcher is not None:
                     watcher.stop()

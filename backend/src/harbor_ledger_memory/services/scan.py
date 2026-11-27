@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import posixpath
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -21,6 +23,7 @@ from harbor_ledger_memory.catalog.database import (
 )
 from harbor_ledger_memory.catalog.models import (
     Diagnostic,
+    Link,
     Note,
     NoteEmbedding,
     ScanRun,
@@ -38,6 +41,8 @@ from harbor_ledger_memory.services.live_traversal import (
 )
 from harbor_ledger_memory.vault.boundary import VaultBoundary
 from harbor_ledger_memory.vault.parser import parse_note_bytes
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -68,9 +73,7 @@ class ScanResult:
     links: dict[str, tuple[str, ...]] | None = None
 
 
-def visible_scan_paths(
-    paths: tuple[str, ...], can_read: Any
-) -> tuple[str, ...]:
+def visible_scan_paths(paths: tuple[str, ...], can_read: Any) -> tuple[str, ...]:
     """Keep scan path evidence within the caller's effective read scope."""
     return tuple(path for path in paths if can_read(path))
 
@@ -99,8 +102,14 @@ class LinkResolution:
     candidates: tuple[str, ...] = ()
 
 
+class FullScanRequired(RuntimeError):
+    """Incremental input cannot safely reconcile the active projection."""
+
+
 class ScanService:
     """Build the disposable catalog from admitted Markdown files only."""
+
+    _scan_lock = threading.RLock()
 
     def __init__(
         self,
@@ -138,9 +147,21 @@ class ScanService:
         )
 
     def full_scan(
-        self, trace_id: str | None = None, sequence_start: int = 0
+        self,
+        trace_id: str | None = None,
+        sequence_start: int = 0,
+        *,
+        defer_embeddings: bool = False,
     ) -> ScanResult:
         """Replace the catalog with a deterministic snapshot of admitted files."""
+        with self._scan_lock:
+            return self._full_scan_locked(
+                trace_id, sequence_start, defer_embeddings=defer_embeddings
+            )
+
+    def _full_scan_locked(
+        self, trace_id: str | None, sequence_start: int, *, defer_embeddings: bool
+    ) -> ScanResult:
         snapshots = tuple(self.boundary.iter_admitted_snapshots())
         known_paths = tuple(snapshot.path.as_posix() for snapshot in snapshots)
         traversal_trace = trace_id or str(uuid4())
@@ -219,7 +240,13 @@ class ScanService:
         vault_hashes = {
             identity: content_hash for identity, _, content_hash, _, _ in parsed_files
         }
-        emb_model = effective_embedding_model(self._embedding_model)
+        # Deferred startup needs the configured identity to retain valid vectors,
+        # but must not probe or initialize the optional runtime.
+        emb_model = (
+            self._embedding_model
+            if defer_embeddings
+            else effective_embedding_model(self._embedding_model)
+        )
         preserved_embeddings = {
             path: (blob, created_at)
             for path, blob, created_at in session.execute(
@@ -227,8 +254,7 @@ class ScanService:
                     NoteEmbedding.note_path,
                     NoteEmbedding.embedding_blob,
                     NoteEmbedding.created_at,
-                )
-                .where(NoteEmbedding.model_name == emb_model)
+                ).where(NoteEmbedding.model_name == emb_model)
             )
             if emb_model
             and path in vault_hashes
@@ -314,7 +340,7 @@ class ScanService:
                                 line=diagnostic.line,
                             )
                         )
-            if emb_model and embedding_inputs:
+            if emb_model and embedding_inputs and not defer_embeddings:
                 embedding_service = EmbeddingService(emb_model)
                 vectors = embedding_service.encode_batch(
                     [text for _, text in embedding_inputs]
@@ -374,8 +400,7 @@ class ScanService:
             deleted_paths=deleted_paths,
             topology_paths=topology_paths,
             content_hashes={
-                path: content_hash
-                for path, _, content_hash, _, _ in parsed_files
+                path: content_hash for path, _, content_hash, _, _ in parsed_files
             },
             links={
                 path: tuple(
@@ -413,6 +438,290 @@ class ScanService:
             },
         )
         return result
+
+    def incremental_scan(self, paths: list[str] | tuple[str, ...]) -> ScanResult:
+        """Update only already-indexed Markdown identities with changed bytes."""
+        with self._scan_lock:
+            session = self._session
+            known = {path for (path,) in session.execute(select(Note.path))}
+            if not paths or any(path not in known for path in paths):
+                raise FullScanRequired("full scan required: unknown or empty path set")
+            snapshots = []
+            for value in dict.fromkeys(paths):
+                try:
+                    identity = self.boundary.validate_identity(value)
+                    if identity.as_posix() != value or identity.suffix.lower() != ".md":
+                        raise ValueError("not a canonical Markdown identity")
+                    snapshots.append(self.boundary.read_file(identity))
+                except Exception as exc:
+                    raise FullScanRequired(f"full scan required for {value}") from exc
+            hashes = {
+                s.path.as_posix(): hashlib.sha256(s.content).hexdigest()
+                for s in snapshots
+            }
+            old_hashes = {
+                path: digest
+                for path, digest in session.execute(
+                    select(Note.path, Note.content_hash)
+                )
+            }
+            changed = [
+                s
+                for s in snapshots
+                if hashes[s.path.as_posix()] != old_hashes[s.path.as_posix()]
+            ]
+            if not changed:
+                result = ScanResult(
+                    0,
+                    0,
+                    (),
+                    indexed_paths=tuple(sorted(known)),
+                    content_hashes=old_hashes,
+                )
+                now = _timestamp()
+                scan = ScanRun(
+                    started_at=now,
+                    status="complete",
+                    completed_at=now,
+                    notes_indexed=0,
+                    diagnostics_count=0,
+                )
+                session.add(scan)
+                session.commit()
+                self._publish_incremental_evidence(
+                    result, (s.path.as_posix() for s in snapshots)
+                )
+                return result
+            known_paths = tuple(sorted(known))
+            diagnostics: list[ScanDiagnostic] = []
+            link_rows: dict[str, list[dict[str, Any]]] = {}
+            broken = ambiguous = 0
+            parsed_rows = []
+            for snapshot in changed:
+                path = snapshot.path.as_posix()
+                parsed = parse_note_bytes(snapshot.content, snapshot.path)
+                rows = []
+                for link in parsed.wikilinks:
+                    resolution = resolve_target(
+                        link.target,
+                        path,
+                        known_paths,
+                        ai_prefix=_link_prefix(self.boundary.index_relative),
+                    )
+                    rows.append(
+                        {
+                            "raw": link.raw,
+                            "normalized_target": resolution.target,
+                            "alias": link.alias,
+                            "heading": link.heading,
+                            "block_id": link.block_id,
+                            "explicit": True,
+                            "resolution_status": resolution.status,
+                        }
+                    )
+                    if resolution.status in {"broken", "ambiguous"}:
+                        code = f"link.{resolution.status}"
+                        diagnostics.append(
+                            ScanDiagnostic(
+                                code,
+                                f"link target does not resolve: {link.target}"
+                                if resolution.status == "broken"
+                                else f"link target resolves to multiple notes: {link.target}",
+                                path,
+                            )
+                        )
+                        if resolution.status == "broken":
+                            broken += 1
+                        else:
+                            ambiguous += 1
+                diagnostics.extend(_parse_diagnostics(path, parsed.diagnostics))
+                link_rows[path] = rows
+                parsed_rows.append((snapshot, parsed, path))
+            from harbor_ledger_memory.graph.builder import GraphBuilder
+            from harbor_ledger_memory.services.graph_materialization import (
+                materialize_graph,
+            )
+
+            old_topology = _edge_set(GraphBuilder(session).build())
+            now = _timestamp()
+            scan = ScanRun(
+                started_at=now,
+                status="running",
+                notes_indexed=0,
+                diagnostics_count=len(diagnostics),
+            )
+            try:
+                session.add(scan)
+                session.flush()
+                for snapshot, parsed, path in parsed_rows:
+                    session.query(Diagnostic).filter(Diagnostic.path == path).delete(
+                        synchronize_session=False
+                    )
+                    session.query(Link).filter(Link.source_path == path).delete(
+                        synchronize_session=False
+                    )
+                    session.query(NoteEmbedding).filter(
+                        NoteEmbedding.note_path == path
+                    ).delete(synchronize_session=False)
+                    note = persist_parsed_note(
+                        session,
+                        parsed,
+                        content_hash=hashes[path],
+                        file_size=snapshot.file_size,
+                        file_mtime_ns=snapshot.file_mtime_ns,
+                        scan_timestamp=now,
+                        resolved_links=link_rows[path],
+                    )
+                    for d in diagnostics:
+                        if d.path == path and d.code.startswith("link."):
+                            session.add(
+                                Diagnostic(
+                                    path=path,
+                                    scan_run_id=scan.id,
+                                    code=d.code,
+                                    message=d.message,
+                                    severity=d.severity,
+                                    line=d.line,
+                                )
+                            )
+                    for d in note.diagnostics:
+                        d.scan_run_id = scan.id
+                scan.status = "complete"
+                scan.completed_at = _timestamp()
+                scan.notes_indexed = len(changed)
+                materialize_graph(session, created_at=scan.completed_at)
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            topology = tuple(
+                sorted(
+                    {
+                        endpoint
+                        for edge in old_topology
+                        ^ _edge_set(GraphBuilder(session).build())
+                        for endpoint in edge[:2]
+                    }
+                )
+            )
+            result = ScanResult(
+                len(changed),
+                broken,
+                tuple(diagnostics),
+                indexed_paths=tuple(sorted(known)),
+                changed_paths=tuple(sorted(s.path.as_posix() for s in changed)),
+                topology_paths=topology,
+                content_hashes={**old_hashes, **{p: hashes[p] for p in hashes}},
+                links={
+                    p: tuple(
+                        f"{r['normalized_target']}:{r['resolution_status']}"
+                        for r in rows
+                    )
+                    for p, rows in link_rows.items()
+                },
+            )
+            self._publish_incremental_evidence(result, result.changed_paths)
+            return result
+
+    def _publish_incremental_evidence(
+        self, result: ScanResult, read_paths: Any
+    ) -> None:
+        """Publish post-commit evidence best-effort; projection is already committed."""
+        trace = str(uuid4())
+        try:
+            for sequence, path in enumerate(sorted(read_paths), 1):
+                self._live_traversal.publish(
+                    TraversalEvent(trace, sequence, "read", path)
+                )
+        except Exception:
+            logger.exception("incremental scan traversal notification failed")
+        try:
+            self._activity_service.record(
+                "scan",
+                {
+                    "files_indexed": result.files_indexed,
+                    "broken_links": result.broken_links,
+                    "ambiguous_links": result.ambiguous_links,
+                    "diagnostics": len(result.diagnostics),
+                    "graph_refs": graph_refs(
+                        [*result.changed_paths, *result.topology_paths]
+                    ),
+                    "added_paths": [],
+                    "changed_paths": list(result.changed_paths),
+                    "deleted_paths": [],
+                    "topology_paths": list(result.topology_paths),
+                },
+            )
+        except Exception:
+            logger.exception("incremental scan activity notification failed")
+
+    def reconcile_embeddings(self, *, batch_size: int = 32) -> int:
+        """Fill missing vectors in bounded batches, validating snapshots before write."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        model = effective_embedding_model(self._embedding_model)
+        if not model:
+            return 0
+        session = self._session
+        inserted = 0
+        try:
+            pending = session.execute(
+                select(
+                    Note.path, Note.title, Note.summary, Note.content, Note.content_hash
+                )
+                .outerjoin(
+                    NoteEmbedding,
+                    (NoteEmbedding.note_path == Note.path)
+                    & (NoteEmbedding.model_name == model),
+                )
+                .where(NoteEmbedding.note_path.is_(None))
+                .order_by(Note.path)
+            ).all()
+            for offset in range(0, len(pending), batch_size):
+                batch = pending[offset : offset + batch_size]
+                inputs = [
+                    (
+                        row.path,
+                        row.content_hash,
+                        embeddable_text(row.title, row.summary, row.content),
+                    )
+                    for row in batch
+                ]
+                inputs = [(path, digest, text) for path, digest, text in inputs if text]
+                if not inputs:
+                    continue
+                session.rollback()
+                encoder = EmbeddingService(model)
+                vectors = encoder.encode_batch([text for _, _, text in inputs])
+                if len(vectors) != len(inputs):
+                    raise RuntimeError(
+                        "embedding encoder returned invalid batch cardinality"
+                    )
+                for (path, digest, _), vector in zip(inputs, vectors):
+                    current = session.execute(
+                        select(Note.content_hash).where(Note.path == path)
+                    ).scalar_one_or_none()
+                    exists = session.scalar(
+                        select(NoteEmbedding.note_path).where(
+                            NoteEmbedding.note_path == path,
+                            NoteEmbedding.model_name == model,
+                        )
+                    )
+                    if current == digest and exists is None:
+                        session.add(
+                            NoteEmbedding(
+                                note_path=path,
+                                embedding_blob=encoder.to_blob(vector),
+                                model_name=model,
+                                created_at=_timestamp(),
+                            )
+                        )
+                        inserted += 1
+                session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        return inserted
 
     def set_activity_service(self, activity_service: ActivityService) -> None:
         """Use the application's shared activity fan-out for future scans."""

@@ -185,20 +185,24 @@ class HybridRetrievalService:
         query_vector: tuple[float, ...] | None = None
         emb_model = effective_embedding_model(self._memory_settings.embedding_model)
         if emb_model:
-            embedding_svc = EmbeddingService(emb_model)
-            query_vector = embedding_svc.encode(query[:_MAX_QUERY_LENGTH])
-
             emb_rows = self._session.execute(
                 select(NoteEmbedding.note_path, NoteEmbedding.embedding_blob).where(
                     NoteEmbedding.model_name == emb_model
                 )
             ).all()
-            embedding_map = {
-                row[0]: embedding_svc.from_blob(row[1])
-                for row in emb_rows
-                if self._path_filter is None or self._path_filter(row[0])
-            }
-            candidate_paths.update(embedding_map)
+            if emb_rows:
+                try:
+                    embedding_svc = EmbeddingService(emb_model)
+                    query_vector = embedding_svc.encode(query[:_MAX_QUERY_LENGTH])
+                    embedding_map = {
+                        row[0]: embedding_svc.from_blob(row[1])
+                        for row in emb_rows
+                        if self._path_filter is None or self._path_filter(row[0])
+                    }
+                    candidate_paths.update(embedding_map)
+                except Exception:
+                    embedding_map = {}
+                    query_vector = None
 
         if not candidate_paths:
             return ()

@@ -174,3 +174,12 @@ outside this environment.
 - All application measurements describe the current dirty checkout and local
   Apple Silicon environment; compare future results on the same machine and
   workload before drawing performance conclusions.
+
+## Follow-up backlog
+
+- [ ] Validate embedding CPU use on the CPU-only Hermes host with its real
+  service logs and representative local vault; current incident cause is not
+  established by the available code or synthetic tests.
+- [ ] After that validation, profile and streamline scan/retrieval hot paths
+  only where end-to-end measurements show redundant work; avoid a broad rewrite
+  without evidence.
